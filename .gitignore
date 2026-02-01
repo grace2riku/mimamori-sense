@@ -1,1 +1,5 @@
 .DS_Store
+
+# reference_projects以下はREADMD.md以外無視
+reference_projects/**
+!reference_projects/README.md
