@@ -3,3 +3,7 @@
 # reference_projects以下はREADMD.md以外無視
 reference_projects/**
 !reference_projects/README.md
+
+# e2studioのDebugディレクトリ
+e2studio_CPU0/Debug/
+e2studio_CPU1/Debug/
