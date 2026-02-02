@@ -7,3 +7,6 @@ reference_projects/**
 # e2studioのDebugディレクトリ
 e2studio_CPU0/Debug/
 e2studio_CPU1/Debug/
+
+# JLinkログファイル
+e2studio_CPU0/JLinkLog.log
