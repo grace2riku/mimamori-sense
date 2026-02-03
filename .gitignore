@@ -10,3 +10,6 @@ e2studio_CPU1/Debug/
 
 # JLinkログファイル
 e2studio_CPU0/JLinkLog.log
+
+# Claude Code local settings
+.claude/settings.local.json
