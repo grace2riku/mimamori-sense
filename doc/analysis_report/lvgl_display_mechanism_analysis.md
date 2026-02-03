@@ -917,23 +917,578 @@ void check_memory(void)
 
 ---
 
-## 8. 総括
+## 8. FreeRTOSとLVGLのインターフェース
 
-### 8.1 LVGL画面表示仕組みのポイント
+### 8.1 概要
+
+LVGLはFreeRTOSと密接に連携して動作します。主な連携ポイントは以下の通りです：
+
+- **タスク管理**: LVGLメインループはFreeRTOSタスク内で実行
+- **同期機構**: セマフォ、イベントグループによるISR-タスク間通信
+- **タイミング**: FreeRTOSティックによる時間管理
+
+### 8.2 FreeRTOS機能の使用状況
+
+#### 8.2.1 セマフォ（Semaphore）
+
+**バイナリセマフォ - タッチイベント通知用**
+
+| 項目 | 内容 |
+|------|------|
+| 変数名 | `g_irq_binary_semaphore` |
+| 用途 | ISR → LVGLスレッドへのタッチイベント通知 |
+| 生成 | 静的割り当て |
+
+```c
+// ISRからのセマフォ通知
+void touch_irq_callback(external_irq_callback_args_t *p_args)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(g_irq_binary_semaphore, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+// タッチタスクからの待機（lv_port_indev.c内）
+xSemaphoreTake(g_irq_binary_semaphore, pdMS_TO_TICKS(1000));
+```
+
+**カウンティングセマフォ - FSP初期化同期用**
+
+| 項目 | 内容 |
+|------|------|
+| 変数名 | `g_fsp_common_initialized_semaphore` |
+| 用途 | 複数スレッドのFSP初期化完了同期 |
+| 初期カウント | 256 |
+
+```c
+// main()内
+g_fsp_common_initialized_semaphore = xSemaphoreCreateCounting(256, 1);
+
+// スレッド内（rtos_startup_common_init）
+xSemaphoreTake(g_fsp_common_initialized_semaphore, portMAX_DELAY);
+// 初期化処理...
+xSemaphoreGive(g_fsp_common_initialized_semaphore);
+```
+
+#### 8.2.2 イベントグループ（Event Groups）
+
+**I2C通信同期用**
+
+| 項目 | 内容 |
+|------|------|
+| 変数名 | `g_i2c_event_group` |
+| ビット定義 | COMPLETE (0x1), ABORT (0x2) |
+| 用途 | I2C転送完了/エラー通知 |
+
+```c
+// I2C完了コールバック内（ISRコンテキスト）
+void comms_i2c_callback(rm_comms_callback_args_t *p_args)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (p_args->event == RM_COMMS_EVENT_OPERATION_COMPLETE) {
+        xEventGroupSetBitsFromISR(g_i2c_event_group, 0x1, &xHigherPriorityTaskWoken);
+    } else {
+        xEventGroupSetBitsFromISR(g_i2c_event_group, 0x2, &xHigherPriorityTaskWoken);
+    }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+// タッチ読み取りスレッド内
+EventBits_t result = xEventGroupWaitBits(
+    g_i2c_event_group,
+    0x1 | 0x2,              // COMPLETE | ABORT待機
+    pdTRUE,                 // 自動クリア
+    pdFALSE,                // いずれか1ビット
+    pdMS_TO_TICKS(1000)     // 1秒タイムアウト
+);
+```
+
+#### 8.2.3 タスク/スレッド構成
+
+| タスク | スタックサイズ | 優先度 | 役割 |
+|--------|--------------|--------|------|
+| new_thread0 / blinky_thread | 8192 bytes | 2 | メインLVGL/UIスレッド |
+| Idle Task | 128 bytes | 0 | カーネルアイドル |
+| Timer Task | 可変 | 3 | FreeRTOSタイマー |
+
+```c
+// タスク生成（FSP自動生成）
+void blinky_thread_create(void)
+{
+    // 内部的にxTaskCreate()を呼び出し
+}
+
+// タスクエントリ
+void blinky_thread_entry(void)
+{
+    // LVGL初期化
+    lv_init();
+    lv_port_disp_init();
+    lv_port_indev_init();
+
+    // メインループ
+    while (1) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(5));  // 5ms周期
+    }
+}
+```
+
+#### 8.2.4 遅延/タイミング
+
+| 設定 | 値 | 用途 |
+|------|-----|------|
+| configTICK_RATE_HZ | 1000 | 1msティック |
+| LVGL周期 | 5ms | lv_timer_handler()呼び出し間隔 |
+| タッチタイムアウト | 1000ms | I2C読み取りタイムアウト |
+
+```c
+// 遅延マクロ
+vTaskDelay(pdMS_TO_TICKS(5));           // 5ms遅延
+vTaskDelay(configTICK_RATE_HZ / 2);     // 500ms遅延
+
+// タイムアウト付きセマフォ待機
+xSemaphoreTake(handle, pdMS_TO_TICKS(1000));  // 1秒タイムアウト
+```
+
+### 8.3 FreeRTOS API使用一覧
+
+| API | 呼び出し元 | 目的 |
+|-----|-----------|------|
+| `xSemaphoreCreateBinary()` | main.c | バイナリセマフォ作成 |
+| `xSemaphoreCreateCounting()` | main.c | カウンティングセマフォ作成 |
+| `xSemaphoreGiveFromISR()` | touch_irq_callback() | ISRからセマフォ解放 |
+| `xSemaphoreTake()` | lv_port_indev.c | セマフォ獲得待機 |
+| `xEventGroupCreate()` | main.c | イベントグループ作成 |
+| `xEventGroupSetBitsFromISR()` | comms_i2c_callback() | ISRからビット設定 |
+| `xEventGroupWaitBits()` | i2c_wait() | ビット待機 |
+| `xTaskCreate()` | FSP生成コード | タスク作成 |
+| `vTaskDelay()` | blinky_thread_entry() | タスク遅延 |
+| `portYIELD_FROM_ISR()` | ISRハンドラ | 文脈切り替え要求 |
+
+### 8.4 同期フロー図
+
+#### タッチイベント同期
+
+```
+タッチ発生
+    ↓
+FT5X06 IRQピン (P1-7) → Low
+    ↓
+External IRQ Ch.19 割込み発火
+    ↓
+touch_irq_callback() [ISRコンテキスト]
+├─ xSemaphoreGiveFromISR(g_irq_binary_semaphore, &woken)
+└─ portYIELD_FROM_ISR(woken)
+    ↓
+LVGLメインスレッド [ブロック状態から復帰]
+    ↓
+touchpad_read() [lv_port_indev.c]
+├─ xSemaphoreTake(g_irq_binary_semaphore, pdMS_TO_TICKS(1000))
+├─ R_IIC_MASTER_Read() 非同期開始
+└─ i2c_wait() でI2C完了待ち
+    ↓
+I2C ISR (comms_i2c_callback)
+├─ xEventGroupSetBitsFromISR(g_i2c_event_group, 0x1, &woken)
+└─ portYIELD_FROM_ISR(woken)
+    ↓
+touchpad_read() 再開
+├─ xEventGroupWaitBits() から復帰
+├─ タッチデータ抽出（座標、ポイント数）
+└─ LVGLに座標通知
+```
+
+#### ディスプレイフラッシュ同期
+
+```
+lv_refr_now() [LVGL内部]
+    ↓
+ダーティエリア検出・描画
+    ↓
+lv_disp_flush() [コールバック]
+└─ フレームバッファ更新 (SDRAM)
+    ↓
+R_GLCDC_BufferChange() [FSP API]
+    ↓
+GLCDC HW [DMA転送]
+├─ フレームバッファ → LCD
+└─ VSYNC完了割込み
+    ↓
+lvgl_glcdc_callback() [ISRコンテキスト]
+├─ LV_EVENT_FLUSH_FINISH発火
+└─ 初回フラッシュ時：バックライト有効化
+```
+
+### 8.5 FreeRTOSConfig.h 重要設定
+
+```c
+// タスク管理
+#define configUSE_PREEMPTION                1    // プリエンプション有効
+#define configUSE_TIME_SLICING              0    // タイムスライス無効
+#define configMAX_PRIORITIES                5    // 優先度レベル数
+
+// ティック設定
+#define configTICK_RATE_HZ                  1000 // 1msティック
+#define configTICK_TYPE_WIDTH_IN_BITS       1    // 32ビットティック
+
+// 同期機構
+#define configUSE_MUTEXES                   0    // ミューテックス無効
+#define configUSE_RECURSIVE_MUTEXES         0    // 再帰ミューテックス無効
+#define configSUPPORT_STATIC_ALLOCATION     1    // 静的割り当て有効
+
+// メモリ管理
+#define configTOTAL_HEAP_SIZE               (配列サイズ)  // ヒープサイズ
+
+// 割込み
+#define configPRIO_BITS                     4    // 割込み優先度ビット数
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY 5  // システムコール可能な最大優先度
+```
+
+---
+
+## 9. μT-Kernel 3.0への移植ポイント
+
+### 9.1 移植の背景
+
+FreeRTOSからμT-Kernel 3.0への移植を行う場合、RTOS APIの差異を吸収する必要があります。本セクションでは、LVGLポーティング層で使用しているFreeRTOS機能のμT-Kernel 3.0への対応方法を解説します。
+
+### 9.2 APIマッピング表
+
+| FreeRTOS | μT-Kernel 3.0 | 備考 |
+|----------|---------------|------|
+| `xSemaphoreCreateBinary()` | `tk_cre_sem()` (初期値=0) | パラメータ形式異なる |
+| `xSemaphoreCreateCounting()` | `tk_cre_sem()` | maxcnt指定 |
+| `xSemaphoreGive()` | `tk_sig_sem()` | V操作 |
+| `xSemaphoreTake()` | `tk_wai_sem()` | P操作 |
+| `xSemaphoreGiveFromISR()` | `tk_sig_sem()` | ISR対応版 |
+| `xEventGroupCreate()` | `tk_cre_flg()` | フラグ作成 |
+| `xEventGroupSetBits()` | `tk_set_flg()` | ビット設定 |
+| `xEventGroupWaitBits()` | `tk_wai_flg()` | ビット待機 |
+| `xTaskCreate()` | `tk_cre_tsk()` + `tk_sta_tsk()` | 2段階処理 |
+| `vTaskDelay()` | `tk_dly_tsk()` | 遅延 |
+| `portENTER_CRITICAL()` | `tk_dis_int()` | 割込み禁止 |
+| `portEXIT_CRITICAL()` | `tk_ena_int()` | 割込み許可 |
+| `portYIELD_FROM_ISR()` | 自動（不要） | カーネル自動処理 |
+
+### 9.3 セマフォの移植
+
+#### FreeRTOS（現行実装）
+
+```c
+// バイナリセマフォ作成
+SemaphoreHandle_t g_irq_binary_semaphore;
+g_irq_binary_semaphore = xSemaphoreCreateBinary();
+
+// ISRからセマフォ解放
+BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+xSemaphoreGiveFromISR(g_irq_binary_semaphore, &xHigherPriorityTaskWoken);
+portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+
+// タスクからセマフォ待機
+xSemaphoreTake(g_irq_binary_semaphore, pdMS_TO_TICKS(1000));
+```
+
+#### μT-Kernel 3.0（移植後）
+
+```c
+// セマフォ作成
+ID g_irq_semid;
+T_CSEM csem = {
+    .sematr = TA_TPRI,     // タスク優先度順
+    .isemcnt = 0,          // 初期カウント（バイナリなら0）
+    .maxsem = 1            // 最大カウント（バイナリなら1）
+};
+g_irq_semid = tk_cre_sem(&csem);
+
+// ISRからセマフォ解放（文脈切り替えは自動）
+tk_sig_sem(g_irq_semid, 1);
+
+// タスクからセマフォ待機
+ER result = tk_wai_sem(g_irq_semid, 1, TMO_POL);  // ポーリング
+// または
+ER result = tk_wai_sem(g_irq_semid, 1, 1000);     // 1秒タイムアウト
+```
+
+### 9.4 イベントフラグの移植
+
+#### FreeRTOS（現行実装）
+
+```c
+// イベントグループ作成
+EventGroupHandle_t g_i2c_event_group;
+g_i2c_event_group = xEventGroupCreate();
+
+// ISRからビット設定
+xEventGroupSetBitsFromISR(g_i2c_event_group, 0x1, &xHigherPriorityTaskWoken);
+portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+
+// タスクからビット待機
+EventBits_t result = xEventGroupWaitBits(
+    g_i2c_event_group,
+    0x1 | 0x2,
+    pdTRUE,
+    pdFALSE,
+    pdMS_TO_TICKS(1000)
+);
+```
+
+#### μT-Kernel 3.0（移植後）
+
+```c
+// フラグ作成
+ID g_i2c_flgid;
+T_CFLG cflg = {
+    .flgatr = TA_TPRI | TA_WMUL,  // タスク優先度順、複数待機可
+    .iflgptn = 0x00               // 初期フラグパターン
+};
+g_i2c_flgid = tk_cre_flg(&cflg);
+
+// ISRからビット設定（自動文脈切り替え）
+tk_set_flg(g_i2c_flgid, 0x1);
+
+// タスクからビット待機
+UINT flgptn;
+ER result = tk_wai_flg(
+    g_i2c_flgid,
+    0x1 | 0x2,                    // 待機パターン
+    TWF_ORW | TWF_CLR,            // OR待機、クリア
+    &flgptn,                      // 結果パターン
+    1000                          // 1秒タイムアウト（ms）
+);
+```
+
+### 9.5 タスク管理の移植
+
+#### FreeRTOS（現行実装）
+
+```c
+// タスク作成（1ステップ）
+TaskHandle_t xHandle;
+xTaskCreate(
+    task_func,        // タスク関数
+    "TaskName",       // タスク名
+    8192 / 4,         // スタックサイズ（ワード単位）
+    NULL,             // パラメータ
+    2,                // 優先度
+    &xHandle          // ハンドル
+);
+```
+
+#### μT-Kernel 3.0（移植後）
+
+```c
+// タスク作成（2ステップ）
+ID tskid;
+T_CTSK ctsk = {
+    .tskatr = TA_HLNG | TA_RNG0,  // 高級言語、リング0
+    .task = (FP)task_func,        // タスク開始アドレス
+    .itskpri = 2,                 // 初期優先度
+    .stksz = 8192,                // スタックサイズ（バイト）
+    .sstksz = 0,                  // システムスタック（0=自動）
+    .stkptr = NULL,               // スタックポインタ（NULL=自動）
+    .uatb = NULL,                 // ユーザ属性（NULL=なし）
+    .lsid = 0,                    // 論理空間ID
+    .resid = 0                    // リソースID
+};
+
+// タスク生成
+tskid = tk_cre_tsk(&ctsk);
+
+// タスク起動
+tk_sta_tsk(tskid, 0);  // stacdは起動コード
+```
+
+### 9.6 遅延の移植
+
+#### FreeRTOS（現行実装）
+
+```c
+// ミリ秒遅延
+vTaskDelay(pdMS_TO_TICKS(5));  // 5ms
+```
+
+#### μT-Kernel 3.0（移植後）
+
+```c
+// ミリ秒遅延
+tk_dly_tsk(5);  // 5ms（μT-Kernelは標準でms単位）
+```
+
+### 9.7 割込みハンドラの移植
+
+#### FreeRTOS（現行実装）
+
+```c
+void touch_irq_callback(external_irq_callback_args_t *p_args)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    xSemaphoreGiveFromISR(g_irq_binary_semaphore, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);  // 手動で文脈切り替え要求
+}
+```
+
+#### μT-Kernel 3.0（移植後）
+
+```c
+void touch_irq_callback(external_irq_callback_args_t *p_args)
+{
+    tk_sig_sem(g_irq_semid, 1);  // 文脈切り替えは自動
+    // portYIELD_FROM_ISR()相当は不要（カーネルが自動処理）
+}
+```
+
+### 9.8 RTOS抽象化層の設計
+
+移植を容易にするため、RTOS抽象化層（OSAL: Operating System Abstraction Layer）を設計することを推奨します。
+
+```c
+// osal.h - RTOS抽象化ヘッダ
+
+#ifdef USE_FREERTOS
+    #include "FreeRTOS.h"
+    #include "semphr.h"
+    #include "event_groups.h"
+    typedef SemaphoreHandle_t osal_sem_t;
+    typedef EventGroupHandle_t osal_event_t;
+#else  // USE_UTKERNEL
+    #include <tk/tkernel.h>
+    typedef ID osal_sem_t;
+    typedef ID osal_event_t;
+#endif
+
+// セマフォAPI
+osal_sem_t osal_sem_create(int initial_count, int max_count);
+int osal_sem_give(osal_sem_t sem);
+int osal_sem_take(osal_sem_t sem, uint32_t timeout_ms);
+int osal_sem_give_from_isr(osal_sem_t sem);
+
+// イベントAPI
+osal_event_t osal_event_create(void);
+int osal_event_set(osal_event_t event, uint32_t bits);
+int osal_event_wait(osal_event_t event, uint32_t bits, uint32_t timeout_ms, uint32_t *result);
+
+// 遅延API
+void osal_delay_ms(uint32_t ms);
+```
+
+```c
+// osal_utkernel.c - μT-Kernel実装
+
+#include "osal.h"
+
+osal_sem_t osal_sem_create(int initial_count, int max_count)
+{
+    T_CSEM csem = {
+        .sematr = TA_TPRI,
+        .isemcnt = initial_count,
+        .maxsem = max_count
+    };
+    return tk_cre_sem(&csem);
+}
+
+int osal_sem_give(osal_sem_t sem)
+{
+    return (tk_sig_sem(sem, 1) >= 0) ? 0 : -1;
+}
+
+int osal_sem_take(osal_sem_t sem, uint32_t timeout_ms)
+{
+    TMO tmo = (timeout_ms == OSAL_WAIT_FOREVER) ? TMO_FEVR : timeout_ms;
+    return (tk_wai_sem(sem, 1, tmo) >= 0) ? 0 : -1;
+}
+
+int osal_sem_give_from_isr(osal_sem_t sem)
+{
+    return (tk_sig_sem(sem, 1) >= 0) ? 0 : -1;
+}
+
+void osal_delay_ms(uint32_t ms)
+{
+    tk_dly_tsk(ms);
+}
+```
+
+### 9.9 移植時の注意事項
+
+#### 9.9.1 タイムアウト値の単位
+
+| RTOS | 単位 | 無限待ち |
+|------|------|---------|
+| FreeRTOS | ティック | portMAX_DELAY |
+| μT-Kernel 3.0 | ミリ秒 | TMO_FEVR |
+
+#### 9.9.2 優先度の方向
+
+| RTOS | 高優先度 | 低優先度 |
+|------|---------|---------|
+| FreeRTOS | 大きい数値 | 小さい数値 |
+| μT-Kernel 3.0 | 小さい数値 | 大きい数値 |
+
+**注意**: 優先度の変換が必要です。
+
+```c
+// 優先度変換（FreeRTOS → μT-Kernel）
+#define CONVERT_PRIORITY(freertos_pri) (configMAX_PRIORITIES - 1 - freertos_pri)
+```
+
+#### 9.9.3 ISRからの操作
+
+| 操作 | FreeRTOS | μT-Kernel 3.0 |
+|------|----------|---------------|
+| セマフォ解放 | `xSemaphoreGiveFromISR()` + `portYIELD_FROM_ISR()` | `tk_sig_sem()` のみ |
+| イベント設定 | `xEventGroupSetBitsFromISR()` + `portYIELD_FROM_ISR()` | `tk_set_flg()` のみ |
+
+μT-Kernelでは`portYIELD_FROM_ISR()`相当が不要で、カーネルが自動で文脈切り替えを処理します。
+
+#### 9.9.4 スタックサイズの単位
+
+| RTOS | 単位 |
+|------|------|
+| FreeRTOS | ワード（4バイト） |
+| μT-Kernel 3.0 | バイト |
+
+### 9.10 移植スケジュール案
+
+| フェーズ | 内容 | 期間 |
+|---------|------|------|
+| Phase 1 | OSAL設計・実装 | 1週間 |
+| Phase 2 | セマフォ/イベント移植 | 1週間 |
+| Phase 3 | タスク管理移植 | 1週間 |
+| Phase 4 | 割込みハンドラ移植 | 1週間 |
+| Phase 5 | 統合テスト | 2週間 |
+
+### 9.11 移植チェックリスト
+
+| 項目 | 確認内容 |
+|------|---------|
+| セマフォ | バイナリ/カウンティング両方動作確認 |
+| イベントフラグ | ビット設定/待機動作確認 |
+| タスク | 生成/起動/遅延動作確認 |
+| 割込み | ISRからのセマフォ/イベント操作確認 |
+| タイムアウト | 各APIのタイムアウト動作確認 |
+| 優先度 | タスク優先度の変換確認 |
+| メモリ | ヒープ/スタック使用量確認 |
+| パフォーマンス | FPS、応答時間測定 |
+
+---
+
+## 10. 総括
+
+### 10.1 LVGL画面表示仕組みのポイント
 
 1. **描画はダブルバッファリング**: ティアリング防止、滑らかな表示
 2. **ダーティエリア追跡**: 変更部分のみ再描画で効率化
 3. **D/AVE 2Dアクセラレータ**: CPU負荷軽減
 4. **イベント駆動**: タッチ割込み → セマフォ → 座標読み取り → UI更新
 
-### 8.2 ハードウェア設定のポイント
+### 10.2 ハードウェア設定のポイント
 
 1. **GLCDC**: RGB565, 1024x600, ダブルバッファ, DMA自動転送
 2. **タッチ**: FT5X06, I2C 0x38, External IRQ Ch.19
 3. **GPIO**: LCDデータライン多数 + バックライト + タッチ割込み
 4. **クロック**: M85 @ 1GHz, M33 @ 250MHz, SDRAM初期化必須
 
-### 8.3 移植の核心
+### 10.3 移植の核心
 
 **Phase 1-2（基盤）が最重要**。GLCDCとタッチパネルが動作確認できれば、Phase 3-5は技術的には容易です。
 
@@ -1000,6 +1555,14 @@ e2studio_CPU0/
 | RGB565 | 16ビットカラーフォーマット（R5G6B5） |
 | ダブルバッファ | 2面のフレームバッファを交互に使用する描画方式 |
 | ダーティエリア | 変更があり再描画が必要な領域 |
+| FreeRTOS | リアルタイムオペレーティングシステム |
+| μT-Kernel 3.0 | TRONプロジェクトの組込みリアルタイムOS |
+| セマフォ | タスク間同期のためのカウンタ機構 |
+| イベントフラグ | ビットパターンによるタスク間通信機構 |
+| ISR | Interrupt Service Routine（割込みサービスルーチン） |
+| OSAL | Operating System Abstraction Layer（OS抽象化層） |
+| 文脈切り替え | 実行タスクを切り替える処理 |
+| ティック | RTOSの時間管理単位 |
 
 ---
 
