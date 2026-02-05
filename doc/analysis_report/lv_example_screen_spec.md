@@ -526,4 +526,341 @@ void new_thread0_entry(void *pvParameters)
 
 ---
 
+## 付録B: 追加Q&A
+
+### Q1. デモ画面切り替えマクロについて
+
+**質問**: lv_port_renesas_ek_ra8p1をビルドし書き込むとLV_USE_DEMO_BENCHMARKマクロが有効になり、「Settings（設定）画面」とは違う画面が表示されます。マクロの種類と設定、表示される画面を教えてください。
+
+**回答**:
+
+本アプリケーションは`src/new_thread0_entry.c`および`src/lv_conf_user.h`のマクロ設定により、表示する画面を切り替えられる構造になっています。
+
+#### マクロ設定と表示画面一覧
+
+| 優先度 | マクロ名 | 設定ファイル | 呼び出し関数 | 表示内容 |
+|--------|---------|-------------|-------------|---------|
+| 1 | `LV_USE_DEMO_BENCHMARK` | lv_conf_user.h | `lv_demo_benchmark()` | パフォーマンスベンチマーク画面 |
+| 2 | `LV_USE_DEMO_MUSIC` | lv_conf.h | `lv_demo_music()` | 音楽プレーヤーデモ画面 |
+| 3 | `LV_USE_DEMO_KEYPAD_AND_ENCODER` | lv_conf.h | `lv_demo_keypad_encoder()` | キーパッド/エンコーダーデモ |
+| 4 | `LV_USE_DEMO_STRESS` | lv_conf.h | `lv_demo_stress()` | ストレステスト画面 |
+| 5 | `LV_USE_DEMO_WIDGETS` | lv_conf_user.h | `lv_demo_widgets()` | ウィジェットデモ画面 |
+| 6 | `USE_LVGL_EDITOR` | 自動定義 | `settings_create()` | Settings（設定）画面 |
+
+#### 現在のデフォルト設定（lv_conf_user.h）
+
+```c
+#define LV_BUILD_DEMOS 1
+
+#if LV_BUILD_DEMOS
+    #define LV_USE_DEMO_WIDGETS 1
+    #define LV_USE_DEMO_BENCHMARK 1
+#endif
+```
+
+現在の設定では`LV_USE_DEMO_BENCHMARK = 1`が有効なため、ベンチマーク画面が表示されます。
+
+#### Settings画面を表示するための設定変更
+
+Settings画面を表示するには、`lv_conf_user.h`を以下のように変更します:
+
+```c
+#define LV_BUILD_DEMOS 0  // デモを無効化
+
+// または以下のように個別に無効化
+#define LV_USE_DEMO_WIDGETS 0
+#define LV_USE_DEMO_BENCHMARK 0
+```
+
+#### 画面選択ロジック（new_thread0_entry.c）
+
+```c
+// USE_LVGL_EDITORは全デモが無効の場合に自動定義される
+#if (0 == LV_USE_DEMO_BENCHMARK) && (0 == LV_USE_DEMO_MUSIC) && \
+    (0 == LV_USE_DEMO_KEYPAD_AND_ENCODER) && (0 == LV_USE_DEMO_WIDGETS)
+#define USE_LVGL_EDITOR 1
+#endif
+
+// 画面選択の優先順位
+#if (1 == LV_USE_DEMO_BENCHMARK)
+    lv_demo_benchmark();
+#elif (1 == LV_USE_DEMO_MUSIC)
+    lv_demo_music();
+#elif (1 == LV_USE_DEMO_KEYPAD_AND_ENCODER)
+    lv_demo_keypad_encoder();
+#elif (1 == LV_USE_DEMO_STRESS)
+    lv_demo_stress();
+#elif (1 == LV_USE_DEMO_WIDGETS && 0 == LV_USE_DEMO_BENCHMARK)
+    lv_demo_widgets();
+#elif (1 == USE_LVGL_EDITOR)
+    // Settings画面を表示
+    ui_init(NULL);
+    settings = settings_create();
+    lv_screen_load(settings);
+#endif
+```
+
+---
+
+### Q2. Flexboxレイアウトについて
+
+**質問**: Flexboxレイアウトについて解説してください。Flexbox以外にもレイアウト方式があるのか教えてください。
+
+**回答**:
+
+#### Flexboxレイアウトとは
+
+Flexbox（フレックスボックス）は、CSSの概念を元にした1次元レイアウトシステムです。子要素を**行（ROW）** または **列（COLUMN）** の方向に自動配置します。
+
+#### LVGLでのFlexboxレイアウト設定
+
+```c
+// Flexboxレイアウトを有効化
+lv_obj_set_layout(obj, LV_LAYOUT_FLEX);
+
+// 配置方向を設定
+lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_ROW);     // 横並び
+lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_COLUMN);  // 縦並び
+lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_ROW_WRAP);    // 横並び（折り返しあり）
+lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_COLUMN_WRAP); // 縦並び（折り返しあり）
+```
+
+#### Flexboxの主要プロパティ
+
+| プロパティ | 説明 | 設定例 |
+|-----------|------|--------|
+| `flex_flow` | 子要素の配置方向 | ROW, COLUMN, ROW_WRAP, COLUMN_WRAP |
+| `flex_grow` | 余白の拡張割合 | 0（固定）, 1以上（拡張） |
+| `flex_main_place` | 主軸方向の配置 | START, END, CENTER, SPACE_EVENLY, SPACE_AROUND, SPACE_BETWEEN |
+| `flex_cross_place` | 交差軸方向の配置 | START, END, CENTER |
+| `flex_track_place` | 複数行時のトラック配置 | START, END, CENTER, SPACE_EVENLY, SPACE_AROUND, SPACE_BETWEEN |
+| `pad_row` | 行間の余白 | ピクセル値 |
+| `pad_column` | 列間の余白 | ピクセル値 |
+
+#### Flexboxの配置例
+
+```
+┌─────────────────────────────────────┐
+│ LV_FLEX_FLOW_ROW                    │
+│ ┌───┐ ┌───┐ ┌───┐                  │
+│ │ A │ │ B │ │ C │  ← 横並び        │
+│ └───┘ └───┘ └───┘                  │
+└─────────────────────────────────────┘
+
+┌─────────────────────────────────────┐
+│ LV_FLEX_FLOW_COLUMN                 │
+│ ┌───┐                               │
+│ │ A │  ← 縦並び                     │
+│ └───┘                               │
+│ ┌───┐                               │
+│ │ B │                               │
+│ └───┘                               │
+│ ┌───┐                               │
+│ │ C │                               │
+│ └───┘                               │
+└─────────────────────────────────────┘
+```
+
+#### LVGLで使用可能なレイアウト方式
+
+LVGLでは以下の3種類のレイアウト方式が利用可能です:
+
+| レイアウト | 定数 | 説明 | 適用例 |
+|-----------|------|------|--------|
+| **None (手動配置)** | `LV_LAYOUT_NONE` | 座標を直接指定 | 固定位置のUI、ゲーム画面 |
+| **Flexbox** | `LV_LAYOUT_FLEX` | 1次元配置（行/列） | リスト、メニュー、ツールバー |
+| **Grid** | `LV_LAYOUT_GRID` | 2次元配置（行列） | ダッシュボード、カレンダー |
+
+#### Gridレイアウトの概要
+
+Gridは2次元のレイアウトシステムで、行と列を定義してセルに子要素を配置します。
+
+```c
+// Gridレイアウト設定例
+static int32_t col_dsc[] = {100, 100, LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+static int32_t row_dsc[] = {50, 50, 50, LV_GRID_TEMPLATE_LAST};
+
+lv_obj_set_layout(parent, LV_LAYOUT_GRID);
+lv_obj_set_grid_dsc_array(parent, col_dsc, row_dsc);
+
+// 子要素をセルに配置
+lv_obj_set_grid_cell(child, LV_GRID_ALIGN_CENTER, 0, 1,  // 列0, 幅1
+                            LV_GRID_ALIGN_CENTER, 0, 1); // 行0, 高さ1
+```
+
+```
+┌─────────────────────────────────────┐
+│ Grid Layout (3列 × 3行)             │
+│ ┌─────┬─────┬───────────┐          │
+│ │(0,0)│(1,0)│   (2,0)   │          │
+│ ├─────┼─────┼───────────┤          │
+│ │(0,1)│(1,1)│   (2,1)   │          │
+│ ├─────┼─────┼───────────┤          │
+│ │(0,2)│(1,2)│   (2,2)   │          │
+│ └─────┴─────┴───────────┘          │
+└─────────────────────────────────────┘
+```
+
+#### レイアウト方式の選択指針
+
+| 用途 | 推奨レイアウト |
+|------|---------------|
+| 単純な縦/横並び | Flexbox |
+| リスト表示 | Flexbox (COLUMN) |
+| ツールバー/メニューバー | Flexbox (ROW) |
+| ダッシュボード（タイル配置） | Grid |
+| カレンダー/表形式 | Grid |
+| 絶対位置が必要な場合 | None (手動配置) |
+| ゲームUI | None (手動配置) |
+
+---
+
+### Q3. チェックボックスのサイズ変更について
+
+**質問**: チェックボックスが小さすぎてチェックしづらかったです。3倍ほどの大きさに変更することは可能ですか？他のGUI部品も大きさは変更可能ですか？
+
+**回答**:
+
+#### チェックボックスのサイズ変更 - 可能です
+
+LVGLのチェックボックスは、スタイルを適用することでサイズを変更できます。
+
+#### チェックボックスの構造
+
+```
+┌─────────────────────────────────────┐
+│ lv_checkbox                         │
+│ ┌──────────┐                        │
+│ │ INDICATOR│  ← チェックマーク部分  │
+│ │  (□/☑)  │                        │
+│ └──────────┘                        │
+│  Notifications  ← MAIN部分（テキスト）│
+└─────────────────────────────────────┘
+```
+
+#### サイズを3倍にする実装例
+
+```c
+// スタイル定義
+static lv_style_t style_checkbox_large;
+
+void init_checkbox_style(void)
+{
+    lv_style_init(&style_checkbox_large);
+
+    // インジケーター（チェックボックス部分）のサイズを3倍に
+    // デフォルトは約18px → 54pxに変更
+    lv_style_set_width(&style_checkbox_large, 54);
+    lv_style_set_height(&style_checkbox_large, 54);
+
+    // 角丸も調整
+    lv_style_set_radius(&style_checkbox_large, 8);
+
+    // ボーダー幅も調整
+    lv_style_set_border_width(&style_checkbox_large, 3);
+}
+
+// チェックボックスにスタイル適用
+lv_obj_t * checkbox = lv_checkbox_create(parent);
+lv_checkbox_set_text(checkbox, "Notifications");
+
+// INDICATOR部分にスタイルを適用
+lv_obj_add_style(checkbox, &style_checkbox_large, LV_PART_INDICATOR);
+```
+
+#### 既存コードの修正箇所
+
+`ui/components/checkbox/checkbox_gen.c`を以下のように修正:
+
+```c
+lv_obj_t * checkbox_create(lv_obj_t * parent, const char * text, lv_subject_t * subject)
+{
+    static lv_style_t style_box;
+    static lv_style_t style_indicator_large;  // 追加
+
+    static bool style_inited = false;
+
+    if (!style_inited) {
+        lv_style_init(&style_box);
+        lv_style_set_transform_height(&style_box, 0);
+        lv_style_set_transform_width(&style_box, 0);
+
+        // 大きいインジケータースタイルを追加
+        lv_style_init(&style_indicator_large);
+        lv_style_set_width(&style_indicator_large, 54);   // 3倍サイズ
+        lv_style_set_height(&style_indicator_large, 54);  // 3倍サイズ
+        lv_style_set_radius(&style_indicator_large, 8);
+        lv_style_set_border_width(&style_indicator_large, 3);
+
+        style_inited = true;
+    }
+
+    lv_obj_t * lv_checkbox_1 = lv_checkbox_create(parent);
+    lv_obj_add_style(lv_checkbox_1, &style_box, LV_PART_INDICATOR | LV_STATE_PRESSED);
+    lv_obj_add_style(lv_checkbox_1, &style_indicator_large, LV_PART_INDICATOR);  // 追加
+
+    lv_obj_bind_checked(lv_checkbox_1, subject);
+    lv_checkbox_set_text(lv_checkbox_1, text);
+
+    return lv_checkbox_1;
+}
+```
+
+#### 他のGUI部品のサイズ変更 - すべて可能です
+
+LVGLの全てのウィジェットはスタイルでサイズ変更が可能です。
+
+| ウィジェット | サイズ変更方法 | 対象パーツ |
+|-------------|---------------|-----------|
+| **Checkbox** | スタイルで `width`, `height` 設定 | `LV_PART_INDICATOR` |
+| **Switch** | スタイルで `width`, `height` 設定 | `LV_PART_MAIN`, `LV_PART_INDICATOR` |
+| **Slider** | `lv_obj_set_size()` または スタイル | `LV_PART_MAIN`, `LV_PART_INDICATOR`, `LV_PART_KNOB` |
+| **Button** | `lv_obj_set_size()` | `LV_PART_MAIN` |
+| **Roller** | `lv_obj_set_size()` | `LV_PART_MAIN`, `LV_PART_SELECTED` |
+
+#### Switch（スイッチ）のサイズ変更例
+
+```c
+// スイッチを作成
+lv_obj_t * sw = lv_switch_create(parent);
+
+// 直接サイズ設定（幅100px, 高さ50px）
+lv_obj_set_size(sw, 100, 50);
+
+// または、スタイルで設定
+static lv_style_t style_switch;
+lv_style_init(&style_switch);
+lv_style_set_width(&style_switch, 100);
+lv_style_set_height(&style_switch, 50);
+lv_obj_add_style(sw, &style_switch, LV_PART_MAIN);
+```
+
+#### Slider（スライダー）のサイズ変更例
+
+```c
+lv_obj_t * slider = lv_slider_create(parent);
+
+// スライダー全体のサイズ
+lv_obj_set_size(slider, 300, 30);
+
+// つまみ（ノブ）のサイズ変更
+static lv_style_t style_knob;
+lv_style_init(&style_knob);
+lv_style_set_width(&style_knob, 40);
+lv_style_set_height(&style_knob, 40);
+lv_style_set_radius(&style_knob, 20);  // 円形にする
+lv_obj_add_style(slider, &style_knob, LV_PART_KNOB);
+```
+
+#### タッチしやすいUIのための推奨サイズ
+
+| 部品 | 推奨最小サイズ | 理由 |
+|------|--------------|------|
+| ボタン | 48×48 px | タッチターゲット推奨サイズ |
+| チェックボックス | 44×44 px | 指で操作しやすいサイズ |
+| スイッチ | 60×30 px | ON/OFF状態が見やすい |
+| スライダーのノブ | 40×40 px | つまみやすいサイズ |
+
+---
+
 *このドキュメントはClaude Codeにより自動生成されました*
