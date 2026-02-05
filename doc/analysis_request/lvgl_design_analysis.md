@@ -3,6 +3,9 @@
 - 解説の結果はマークダウンのファイルを作成し、doc/analysis_report/lvgl_design_analysis.md で保存してください。
 
 ## 要求事項詳細
-- LVGLの画面デザイン方法、画面デザインをコードで使用する方法について解説してください。
-  - reference_projects/lv_port_renesas_ek_ra8p1ディレクトリのLVGLアプリケーションで実装されている画面・UI部品を例に解説してください。
-- EK-RA8P1付属のカメラモジュール(OV5640カメラモジュール)で撮影した画像をLCDに表示したいと考えています。LVGLでの実現方法を解説してください。また、Cortex-M85コア(e2studio_CPU0)への移植方針も提案してください。
+1. LVGLの画面デザイン方法、画面デザインをコードで使用する方法について解説してください。
+  1.1. reference_projects/lv_port_renesas_ek_ra8p1ディレクトリのLVGLアプリケーションで実装されている画面・UI部品を例に解説してください。
+2. EK-RA8P1付属のカメラモジュール(OV5640カメラモジュール)で撮影した画像をLCDに表示したいと考えています。LVGLでの実現方法を解説してください。また、Cortex-M85コア(e2studio_CPU0)への移植方針も提案してください。
+3. reference_projects/lv_port_renesas_ek_ra8p1ディレクトリのLVGLアプリケーションをベースに別の画面仕様のアプリケーションをつくりたいとします。reference_projects/lv_port_renesas_ek_ra8p1ディレクトリで再利用できるGUI部品のコード、画面仕様が変わるので作り直しが発生するコードを教えてください。
+再利用できるコード、プロダクト毎につくる変動部分を理解したいです。
+使用するハードウェアは変わらずEK-RA8P1とします。
