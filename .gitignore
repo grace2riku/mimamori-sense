@@ -10,6 +10,11 @@ e2studio_CPU1/Debug/
 
 # JLinkログファイル
 e2studio_CPU0/JLinkLog.log
+e2studio_CPU1/JLinkLog.log
+
+# e2studioデバッグ設定ファイル
+e2studio_CPU1/mimamori_sense_CPU1 Debug_Attach.jlink
+e2studio_CPU1/mimamori_sense_CPU1 Debug_Attach.launch
 
 # Claude Code local settings
 .claude/settings.local.json
