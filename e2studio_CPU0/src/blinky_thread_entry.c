@@ -6,12 +6,19 @@
 
 #include "blinky_thread.h"
 
+#include "jlink_console.h"
+
 extern bsp_leds_t g_bsp_leds;
 
 /* Blinky Thread entry function */
 void blinky_thread_entry (void * pvParameters)
 {
     FSP_PARAMETER_NOT_USED(pvParameters);
+
+    /* Initialise user level serial console support using SEGGER serial driver DEBUG1 */
+    jlink_console_init ();
+
+    print_to_console("Hello UART!\r\n");
 
     /* LED type structure */
     bsp_leds_t leds = g_bsp_leds;

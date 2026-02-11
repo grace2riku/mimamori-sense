@@ -288,7 +288,15 @@
             <slot name="PD00.CPU0" secure="true"/>
             <slot name="PD02.CPU0" secure="true"/>
             <slot name="PD03.CPU0" secure="true"/>
+            <slot name="PD04.CPU0" secure="true"/>
+            <slot name="PD05.CPU0" secure="true"/>
             <slot name="PD07.CPU0" secure="true"/>
+        </peripheral>
+        <peripheral name="ICU.CPU0">
+            <slot name="IRQ0.CPU0" secure="true"/>
+            <slot name="IRQ1.CPU0" secure="true"/>
+            <slot name="IRQ2.CPU0" secure="true"/>
+            <slot name="IRQ3.CPU0" secure="true"/>
         </peripheral>
     </partition>
 </azone>
