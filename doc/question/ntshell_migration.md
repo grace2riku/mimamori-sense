@@ -369,3 +369,181 @@ e2studio_CPU0/
 | Ctrl+N / ↓ | 履歴: 次のコマンド |
 | Tab | 履歴からの補完候補表示 |
 | Backspace | 1文字削除 |
+
+---
+
+## 質問2
+
+手順4のシリアル読み書き関数の実装で、`ntshell_serial_read` 関数内で `input_from_console()` を使って1文字受信しています。
+
+コメントにあるように1文字受信するまでブロッキングすると思います。
+ブロッキングしているということは既存のLED点滅処理も点滅が止まるという理解であっていますか?
+
+ブロッキングしない構造の移植手順を提案してください。
+
+## 回答2
+
+### 結論: LED点滅は止まりません
+
+`input_from_console()` は「ブロッキング」と呼んでいますが、FreeRTOSの `vTaskDelay()` を使用してポーリングしているため、**他のタスク（blinky_thread）は正常に動作し続けます**。
+
+### input_from_console() の実装を確認
+
+**jlink_console.c** (253-264行目):
+
+```c
+int8_t input_from_console (void)
+{
+    start_key_check();
+
+    while (key_pressed() == false)
+    {
+        vTaskDelay(1);    // ← ここでCPUを他タスクに明け渡す
+    }
+
+    return ((int8_t)get_detected_key());
+}
+```
+
+### なぜLED点滅が止まらないのか
+
+FreeRTOSのスケジューラーは以下のように動作します:
+
+```
+shell_thread (優先度2)          blinky_thread (優先度1)
+        |                               |
+        | input_from_console()          |
+        |   start_key_check()           |
+        |   while (!key_pressed())      |
+        |     vTaskDelay(1) ─────────→  | ← CPU使用権を取得
+        |                               | vTaskDelay(500)でLED点滅
+        |   ← vTaskDelay完了 ──────────  |
+        |   while (!key_pressed())      |
+        |     vTaskDelay(1) ─────────→  | ← 再びCPU使用権を取得
+        |                               |
+```
+
+`vTaskDelay()` を呼ぶと、そのタスクは「Blocked状態」になり、他のタスクにCPU使用権を明け渡します。
+これにより、shell_threadが入力待ちの間も、blinky_threadは正常にLED点滅を継続できます。
+
+### ブロッキングの種類
+
+| 種類 | 他タスクへの影響 | 例 |
+|------|----------------|-----|
+| **真のブロッキング** (busy wait) | CPUを占有し続ける、他タスクが動けない | `while(1);` |
+| **FreeRTOSブロッキング** | CPUを明け渡す、他タスクは動作可能 | `vTaskDelay()`, `xSemaphoreTake()` |
+
+現在の実装は「FreeRTOSブロッキング」なので、マルチタスク環境では問題ありません。
+
+---
+
+## 質問2への追加提案: ノンブロッキング構造
+
+ただし、よりエレガントな実装として、ノンブロッキング構造を提案します。
+この構造では、入力がない場合に即座に0を返し、NT-Shell側で再試行させます。
+
+### ノンブロッキング版 ntshell_serial_read の実装
+
+**src/ntshell_port.c** (ノンブロッキング版):
+
+```c
+#include <string.h>
+#include "ntshell.h"
+#include "jlink_console.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+/**
+ * NT-Shell用シリアル読み込み関数（ノンブロッキング版）
+ * @param buf 読み込みバッファ
+ * @param cnt 読み込みバイト数
+ * @param extobj 拡張オブジェクト（未使用）
+ * @return 実際に読み込んだバイト数（0: データなし）
+ */
+int ntshell_serial_read(char *buf, int cnt, void *extobj)
+{
+    (void)extobj;
+    (void)cnt;
+    uint8_t temp_buf[16];
+    uint32_t received;
+
+    /* 受信データがあるかチェック（ノンブロッキング） */
+    received = get_new_chars(temp_buf);
+
+    if (received > 0)
+    {
+        /* 受信データをバッファにコピー */
+        buf[0] = (char)temp_buf[0];
+        return 1;
+    }
+
+    /* データがない場合は少し待機してから0を返す */
+    vTaskDelay(1);
+    return 0;
+}
+```
+
+### ノンブロッキング版の動作原理
+
+```
+NT-Shell                         ntshell_serial_read
+    |                                    |
+    | ntshell_execute()                  |
+    |   vtrecv_execute()                 |
+    |     serial_read() ───────────────→ |
+    |                                    | get_new_chars()
+    |                                    | if (received > 0)
+    |     ← return 1 (データあり) ─────── |   return 1
+    |     または                          |
+    |     ← return 0 (データなし) ─────── |   vTaskDelay(1)
+    |                                    |   return 0
+    |   (return 0の場合、再試行)          |
+```
+
+### jlink_console.c の get_new_chars() 関数
+
+この関数は既に実装されており、割り込みで受信したデータを取得できます:
+
+```c
+uint32_t get_new_chars(uint8_t* pBuf)
+{
+    /* 単一文字受信をチェック */
+    if (g_receive_done)
+    {
+        pBuf[0] = s_rx_buf;
+        g_receive_done = 0;
+        return 1;
+    }
+    /* アウトオブバンド受信をチェック */
+    else if (s_g_out_of_band_index > 0)
+    {
+        // バッファからコピー
+        ...
+        return count;
+    }
+    return 0;
+}
+```
+
+### ノンブロッキング版の利点
+
+| 項目 | ブロッキング版 | ノンブロッキング版 |
+|------|--------------|------------------|
+| 実装の単純さ | シンプル | やや複雑 |
+| CPU効率 | 良好（vTaskDelayで明け渡し） | 良好 |
+| 応答性 | 1文字ずつ待機 | 即座に返答 |
+| 他タスクへの影響 | なし | なし |
+| 将来の拡張性 | 限定的 | 高い（タイムアウト等が実装しやすい） |
+
+### ノンブロッキング版の注意点
+
+1. **NT-Shellの内部ループ** — `ntshell_execute()` は内部で無限ループを持ち、`serial_read` が0を返しても再試行します
+
+2. **vTaskDelay(1) の必要性** — データがない場合でも `vTaskDelay(1)` を入れることで、CPUを他タスクに明け渡します。これを省略するとCPUを占有し続けます
+
+3. **受信開始の呼び出し** — ノンブロッキング版では、別途 `start_key_check()` を定期的に呼ぶか、常時受信モードにする必要がある場合があります
+
+### 推奨
+
+現在の実装（ブロッキング版）でもLED点滅は正常に動作するため、まずはそのまま試してみてください。
+問題が発生した場合や、より高度な制御が必要な場合にノンブロッキング版への移行を検討してください
