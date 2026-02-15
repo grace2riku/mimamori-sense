@@ -1,0 +1,3 @@
+[submodule "e2studio_CPU0/src/ntshell"]
+	path = e2studio_CPU0/src/ntshell
+	url = https://github.com/chiabrian/ntshell.git
