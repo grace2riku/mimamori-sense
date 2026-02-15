@@ -411,6 +411,15 @@
       <property id="rtos.awsfreertos.thread.allocation" value="rtos.awsfreertos.thread.allocation.static"/>
       <property id="rtos.awsfreertos.thread.secure_context" value="rtos.awsfreertos.thread.secure_context.enable"/>
     </context>
+    <context id="rtos.awsfreertos.thread.1044227000">
+      <property id="_symbol" value="ntshell_thread"/>
+      <property id="rtos.awsfreertos.thread.name" value="NT-Shell Thread"/>
+      <property id="rtos.awsfreertos.thread.stack" value="2048"/>
+      <property id="rtos.awsfreertos.thread.priority" value="2"/>
+      <property id="rtos.awsfreertos.thread.context" value="NULL"/>
+      <property id="rtos.awsfreertos.thread.allocation" value="rtos.awsfreertos.thread.allocation.static"/>
+      <property id="rtos.awsfreertos.thread.secure_context" value="rtos.awsfreertos.thread.secure_context.disable"/>
+    </context>
     <config id="config.driver.sci_b_uart">
       <property id="config.driver.sci_b_uart.param_checking_enable" value="config.driver.sci_b_uart.param_checking_enable.bsp"/>
       <property id="config.driver.sci_b_uart.fifo_support" value="config.driver.sci_b_uart.fifo_support.disabled"/>

@@ -2,8 +2,15 @@
 #include "bsp_api.h"
 #include "r_ioport.h"
 
-const ioport_cfg_t g_bsp_pin_cfg =
-		{ .number_of_pins = 0, .p_pin_cfg_data = NULL };
+const ioport_pin_cfg_t g_bsp_pin_cfg_data[] = {
+
+{ .pin = BSP_IO_PORT_05_PIN_02, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_MID
+		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
+		| (uint32_t) IOPORT_PERIPHERAL_PDM) }, };
+
+const ioport_cfg_t g_bsp_pin_cfg = { .number_of_pins =
+		sizeof(g_bsp_pin_cfg_data) / sizeof(ioport_pin_cfg_t), .p_pin_cfg_data =
+		&g_bsp_pin_cfg_data[0], };
 
 #if BSP_TZ_SECURE_BUILD
 

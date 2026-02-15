@@ -423,6 +423,8 @@
       <configSetting altId="p807.gpio_mode.gpio_mode_peripheral" configurationId="p807.gpio_mode"/>
       <configSetting altId="p808.gpio_speed.gpio_speed_h" configurationId="p808.gpio_drivecapacity"/>
       <configSetting altId="p808.gpio_mode.gpio_mode_peripheral" configurationId="p808.gpio_mode"/>
+      <configSetting altId="p812.gpio_speed.gpio_speed_m" configurationId="p812.gpio_drivecapacity"/>
+      <configSetting altId="p812.gpio_mode.gpio_mode_peripheral" configurationId="p812.gpio_mode"/>
       <configSetting altId="p813.gpio_speed.gpio_speed_h" configurationId="p813.gpio_drivecapacity"/>
       <configSetting altId="p813.gpio_mode.gpio_mode_peripheral" configurationId="p813.gpio_mode"/>
       <configSetting altId="p814.gpio_speed.gpio_speed_h" configurationId="p814.gpio_drivecapacity"/>
@@ -548,6 +550,7 @@
       <configSetting altId="pd05.gpio_mode.gpio_mode_peripheral" configurationId="pd05.gpio_mode"/>
       <configSetting altId="pd07.gpio_speed.gpio_speed_m" configurationId="pd07.gpio_drivecapacity"/>
       <configSetting altId="pd07.gpio_mode.gpio_mode_peripheral" configurationId="pd07.gpio_mode"/>
+      <configSetting altId="pdm2.pdmclk2.p812" configurationId="pdm2.pdmclk2" peripheral="PDM2"/>
       <configSetting altId="sci8.cts8.pd05" configurationId="sci8.cts8" isUsedByDriver="true" peripheral="SCI8"/>
       <configSetting altId="sci8.cts_rts8.pd04" configurationId="sci8.cts_rts8" isUsedByDriver="true" peripheral="SCI8"/>
       <configSetting altId="sci8.rxd8.pd03" configurationId="sci8.rxd8" isUsedByDriver="true" peripheral="SCI8"/>
