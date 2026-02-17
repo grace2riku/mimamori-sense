@@ -149,8 +149,8 @@ fsp_err_t print_to_console(char_t * p_data)
 
     jlink_console_write(p_data);
 
-    /* Intentional throttling here to stop serial console from filling g_jlink_console_queue */
-    vTaskDelay(50);
+    /* Brief yield after write (jlink_console_write already waits for TX complete) */
+    vTaskDelay(1);
 
     return (err);
 }
@@ -248,17 +248,55 @@ void input_from_any_console (int8_t *c)
 /**********************************************************************************************************************
  * Function Name: input_from_console
  * Description  : blocking read function, request low level driver to read 1 byte of data.
+ *                Checks out-of-band buffer first to capture escape sequence bytes (VT100 arrow keys etc.)
+ *                that arrived via UART_EVENT_RX_CHAR while no UART Read was pending.
  * Return Value : single byte of data.
  *********************************************************************************************************************/
 int8_t input_from_console (void)
 {
+    uint8_t ch;
+
+    /* Check out-of-band buffer first (populated by ISR via UART_EVENT_RX_CHAR) */
+    taskENTER_CRITICAL();
+    if (s_g_out_of_band_index > 0)
+    {
+        ch = s_out_of_band_received[0];
+        s_g_out_of_band_index--;
+        if (s_g_out_of_band_index > 0)
+        {
+            memmove(s_out_of_band_received, &s_out_of_band_received[1], s_g_out_of_band_index);
+        }
+        taskEXIT_CRITICAL();
+        return ((int8_t)ch);
+    }
+    taskEXIT_CRITICAL();
+
+    /* No out-of-band data; start a 1-byte UART Read and wait */
     start_key_check();
 
     while (key_pressed() == false)
     {
+        /* While waiting, check if ISR placed data in out-of-band buffer */
+        taskENTER_CRITICAL();
+        if (s_g_out_of_band_index > 0)
+        {
+            ch = s_out_of_band_received[0];
+            s_g_out_of_band_index--;
+            if (s_g_out_of_band_index > 0)
+            {
+                memmove(s_out_of_band_received, &s_out_of_band_received[1], s_g_out_of_band_index);
+            }
+            taskEXIT_CRITICAL();
+
+            /* Cancel the pending UART Read that has not completed yet */
+            R_SCI_B_UART_ReadStop(&g_jlink_console_ctrl, NULL);
+            return ((int8_t)ch);
+        }
+        taskEXIT_CRITICAL();
+
         vTaskDelay(1);
     }
-    
+
     /* Cast to int8_t - will only be positive as a charcter */
     return ((int8_t)get_detected_key());
 }
@@ -349,13 +387,12 @@ uint32_t get_new_chars(uint8_t* pBuf)
         g_receive_done = 0;
         return 1;
     }
-    else if (0 == s_g_out_of_band_index)
+
+    taskENTER_CRITICAL();
+    if (0 == s_g_out_of_band_index)
     {
+        taskEXIT_CRITICAL();
         return 0;
-    }
-    else
-    {
-        /* Continue. */
     }
 
     for (x = 0; x < s_g_out_of_band_index; x++)
@@ -363,10 +400,11 @@ uint32_t get_new_chars(uint8_t* pBuf)
         pBuf[x] = s_out_of_band_received[x];
     }
 
-    memset(s_out_of_band_received, 0, s_g_out_of_band_index + 1);
-    
+    memset(s_out_of_band_received, 0, s_g_out_of_band_index);
+
     ret = s_g_out_of_band_index;
     s_g_out_of_band_index = 0U;
+    taskEXIT_CRITICAL();
 
     return ret;
 }
