@@ -1,27 +1,22 @@
 ---
-description: GitHub IssueをGit Worktreeで実装しPRを作成
+description: GitHub Issueをブランチで実装しPRを作成
 argument-hint: <Issue番号>
 ---
 
-Issue #$ARGUMENTS を Git Worktree を使って実装してください。
+Issue #$ARGUMENTS を実装してください。
 
 ## 実装手順
 
-### 1. 前処理 (Worktree 作成前)
+### 1. 前処理 (ブランチ作成前)
 - 未コミットの変更がないか `git status` で確認してください
   - 未コミットの変更がある場合は `git stash` で退避してください
-- 現在のブランチがmain以外の場合は、mainブランチにチェックアウトしてください
 - `git checkout main && git pull origin main` で最新のmainブランチを取得してください
   - 失敗した場合はエラー内容をユーザーに報告し、処理を中断してください
 - 既存のブランチ `feature/issue-$ARGUMENTS` があるか確認してください
   - 存在する場合は、そのブランチにマージされていないコミットがないか確認し、ユーザーに削除の確認を取ってから削除してください
-- 既存のWorktreeディレクトリ `issue-$ARGUMENTS` が残っていないか確認してください
-  - 残っている場合は `git worktree remove issue-$ARGUMENTS` で削除してください
 
-### 2. Worktree 作成・移動
-- `git worktree add issue-$ARGUMENTS -b feature/issue-$ARGUMENTS` コマンドでWorktreeを作成してください
-- Worktreeは `issue-$ARGUMENTS` という命名規則に従ったサブフォルダを作成します
-- 作成したサブディレクトリ `issue-$ARGUMENTS` に移動してください
+### 2. ブランチ作成
+- `git checkout -b feature/issue-$ARGUMENTS` で作業ブランチを作成・チェックアウトしてください
 
 ### 3. 実装
 - `gh issue view $ARGUMENTS` でIssue内容を確認してください
@@ -57,8 +52,6 @@ Issue #$ARGUMENTS を Git Worktree を使って実装してください。
   - リファクタリング: `refactor: #$ARGUMENTS [要約]`
 - PRのbodyに `Closes #$ARGUMENTS` を含めてください（マージ時にIssueが自動クローズされます）
 
-### 6. 後処理 (クリーンアップ)
-- プルリクエスト作成後、プロジェクトルートディレクトリに戻ってください
-- `git worktree remove issue-$ARGUMENTS` でWorktreeを削除してください
+### 6. 後処理
 - ステップ1で `git stash` を実行した場合は `git stash pop` で退避した変更を復元してください
 - 作業が完了したことを報告してください
