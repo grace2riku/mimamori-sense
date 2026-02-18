@@ -17,6 +17,8 @@ configuration.xmlの編集はユーザーがe2 studio GUIで手動実施する�
 3. `e2studio_CPU0/configuration.xml` を読み取り、既に設定済みのモジュールを確認する
 4. 追加が必要なモジュールと変更が必要な設定を特定する
 5. 以下のフォーマットでユーザー向けの操作手順書を生成する
+6. 生成した操作手順書を `doc/fsp-setup-guide/` ディレクトリに保存する
+   - ファイル名: `issue-{番号}-{概要}.md`（例: `issue-2-glcdc-dave2d-lvgl.md`）
 
 ## 操作手順書のフォーマット
 
