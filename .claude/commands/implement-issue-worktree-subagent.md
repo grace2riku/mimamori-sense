@@ -26,7 +26,14 @@ Issue #$ARGUMENTS を Git Worktree を使って実装してください。
 ### 3. 実装
 - `gh issue view $ARGUMENTS` でIssue内容を確認してください
   - 失敗した場合（Issue番号の誤り等）はユーザーに報告し、処理を中断してください
-- Issue内容に基づき、最適なサブエージェントを選択して実装してください
+- Issue内容に基づき、以下から最適なサブエージェントを選択して実装してください:
+  - **FSP設定が必要なIssue** → `.claude/agents/fsp-config-guide.md` を使用
+    - 対象: Issueタイトルに「FSPプロジェクト設定」を含むもの
+    - configuration.xmlの変更手順書を生成し、ユーザーに手動操作を依頼する
+  - **リファレンスからのコード移植** → `.claude/agents/port-reference.md` を使用
+    - 対象: ドライバ実装、スレッド実装、フレームバッファ管理、シェルコマンド追加
+  - **LVGL設定・UI実装** → `.claude/agents/lvgl-ui.md` を使用
+    - 対象: LVGL設定ファイル、画面レイアウト、ウィジェット、描画機能
 - テスト可能な変更の場合は、実装完了後にテストを実行してください
 - **以下のファイルは絶対に編集しないでください:**
   - `configuration.xml`（FSP設定ファイル）
