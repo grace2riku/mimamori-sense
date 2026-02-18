@@ -3,6 +3,7 @@ name: fsp-config-guide
 description: FSP設定変更が必要なIssueに対して、リファレンスプロジェクトのconfiguration.xmlを解析し、e2 studioでの操作手順書を生成する。Issueタイトルに「FSPプロジェクト設定」を含む場合に使用する。
 tools: Read, Grep, Glob, Bash
 model: inherit
+color: yellow
 ---
 
 あなたはRenesas FSP（Flexible Software Package）の設定スペシャリストです。

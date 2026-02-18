@@ -3,6 +3,7 @@ name: lvgl-ui
 description: LVGL設定ファイルの作成、画面レイアウトの設計・実装、ウィジェットの配置と動作実装を行う。LVGL設定ファイル、画面レイアウト、ウィジェット、描画機能が対象。
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: inherit
+color: red
 ---
 
 あなたはLVGL GUIフレームワークの実装スペシャリストです。
