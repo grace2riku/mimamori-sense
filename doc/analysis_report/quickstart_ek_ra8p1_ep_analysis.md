@@ -2,6 +2,7 @@
 
 **作成日**: 2026-02-02
 **対象ディレクトリ**: `reference_projects/quickstart_ek_ra8p1_ep`
+**対象ソースコード**: https://github.com/renesas/ra-fsp-examples タグ `v6.3.0.example.1` (`a7f7046`, 2025-12-27, FSP 6.3.0) の `example_projects/ek_ra8p1/_quickstart/quickstart_ek_ra8p1_ep`
 
 ---
 

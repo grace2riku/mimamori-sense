@@ -2,6 +2,7 @@
 
 **作成日**: 2026-02-05
 **対象プロジェクト**: `reference_projects/lv_port_renesas_ek_ra8p1`
+**対象ソースコード**: https://github.com/lvgl/lv_port_renesas_ek_ra8p1 コミット `522075e` (2025-12-01, FSP 6.2.0)
 **ディスプレイ解像度**: 1024 x 600 ピクセル (RGB565)
 
 ---

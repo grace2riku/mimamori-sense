@@ -1,5 +1,9 @@
 # LVGL画面デザイン方法とコード実装解説
 
+**対象ソースコード**:
+- `reference_projects/lv_port_renesas_ek_ra8p1`: https://github.com/lvgl/lv_port_renesas_ek_ra8p1 コミット `522075e` (2025-12-01, FSP 6.2.0)
+- `reference_projects/quickstart_ek_ra8p1_ep`: https://github.com/renesas/ra-fsp-examples タグ `v6.3.0.example.1` (`a7f7046`, 2025-12-27, FSP 6.3.0)
+
 ## 1. はじめに
 
 本レポートでは、LVGLの画面デザイン方法と、そのデザインをコードで使用する方法について解説します。解説にはEK-RA8P1向けリファレンス実装（`reference_projects/lv_port_renesas_ek_ra8p1`）を例として使用します。
