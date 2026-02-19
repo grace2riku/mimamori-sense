@@ -126,7 +126,7 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 11) /* SDHI1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 12) /* SDHI0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 13) /* DOC */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 15) /* GLCDC/MIPI-DSI/DRW */ | \
+            (((1 > 0) ? 0U : 1U) << 15) /* GLCDC/MIPI-DSI/DRW */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 15) /* MIPI_CSI */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 16) /* CEU */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 24) /* PDM */ | \
@@ -450,7 +450,7 @@
 #endif
 
 #ifndef BSP_CFG_SDRAM_ENABLED
-#define BSP_CFG_SDRAM_ENABLED  (0)
+#define BSP_CFG_SDRAM_ENABLED  (1)
 #endif
 
 #ifndef BSP_CFG_SDRAM_TRAS

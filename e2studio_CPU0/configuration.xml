@@ -39,7 +39,7 @@
     </config>
     <config id="config.bsp.ra8p1.fsp">
       <property id="config.bsp.fsp.inline_irq_functions" value="config.bsp.common.inline_irq_functions.enabled"/>
-      <property id="config.bsp.fsp.sdram.enabled" value="config.bsp.fsp.sdram.enabled.disabled"/>
+      <property id="config.bsp.fsp.sdram.enabled" value="config.bsp.fsp.sdram.enabled.enabled"/>
       <property id="config.bsp.fsp.sdram.tras" value="config.bsp.fsp.sdram.tras.6"/>
       <property id="config.bsp.fsp.sdram.trcd" value="config.bsp.fsp.sdram.trcd.3"/>
       <property id="config.bsp.fsp.sdram.trp" value="config.bsp.fsp.sdram.trp.3"/>
@@ -357,6 +357,30 @@
       <description>SCI UART</description>
       <originalPack>Renesas.RA.6.3.0.pack</originalPack>
     </component>
+    <component apiversion="" class="TES" condition="" group="all" subgroup="dave2d" variant="" vendor="Renesas" version="3.8.0+fsp.6.3.0">
+      <description>TES DAVE 2D Drawing Engine</description>
+      <originalPack>TES.Dave2D.3.8.0+fsp.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="GUI" condition="" group="all" subgroup="lvgl" variant="" vendor="LVGL" version="9.3.0+renesas.0.fsp.6.3.0">
+      <description>LVGL</description>
+      <originalPack>LVGL.lvgl.9.3.0+renesas.0.fsp.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="HAL Drivers" condition="" group="all" subgroup="r_drw" variant="" vendor="Renesas" version="6.3.0">
+      <description>TES D/AVE 2D Port</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="HAL Drivers" condition="" group="all" subgroup="r_glcdc" variant="" vendor="Renesas" version="6.3.0">
+      <description>Graphics LCD Controller</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="Middleware" condition="" group="all" subgroup="rm_lvgl_port" variant="" vendor="Renesas" version="6.3.0">
+      <description>LVGL Port</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="Heaps" condition="" group="FreeRTOS" subgroup="heap_4" variant="" vendor="AWS" version="11.1.0+fsp.6.3.0">
+      <description>FreeRTOS - Memory Management - Heap 4</description>
+      <originalPack>Amazon.FreeRTOS-Kernel.11.1.0+fsp.6.3.0.pack</originalPack>
+    </component>
   </raComponentSelection>
   <raElcConfiguration/>
   <raIcuConfiguration/>
@@ -397,6 +421,191 @@
       <property id="module.driver.uart.tei_ipl" value="board.icu.common.irq.priority12"/>
       <property id="module.driver.uart.eri_ipl" value="board.icu.common.irq.priority12"/>
     </module>
+    <module id="module.freertos.heap.4.1403476206"/>
+    <module id="module.lvgl.lvgl.1548989411"/>
+    <module id="module.middleware.rm_lvgl_port.2057062832">
+      <property id="module.middleware.rm_lvgl_port.name" value="g_rm_lvgl_port0"/>
+      <property id="module.middleware.rm_lvgl_port.display_cfg_inheritance" value="module.middleware.rm_lvgl_port.display_cfg_inheritance.layer1"/>
+      <property id="module.middleware.rm_lvgl_port.p_callback" value="lvgl_glcdc_callback"/>
+    </module>
+    <module id="module.driver.display_on_glcdc.1715436916">
+      <property id="module.driver.display.name" value="g_display0"/>
+      <property id="module.driver.display.callback" value="NULL"/>
+      <property id="module.driver.display.line_detect_ipl" value="board.icu.common.irq.priority12"/>
+      <property id="module.driver.display.underflow_1_ipl" value="board.icu.common.irq.priority12"/>
+      <property id="module.driver.display.underflow_2_ipl" value="_disabled"/>
+      <property id="module.driver.display.input0.enable" value="module.driver.display.input0.enable.true"/>
+      <property id="module.driver.display.input0.hsize" value="1024"/>
+      <property id="module.driver.display.input0.vsize" value="600"/>
+      <property id="module.driver.display.layer0.coordinate.x" value="0"/>
+      <property id="module.driver.display.layer0.coordinate.y" value="0"/>
+      <property id="module.driver.display.input0.buffer_name" value="fb_background"/>
+      <property id="module.driver.display.input0.buffer_number" value="2"/>
+      <property id="module.driver.display.input0.section" value=".sdram_noinit_nocache"/>
+      <property id="module.driver.display.input0.format" value="module.driver.display.input0.format.in_format_16bits_rgb565"/>
+      <property id="module.driver.display.input0.line_descending_enable" value="module.driver.display.input0.line_descending_enable.false"/>
+      <property id="module.driver.display.input0.lines_repeat_enable" value="module.driver.display.input0.lines_repeat_enable.false"/>
+      <property id="module.driver.display.input0.lines_repeat_times" value="0"/>
+      <property id="module.driver.display.layer0.fade_control" value="module.driver.display.layer0.fade_control.fade_control_none"/>
+      <property id="module.driver.display.layer0.fade_speed" value="0"/>
+      <property id="module.driver.display.input1.enable" value="module.driver.display.input1.enable.false"/>
+      <property id="module.driver.display.input1.hsize" value="480"/>
+      <property id="module.driver.display.input1.vsize" value="854"/>
+      <property id="module.driver.display.layer1.coordinate.x" value="0"/>
+      <property id="module.driver.display.layer1.coordinate.y" value="0"/>
+      <property id="module.driver.display.input1.buffer_name" value="fb_foreground"/>
+      <property id="module.driver.display.input1.buffer_number" value="2"/>
+      <property id="module.driver.display.input1.section" value=".sdram_noinit"/>
+      <property id="module.driver.display.input1.format" value="module.driver.display.input1.format.in_format_16bits_rgb565"/>
+      <property id="module.driver.display.input1.line_descending_enable" value="module.driver.display.input1.line_descending_enable.false"/>
+      <property id="module.driver.display.input1.lines_repeat_enable" value="module.driver.display.input1.lines_repeat_enable.false"/>
+      <property id="module.driver.display.input1.lines_repeat_times" value="0"/>
+      <property id="module.driver.display.layer1.fade_control" value="module.driver.display.layer1.fade_control.fade_control_none"/>
+      <property id="module.driver.display.layer1.fade_speed" value="0"/>
+      <property id="module.driver.display.output.htiming.total_cyc" value="1344"/>
+      <property id="module.driver.display.output.htiming.display_cyc" value="1024"/>
+      <property id="module.driver.display.output.htiming.back_porch" value="160"/>
+      <property id="module.driver.display.output.htiming.sync_width" value="4"/>
+      <property id="module.driver.display.output.htiming.sync_polarity" value="module.driver.display.output.htiming.sync_polarity.signal_polarity_loactive"/>
+      <property id="module.driver.display.output.vtiming.total_cyc" value="635"/>
+      <property id="module.driver.display.output.vtiming.display_cyc" value="600"/>
+      <property id="module.driver.display.output.vtiming.back_porch" value="23"/>
+      <property id="module.driver.display.output.vtiming.sync_width" value="3"/>
+      <property id="module.driver.display.output.vtiming.sync_polarity" value="module.driver.display.output.vtiming.sync_polarity.signal_polarity_loactive"/>
+      <property id="module.driver.display.output.data_enable_polarity" value="module.driver.display.output.data_enable_polarity.signal_polarity_hiactive"/>
+      <property id="module.driver.display.output.sync_edge" value="module.driver.display.output.sync_edge.signal_sync_edge_falling"/>
+      <property id="module.driver.display.output.format" value="module.driver.display.output.format.out_format_24bits_rgb888"/>
+      <property id="module.driver.display.output.color_order" value="module.driver.display.output.color_order.color_order_rgb"/>
+      <property id="module.driver.display.output.endian" value="module.driver.display.output.endian.endian_little"/>
+      <property id="module.driver.display.output.bg_color.byte.a" value="255"/>
+      <property id="module.driver.display.output.bg_color.byte.r" value="0"/>
+      <property id="module.driver.display.output.bg_color.byte.g" value="0"/>
+      <property id="module.driver.display.output.bg_color.byte.b" value="0"/>
+      <property id="module.driver.display.clut.enable" value="module.driver.display.clut.enable.false"/>
+      <property id="module.driver.display.clut.size" value="256"/>
+      <property id="module.driver.display.tcon_hsync" value="module.driver.display.tcon_hsync.tcon_pin_none"/>
+      <property id="module.driver.display.tcon_vsync" value="module.driver.display.tcon_vsync.tcon_pin_none"/>
+      <property id="module.driver.display.tcon_de" value="module.driver.display.tcon_de.tcon_pin_2"/>
+      <property id="module.driver.display.clksrc" value="module.driver.display.clksrc.clk_src_internal"/>
+      <property id="module.driver.display.clock_div_ratio" value="module.driver.display.clock_div_ratio.panel_clk_divisor_4"/>
+      <property id="module.driver.display.correction_proc_order" value="module.driver.display.correction_proc_order.correction_proc_order_brightness_contrast2gamma"/>
+      <property id="module.driver.display.output.brightness.enable" value="module.driver.display.output.brightness.false"/>
+      <property id="module.driver.display.output.brightness.r" value="512"/>
+      <property id="module.driver.display.output.brightness.g" value="512"/>
+      <property id="module.driver.display.output.brightness.b" value="512"/>
+      <property id="module.driver.display.output.contrast.enable" value="module.driver.display.output.contrast.false"/>
+      <property id="module.driver.display.output.contrast.r" value="128"/>
+      <property id="module.driver.display.output.contrast.g" value="128"/>
+      <property id="module.driver.display.output.contrast.b" value="128"/>
+      <property id="module.driver.display.output.gamma.r.enable" value="module.driver.display.output.gamma.r.enable.off"/>
+      <property id="module.driver.display.output.gamma.g.enable" value="module.driver.display.output.gamma.g.enable.off"/>
+      <property id="module.driver.display.output.gamma.b.enable" value="module.driver.display.output.gamma.b.enable.off"/>
+      <property id="module.driver.display.output.gamma.table_mode" value="module.driver.display.output.gamma.table_mode.variable"/>
+      <property id="module.driver.display.gamma.r.gain.0" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.1" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.2" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.3" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.4" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.5" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.6" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.7" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.8" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.9" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.10" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.11" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.12" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.13" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.14" value="1024"/>
+      <property id="module.driver.display.gamma.r.gain.15" value="1024"/>
+      <property id="module.driver.display.gamma.r.threshold.1" value="64"/>
+      <property id="module.driver.display.gamma.r.threshold.2" value="128"/>
+      <property id="module.driver.display.gamma.r.threshold.3" value="192"/>
+      <property id="module.driver.display.gamma.r.threshold.4" value="256"/>
+      <property id="module.driver.display.gamma.r.threshold.5" value="320"/>
+      <property id="module.driver.display.gamma.r.threshold.6" value="384"/>
+      <property id="module.driver.display.gamma.r.threshold.7" value="448"/>
+      <property id="module.driver.display.gamma.r.threshold.8" value="512"/>
+      <property id="module.driver.display.gamma.r.threshold.9" value="576"/>
+      <property id="module.driver.display.gamma.r.threshold.10" value="640"/>
+      <property id="module.driver.display.gamma.r.threshold.11" value="704"/>
+      <property id="module.driver.display.gamma.r.threshold.12" value="768"/>
+      <property id="module.driver.display.gamma.r.threshold.13" value="832"/>
+      <property id="module.driver.display.gamma.r.threshold.14" value="896"/>
+      <property id="module.driver.display.gamma.r.threshold.15" value="960"/>
+      <property id="module.driver.display.gamma.g.gain.0" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.1" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.2" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.3" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.4" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.5" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.6" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.7" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.8" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.9" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.10" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.11" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.12" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.13" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.14" value="1024"/>
+      <property id="module.driver.display.gamma.g.gain.15" value="1024"/>
+      <property id="module.driver.display.gamma.g.threshold.1" value="64"/>
+      <property id="module.driver.display.gamma.g.threshold.2" value="128"/>
+      <property id="module.driver.display.gamma.g.threshold.3" value="192"/>
+      <property id="module.driver.display.gamma.g.threshold.4" value="256"/>
+      <property id="module.driver.display.gamma.g.threshold.5" value="320"/>
+      <property id="module.driver.display.gamma.g.threshold.6" value="384"/>
+      <property id="module.driver.display.gamma.g.threshold.7" value="448"/>
+      <property id="module.driver.display.gamma.g.threshold.8" value="512"/>
+      <property id="module.driver.display.gamma.g.threshold.9" value="576"/>
+      <property id="module.driver.display.gamma.g.threshold.10" value="640"/>
+      <property id="module.driver.display.gamma.g.threshold.11" value="704"/>
+      <property id="module.driver.display.gamma.g.threshold.12" value="768"/>
+      <property id="module.driver.display.gamma.g.threshold.13" value="832"/>
+      <property id="module.driver.display.gamma.g.threshold.14" value="896"/>
+      <property id="module.driver.display.gamma.g.threshold.15" value="960"/>
+      <property id="module.driver.display.gamma.b.gain.0" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.1" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.2" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.3" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.4" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.5" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.6" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.7" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.8" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.9" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.10" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.11" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.12" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.13" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.14" value="1024"/>
+      <property id="module.driver.display.gamma.b.gain.15" value="1024"/>
+      <property id="module.driver.display.gamma.b.threshold.1" value="64"/>
+      <property id="module.driver.display.gamma.b.threshold.2" value="128"/>
+      <property id="module.driver.display.gamma.b.threshold.3" value="192"/>
+      <property id="module.driver.display.gamma.b.threshold.4" value="256"/>
+      <property id="module.driver.display.gamma.b.threshold.5" value="320"/>
+      <property id="module.driver.display.gamma.b.threshold.6" value="384"/>
+      <property id="module.driver.display.gamma.b.threshold.7" value="448"/>
+      <property id="module.driver.display.gamma.b.threshold.8" value="512"/>
+      <property id="module.driver.display.gamma.b.threshold.9" value="576"/>
+      <property id="module.driver.display.gamma.b.threshold.10" value="640"/>
+      <property id="module.driver.display.gamma.b.threshold.11" value="704"/>
+      <property id="module.driver.display.gamma.b.threshold.12" value="768"/>
+      <property id="module.driver.display.gamma.b.threshold.13" value="832"/>
+      <property id="module.driver.display.gamma.b.threshold.14" value="896"/>
+      <property id="module.driver.display.gamma.b.threshold.15" value="960"/>
+      <property id="module.driver.display.output.dithering_on" value="module.driver.display.output.dithering_on.false"/>
+      <property id="module.driver.display.dithering_mode" value="module.driver.display.dithering_mode.dithering_mode_trancate"/>
+      <property id="module.driver.display.dithering_pattern_A" value="module.driver.display.dithering_pattern_A.dithering_pattern_11"/>
+      <property id="module.driver.display.dithering_pattern_B" value="module.driver.display.dithering_pattern_B.dithering_pattern_11"/>
+      <property id="module.driver.display.dithering_pattern_C" value="module.driver.display.dithering_pattern_C.dithering_pattern_11"/>
+      <property id="module.driver.display.dithering_pattern_D" value="module.driver.display.dithering_pattern_D.dithering_pattern_11"/>
+    </module>
+    <module id="module.driver.drw.968693160">
+      <property id="module.driver.drw.handle_name" value="d2_handle0"/>
+      <property id="module.driver.drw.int_ipl" value="board.icu.common.irq.priority2"/>
+    </module>
+    <module id="module.driver.tes.dave2d.722801721"/>
     <context id="_hal.0">
       <stack module="module.driver.ioport_on_ioport.0"/>
       <stack module="module.middleware.rm_freertos_port.0"/>
@@ -420,15 +629,104 @@
       <property id="rtos.awsfreertos.thread.allocation" value="rtos.awsfreertos.thread.allocation.static"/>
       <property id="rtos.awsfreertos.thread.secure_context" value="rtos.awsfreertos.thread.secure_context.disable"/>
     </context>
+    <context id="rtos.awsfreertos.thread.1081324580">
+      <property id="_symbol" value="lvgl_thread"/>
+      <property id="rtos.awsfreertos.thread.name" value="LVGL Thread"/>
+      <property id="rtos.awsfreertos.thread.stack" value="8192"/>
+      <property id="rtos.awsfreertos.thread.priority" value="2"/>
+      <property id="rtos.awsfreertos.thread.context" value="NULL"/>
+      <property id="rtos.awsfreertos.thread.allocation" value="rtos.awsfreertos.thread.allocation.static"/>
+      <property id="rtos.awsfreertos.thread.secure_context" value="rtos.awsfreertos.thread.secure_context.enable"/>
+      <stack module="module.freertos.heap.4.1403476206"/>
+      <stack module="module.lvgl.lvgl.1548989411">
+        <stack module="module.middleware.rm_lvgl_port.2057062832" requires="module.lvgl.lvgl.requires.rm_lvgl_port">
+          <stack module="module.driver.display_on_glcdc.1715436916" requires="module.middleware.rm_lvgl_port.requires.display"/>
+          <stack module="module.driver.drw.968693160" requires="module.middleware.rm_lvgl_port.requires.dave2d_port">
+            <stack module="module.driver.tes.dave2d.722801721" requires="module.driver.drw.requires.dave2d_driver"/>
+          </stack>
+        </stack>
+      </stack>
+    </context>
     <config id="config.driver.sci_b_uart">
       <property id="config.driver.sci_b_uart.param_checking_enable" value="config.driver.sci_b_uart.param_checking_enable.bsp"/>
       <property id="config.driver.sci_b_uart.fifo_support" value="config.driver.sci_b_uart.fifo_support.disabled"/>
       <property id="config.driver.sci_b_uart.dtc_support" value="config.driver.sci_b_uart.dtc_support.disabled"/>
       <property id="config.driver.sci_b_uart.flow_control" value="config.driver.sci_b_uart.flow_control.disabled"/>
     </config>
+    <config id="config.driver.glcdc">
+      <property id="config.driver.glcdc.param_checking_enable" value="config.driver.glcdc.param_checking_enable.bsp"/>
+      <property id="config.driver.glcdc.color_correction_enable" value="config.driver.glcdc.color_correction_enable.off"/>
+    </config>
     <config id="config.driver.ioport">
       <property id="config.driver.ioport.checking" value="config.driver.ioport.checking.system"/>
       <property id="config.driver.ioport.ccd_support_enable" value="config.driver.ioport.ccd_support_enable.disabled"/>
+    </config>
+    <config id="config.lvgl.lvgl">
+      <property id="config.lvgl.lvgl.custom_lv_conf" value="lv_conf_user.h"/>
+      <property id="config.lvgl.lvgl.lv_color_depth" value="16"/>
+      <property id="config.lvgl.lvgl.lv_mem_size" value="0x20000"/>
+      <property id="config.lvgl.lvgl.lv_draw_layer_simple_buf_size" value="0x6000"/>
+      <property id="config.lvgl.lvgl.lv_draw_layer_max_memory" value="0"/>
+      <property id="config.lvgl.lvgl.lv_draw_thread_stack_size" value="0x2000"/>
+      <property id="config.lvgl.lvgl.lv_use_os" value="config.lvgl.lvgl.lv_use_os.lv_os_freertos"/>
+      <property id="config.lvgl.lvgl.lv_draw_thread_prio" value="config.lvgl.lvgl.lv_draw_thread_prio.lv_thread_prio_high"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_rgb565" value="config.lvgl.lvgl.lv_draw_sw_support_rgb565.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_rgb565_swapped" value="config.lvgl.lvgl.lv_draw_sw_support_rgb565_swapped.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_rgb565a8" value="config.lvgl.lvgl.lv_draw_sw_support_rgb565a8.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_rgb888" value="config.lvgl.lvgl.lv_draw_sw_support_rgb888.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_xrgb8888" value="config.lvgl.lvgl.lv_draw_sw_support_xrgb8888.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_argb8888" value="config.lvgl.lvgl.lv_draw_sw_support_argb8888.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_argb8888_premultiplied" value="config.lvgl.lvgl.lv_draw_sw_support_argb8888_premultiplied.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_l8" value="config.lvgl.lvgl.lv_draw_sw_support_l8.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_al88" value="config.lvgl.lvgl.lv_draw_sw_support_al88.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_a8" value="config.lvgl.lvgl.lv_draw_sw_support_a8.enable"/>
+      <property id="config.lvgl.lvgl.lv_draw_sw_support_i1" value="config.lvgl.lvgl.lv_draw_sw_support_i1.enable"/>
+      <property id="config.lvgl.lvgl.lv_use_draw_dave2d" value="config.lvgl.lvgl.lv_use_draw_dave2d.enable"/>
+      <property id="config.lvgl.lvgl.lv_assert_handler_include" value="&lt;bsp_api.h&gt;"/>
+      <property id="config.lvgl.lvgl.lv_assert_handler" value="__BKPT(0);"/>
+      <property id="config.lvgl.lvgl.lv_use_obj_name" value="config.lvgl.lvgl.lv_use_obj_name.disable"/>
+      <property id="config.lvgl.lvgl.lv_use_gesture_recognition" value="config.lvgl.lvgl.lv_use_gesture_recognition.disable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_8" value="config.lvgl.lvgl.lv_font_montserrat_8.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_10" value="config.lvgl.lvgl.lv_font_montserrat_10.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_12" value="config.lvgl.lvgl.lv_font_montserrat_12.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_14" value="config.lvgl.lvgl.lv_font_montserrat_14.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_16" value="config.lvgl.lvgl.lv_font_montserrat_16.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_18" value="config.lvgl.lvgl.lv_font_montserrat_18.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_20" value="config.lvgl.lvgl.lv_font_montserrat_20.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_22" value="config.lvgl.lvgl.lv_font_montserrat_22.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_24" value="config.lvgl.lvgl.lv_font_montserrat_24.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_26" value="config.lvgl.lvgl.lv_font_montserrat_26.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_28" value="config.lvgl.lvgl.lv_font_montserrat_28.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_30" value="config.lvgl.lvgl.lv_font_montserrat_30.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_32" value="config.lvgl.lvgl.lv_font_montserrat_32.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_34" value="config.lvgl.lvgl.lv_font_montserrat_34.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_36" value="config.lvgl.lvgl.lv_font_montserrat_36.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_38" value="config.lvgl.lvgl.lv_font_montserrat_38.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_40" value="config.lvgl.lvgl.lv_font_montserrat_40.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_42" value="config.lvgl.lvgl.lv_font_montserrat_42.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_44" value="config.lvgl.lvgl.lv_font_montserrat_44.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_46" value="config.lvgl.lvgl.lv_font_montserrat_46.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_montserrat_48" value="config.lvgl.lvgl.lv_font_montserrat_48.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_dejavu_16_persian_hebrew" value="config.lvgl.lvgl.lv_font_dejavu_16_persian_hebrew.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_source_han_sans_sc_14_cjk" value="config.lvgl.lvgl.lv_font_source_han_sans_sc_14_cjk.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_source_han_sans_sc_16_cjk" value="config.lvgl.lvgl.lv_font_source_han_sans_sc_16_cjk.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_unscii_8" value="config.lvgl.lvgl.lv_font_unscii_8.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_unscii_16" value="config.lvgl.lvgl.lv_font_unscii_16.enable"/>
+      <property id="config.lvgl.lvgl.lv_font_default" value="lv_font_montserrat_14"/>
+      <property id="config.lvgl.lvgl.lv_use_font_placeholder" value="config.lvgl.lvgl.lv_use_font_placeholder.enable"/>
+      <property id="config.lvgl.lvgl.lv_use_bidi" value="config.lvgl.lvgl.lv_use_bidi.disable"/>
+      <property id="config.lvgl.lvgl.lv_use_arabic_persian_chars" value="config.lvgl.lvgl.lv_use_arabic_persian_chars.disable"/>
+      <property id="config.lvgl.lvgl.lv_use_ime_pinyin" value="config.lvgl.lvgl.lv_use_ime_pinyin.disable"/>
+      <property id="config.lvgl.lvgl.lv_ime_pinyin_use_default_dict" value="config.lvgl.lvgl.lv_ime_pinyin_use_default_dict.enable"/>
+      <property id="config.lvgl.lvgl.lv_ime_pinyin_cand_text_num" value="6"/>
+      <property id="config.lvgl.lvgl.lv_ime_pinyin_use_k9_mode" value="config.lvgl.lvgl.lv_ime_pinyin_use_k9_mode.enable"/>
+      <property id="config.lvgl.lvgl.lv_ime_pinyin_k9_cand_text_num" value="3"/>
+      <property id="config.lvgl.lvgl.lv_use_font_manager" value="config.lvgl.lvgl.lv_use_font_manager.disable"/>
+      <property id="config.lvgl.lvgl.lv_font_manager_name_max_len" value="32"/>
+    </config>
+    <config id="config.middleware.rm_lvgl_port">
+      <property id="config.middleware.rm_lvgl_port.param_checking_enable" value="config.middleware.rm_lvgl_port.param_checking_enable.bsp"/>
+      <property id="config.middleware.rm_lvgl_port.provide_tick_callback" value="config.middleware.rm_lvgl_port.provide_tick_callback.enabled"/>
     </config>
     <config id="config.awsfreertos.thread">
       <property id="config.awsfreertos.custom_freertosconfig" value=""/>
@@ -436,7 +734,7 @@
       <property id="config.awsfreertos.thread.configuse_port_optimised_task_selection" value="config.awsfreertos.thread.configuse_port_optimised_task_selection.disabled"/>
       <property id="config.awsfreertos.thread.configuse_tickless_idle" value="config.awsfreertos.thread.configuse_tickless_idle.disabled"/>
       <property id="config.awsfreertos.thread.configuse_idle_hook" value="config.awsfreertos.thread.configuse_idle_hook.enabled"/>
-      <property id="config.awsfreertos.thread.configuse_malloc_failed_hook" value="config.awsfreertos.thread.configuse_malloc_failed_hook.disabled"/>
+      <property id="config.awsfreertos.thread.configuse_malloc_failed_hook" value="config.awsfreertos.thread.configuse_malloc_failed_hook.enabled"/>
       <property id="config.awsfreertos.thread.configuse_daemon_task_startup_hook" value="config.awsfreertos.thread.configuse_daemon_task_startup_hook.disabled"/>
       <property id="config.awsfreertos.thread.configuse_tick_hook" value="config.awsfreertos.thread.configuse_tick_hook.disabled"/>
       <property id="config.awsfreertos.thread.configcpu_clock_hz" value="SystemCoreClock"/>
@@ -450,8 +748,8 @@
       <property id="config.awsfreertos.thread.configidle_should_yield" value="config.awsfreertos.thread.configidle_should_yield.enabled"/>
       <property id="config.awsfreertos.thread.configuse_task_notifications" value="config.awsfreertos.thread.configuse_task_notifications.enabled"/>
       <property id="config.awsfreertos.thread.configtask_notifications_array_enteries" value="1"/>
-      <property id="config.awsfreertos.thread.configuse_mutexes" value="config.awsfreertos.thread.configuse_mutexes.disabled"/>
-      <property id="config.awsfreertos.thread.configuse_recursive_mutexes" value="config.awsfreertos.thread.configuse_recursive_mutexes.disabled"/>
+      <property id="config.awsfreertos.thread.configuse_mutexes" value="config.awsfreertos.thread.configuse_mutexes.enabled"/>
+      <property id="config.awsfreertos.thread.configuse_recursive_mutexes" value="config.awsfreertos.thread.configuse_recursive_mutexes.enabled"/>
       <property id="config.awsfreertos.thread.configuse_counting_semaphores" value="config.awsfreertos.thread.configuse_counting_semaphores.enabled"/>
       <property id="config.awsfreertos.thread.configcheck_for_stack_overflow" value="config.awsfreertos.thread.configcheck_for_stack_overflow.disabled"/>
       <property id="config.awsfreertos.thread.configqueue_registry_size" value="10"/>
@@ -464,8 +762,8 @@
       <property id="config.awsfreertos.thread.configmessage_buffer_length_type" value="size_t"/>
       <property id="config.awsfreertos.thread.configheap_clear_memory_on_free" value="config.awsfreertos.thread.configheap_clear_memory_on_free.disabled"/>
       <property id="config.awsfreertos.thread.configsupport_static_allocation" value="config.awsfreertos.thread.configsupport_static_allocation.enabled"/>
-      <property id="config.awsfreertos.thread.configsupport_dynamic_allocation" value="config.awsfreertos.thread.configsupport_dynamic_allocation.disabled"/>
-      <property id="config.awsfreertos.thread.configtotal_heap_size" value="1024"/>
+      <property id="config.awsfreertos.thread.configsupport_dynamic_allocation" value="config.awsfreertos.thread.configsupport_dynamic_allocation.enabled"/>
+      <property id="config.awsfreertos.thread.configtotal_heap_size" value="262144"/>
       <property id="config.awsfreertos.thread.configapplication_allocated_heap" value="config.awsfreertos.thread.configapplication_allocated_heap.disabled"/>
       <property id="config.awsfreertos.thread.configgenerate_run_time_stats" value="config.awsfreertos.thread.configgenerate_run_time_stats.disabled"/>
       <property id="config.awsfreertos.thread.configuse_timers" value="config.awsfreertos.thread.configuse_timers.enabled"/>
@@ -497,6 +795,10 @@
       <property id="config.awsfreertos.thread.include_time_and_task" value="config.awsfreertos.thread.include_time_and_task.disabled"/>
       <property id="config.awsfreertos.thread.debug_logging_name" value="Log Name"/>
       <property id="config.awsfreertos.thread.logging_level" value="config.awsfreertos.thread.logging_level.log_none"/>
+    </config>
+    <config id="config.driver.drw">
+      <property id="config.driver.drw.indirect" value="config.driver.drw.indirect.on"/>
+      <property id="config.driver.drw.malloc" value="config.driver.drw.malloc.default"/>
     </config>
   </raModuleConfiguration>
   <raPinConfiguration>

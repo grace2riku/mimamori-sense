@@ -35,11 +35,17 @@
 
 LVGLはFreeRTOSのDynamic Allocation、Mutex、Recursive Mutexを必要とします。
 
+> **注意**: FreeRTOSカーネル設定はグローバル設定です。どのスレッドから変更しても全体に反映されるため、1回だけ設定すれば十分です。
+
 ### 手順 0-1: FreeRTOS設定
 
+**手順1（LVGLスレッド作成）の後に実施してください。**
+
 1. e2 studioで`e2studio_CPU0/configuration.xml`を開く
-2. **Stacks** タブ → **HAL/Common** を選択
-3. **FreeRTOS** のプロパティで以下を変更
+2. **Stacks** タブ → 左ツリーでLVGLスレッド（手順1で作成）を選択
+3. 下部のプロパティパネルで以下を変更
+
+> **注意**: 「HAL/Common」配下の「FreeRTOS Port (rm_freertos_port)」はポートレイヤーのため、カーネル設定は表示されません。必ず**スレッド**を選択してください。
 
 | パラメータ | 現在の値 | 変更後の値 |
 |---|---|---|
@@ -55,6 +61,26 @@ GLCDCのフレームバッファはSDRAM上に配置されます。
 
 1. **BSP** タブ → **RA8P1 Family > Board Support Package** セクション
 2. `SDRAM Support` を **Enabled** に変更
+
+### 手順 0-3: クロック設定
+
+GLCDCとSDRAMを動作させるためにクロック設定が必要です。
+
+> **注意**: マルチコアプロジェクトでは、クロック設定は各CPU（`e2studio_CPU0/configuration.xml`）ではなく、**ソリューション（`e2studio/solution.xml`）の Clocks タブ**から変更してください。個別CPUの Clocks タブはロックされています。
+
+1. **`e2studio/solution.xml`** を開く
+2. **Clocks** タブを選択
+3. 以下のクロックを設定
+
+| クロック | パラメータ | 設定値 | 用途 |
+|---|---|---|---|
+| **LCDCLK** | Source | `PLL1R` | GLCDCピクセルクロック供給元 |
+| | Divider | `/2` | |
+| **BCLKA** | Source | `PLL1R` | SDRAMバスクロック |
+| | Divider | `/3` | |
+| **SDCLKOUT** | Enable | `Enabled` | SDRAMクロック出力 |
+
+> リファレンスプロジェクトのClocks設定を参照し、LCDCLK が **200MHz** になることを確認してください。
 
 ---
 
@@ -267,7 +293,7 @@ RM_LVGL_Portの**Dave2D Port**依存先として`r_drw`を追加。追加する�
 
 ## 手順7: ピン設定
 
-**Pins** タブ → **Peripherals > Graphics > GLCDC** で以下を設定:
+**Pins** タブ → **Peripherals > HMI:GLCDC** で以下を設定:
 
 | 信号名 | ピン | 説明 |
 |---|---|---|
