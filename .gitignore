@@ -1,8 +1,22 @@
 .DS_Store
 
-# reference_projects以下はREADMD.md以外無視
-reference_projects/**
-!reference_projects/README.md
+# reference_projects: ビルド成果物を無視
+reference_projects/**/Debug/
+reference_projects/**/Release/
+reference_projects/**/build/
+reference_projects/**/*.o
+reference_projects/**/*.obj
+reference_projects/**/*.a
+reference_projects/**/*.lib
+reference_projects/**/*.elf
+reference_projects/**/*.hex
+reference_projects/**/*.bin
+reference_projects/**/*.srec
+reference_projects/**/*.map
+reference_projects/**/*.lst
+reference_projects/**/*.d
+reference_projects/**/JLinkLog.log
+reference_projects/**/.cache/
 
 # e2studioのDebugディレクトリ
 e2studio_CPU0/Debug/

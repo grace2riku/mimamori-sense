@@ -1,0 +1,111 @@
+Failed to send status:  - pluginsPath /home/jimbo/.config/lvgl-editor/plugins (window not ready)
+[PluginService] Loading plugins
+  [PluginService] Clearing state and hooks
+start: Initiating Docker setup...
+Checking for Docker image lvglio/emscripten-sdl2:0.1.0
+progress: Docker daemon is running
+Generating all code...
+progress: ⏳ Generating code...
+progress: userDataPath: /home/jimbo/.config/lvgl-editor
+generateProjectCode: /home/jimbo/e2_studio/FSP_6_0_0_rc0/EK_RA8P1_LVGL/ui 
+Hash files match. No update needed.
+Copied resources path: /home/jimbo/.config/lvgl-editor/resources
+Generating C code for components & screens
+checkbox
+  ☑️ Generated checkbox_gen.h
+  ☑️ Generated checkbox_gen.c
+column
+  ☑️ Generated column_gen.h
+  ☑️ Generated column_gen.c
+header
+  ☑️ Generated header_gen.h
+  ☑️ Generated header_gen.c
+icon
+  ☑️ Generated icon_gen.h
+  ☑️ Generated icon_gen.c
+row
+  ☑️ Generated row_gen.h
+  ☑️ Generated row_gen.c
+setclock
+  ☑️ Generated setclock_gen.h
+  ☑️ Generated setclock_gen.c
+subtitle_no_bind
+  ☑️ Generated subtitle_no_bind_gen.h
+  ☑️ Generated subtitle_no_bind_gen.c
+subtitle
+  ☑️ Generated subtitle_gen.h
+  ☑️ Generated subtitle_gen.c
+title
+  ☑️ Generated title_gen.h
+  ☑️ Generated title_gen.c
+settings
+  ☑️ Generated settings_gen.h
+  ☑️ Generated settings_gen.c
+☑️ Generated ui_gen.h
+☑️ Generated ui_gen.c
+☑️ Generated ui.c
+☑️ Generated ui.h
+[Resource Converter]
+Starting Docker container to convert 0 fonts and 3 images
+done 1 files
+  ☑️ Converted image 'img_wifi'
+done 1 files
+  ☑️ Converted image 'img_bluetooth'
+done 1 files
+  ☑️ Converted image 'img_bell'
+✅ All font/image conversions completed successfully
+⏳ Compiling project: /home/jimbo/e2_studio/FSP_6_0_0_rc0/EK_RA8P1_LVGL/ui
+⛭ Running cmake to build runtime for Preview
+configure: cmake -DPROJECT_NAME=lved-runtime -DOUTPUT_DIR=/output -DLVGL_SRC_DIR=/work/lvgl -DLVGL_CONF_DIR=/work/conf -DUSER_SRC_DIR=/user_src /work -DCMAKE_TOOLCHAIN_FILE=/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DCMAKE_CROSSCOMPILING_EMULATOR=/emsdk/node/20.18.0_64bit/bin/node
+-- The C compiler identification is Clang 21.0.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /emsdk/upstream/emscripten/emcc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /build
+⛭ Running make to build runtime for Preview
+make: make -j8
+[  5%] [32mBuilding C object CMakeFiles/lved-runtime.dir/src/runtime.c.o[0m
+[ 16%] [32mBuilding C object CMakeFiles/lved-runtime.dir/src/getrandom_compat.c.o[0m
+[ 16%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/checkbox/checkbox_gen.c.o[0m
+[ 22%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/column/column_gen.c.o[0m
+[ 27%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/ui.c.o[0m
+[ 33%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/ui_gen.c.o[0m
+[ 38%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/header/header_gen.c.o[0m
+[ 44%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/icon/icon_gen.c.o[0m
+[ 50%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/row/row_gen.c.o[0m
+[1m/user_src/components/header/header_gen.c:77:47: [0m[0;1;35mwarning: [0m[1mpassing 'const void *' to parameter of type 'void *' discards qualifiers [-Wincompatible-pointer-types-discards-qualifiers][0m
+   77 |     lv_obj_t * icon_1 = icon_create(lv_obj_1, img_bell);[0m
+      | [0;1;32m                                              ^~~~~~~~
+[0m[1m/user_src/components/icon/icon_gen.h:29:50: [0m[0;1;36mnote: [0mpassing argument to parameter 'src' here[0m
+   29 | lv_obj_t * icon_create(lv_obj_t * parent, [0;34mvoid[0m * src);[0m
+      | [0;1;32m                                                 ^
+[0m[1m/user_src/components/header/header_gen.c:82:47: [0m[0;1;35mwarning: [0m[1mpassing 'const void *' to parameter of type 'void *' discards qualifiers [-Wincompatible-pointer-types-discards-qualifiers][0m
+   82 |     lv_obj_t * icon_2 = icon_create(lv_obj_1, img_bluetooth);[0m
+      | [0;1;32m                                              ^~~~~~~~~~~~~
+[0m[1m/user_src/components/icon/icon_gen.h:29:50: [0m[0;1;36mnote: [0mpassing argument to parameter 'src' here[0m
+   29 | lv_obj_t * icon_create(lv_obj_t * parent, [0;34mvoid[0m * src);[0m
+      | [0;1;32m                                                 ^
+[0m[1m/user_src/components/header/header_gen.c:85:47: [0m[0;1;35mwarning: [0m[1mpassing 'const void *' to parameter of type 'void *' discards qualifiers [-Wincompatible-pointer-types-discards-qualifiers][0m
+   85 |     lv_obj_t * icon_3 = icon_create(lv_obj_1, img_wifi);[0m
+      | [0;1;32m                                              ^~~~~~~~
+[0m[1m[ 55%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/setclock/setclock_gen.c.o[0m
+/user_src/components/icon/icon_gen.h:29:50: [0m[0;1;36mnote: [0mpassing argument to parameter 'src' here[0m
+   29 | lv_obj_t * icon_create(lv_obj_t * parent, [0;34mvoid[0m * src);[0m
+      | [0;1;32m                                                 ^
+[0m[ 61%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/subtiltle_no_bind/subtitle_no_bind_gen.c.o[0m
+3 warnings generated.
+[ 66%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/title/title_gen.c.o[0m
+[ 72%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/components/subtitle/subtitle_gen.c.o[0m
+[ 77%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/images/img_bell_data.c.o[0m
+[ 83%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/fonts/Inter_SemiBold_ttf_data.c.o[0m
+[ 88%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/images/img_bluetooth_data.c.o[0m
+[ 94%] [32mBuilding C object CMakeFiles/lved-runtime.dir/user_src/images/img_wifi_data.c.o[0m
+[100%] [32m[1mLinking C executable /output/lved-runtime.js[0m
+cache:INFO: [32mgenerating system asset: symbol_lists/5ca3047f38b6b55232460cc5254a286052a1fd95.json... (this will be cached in "/emsdk/upstream/emscripten/cache/symbol_lists/5ca3047f38b6b55232460cc5254a286052a1fd95.json" for subsequent builds)[0m
+cache:INFO: [32m - ok[0m
+[100%] Built target lved-runtime
+✅ Built runtime for Preview
