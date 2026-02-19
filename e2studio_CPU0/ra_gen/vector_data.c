@@ -8,6 +8,9 @@
             [1] = sci_b_uart_txi_isr, /* SCI8 TXI (Transmit data empty) */
             [2] = sci_b_uart_tei_isr, /* SCI8 TEI (Transmit end) */
             [3] = sci_b_uart_eri_isr, /* SCI8 ERI (Receive error) */
+            [4] = glcdc_line_detect_isr, /* GLCDC LINE DETECT (Specified line) */
+            [5] = glcdc_underflow_1_isr, /* GLCDC UNDERFLOW 1 (Graphic 1 underflow) */
+            [6] = drw_int_isr, /* DRW INT (DRW interrupt) */
         };
         #if BSP_FEATURE_ICU_HAS_IELSR
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_NUM_ENTRIES] =
@@ -16,6 +19,9 @@
             [1] = BSP_PRV_VECT_ENUM(EVENT_SCI8_TXI,GROUP1), /* SCI8 TXI (Transmit data empty) */
             [2] = BSP_PRV_VECT_ENUM(EVENT_SCI8_TEI,GROUP2), /* SCI8 TEI (Transmit end) */
             [3] = BSP_PRV_VECT_ENUM(EVENT_SCI8_ERI,GROUP3), /* SCI8 ERI (Receive error) */
+            [4] = BSP_PRV_VECT_ENUM(EVENT_GLCDC_LINE_DETECT,GROUP4), /* GLCDC LINE DETECT (Specified line) */
+            [5] = BSP_PRV_VECT_ENUM(EVENT_GLCDC_UNDERFLOW_1,GROUP5), /* GLCDC UNDERFLOW 1 (Graphic 1 underflow) */
+            [6] = BSP_PRV_VECT_ENUM(EVENT_DRW_INT,GROUP6), /* DRW INT (DRW interrupt) */
         };
         #endif
         #endif

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<raSolution version="12">
+<raSolution>
   <generalSettings>
     <option key="#Board#" value="board.ra8p1ek"/>
     <option key="#TargetName#" value="R7KA8P1KFLCAC"/>
@@ -370,7 +370,7 @@
     <node id="board.clock.gptclk.display" option="board.clock.gptclk.display.value"/>
     <node id="board.clock.gtclk.source" option="board.clock.gtclk.source.gptclk"/>
     <node id="board.clock.gtclk.display" option="board.clock.gtclk.display.value"/>
-    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll2r"/>
+    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll1r"/>
     <node id="board.clock.lcdclk.div" option="board.clock.lcdclk.div.2"/>
     <node id="board.clock.lcdclk.display" option="board.clock.lcdclk.display.value"/>
     <node id="board.clock.i3cclk.source" option="board.clock.i3cclk.source.pll2q"/>
@@ -505,10 +505,6 @@
     <memory Pname="CPU1" name="STCM_NS_CPU1_N" offset="0x10000" parent="STCM_NS" security="n" size="0x0"/>
     <memory Pname="CPU1" name="STCM_CPU1_S" offset="0x0" parent="STCM" security="s" size="0x10000"/>
   </raPartitions>
-  <raSmartBundles>
-    <bundle>${workspace_loc:/mimamori_sense_CPU0}/Debug/mimamori_sense_CPU0.sbd</bundle>
-    <bundle>${workspace_loc:/mimamori_sense_CPU1}/Debug/mimamori_sense_CPU1.sbd</bundle>
-  </raSmartBundles>
   <raPinConfiguration>
     <symbolicName propertyId="p000.symbolic_name" value="USER_SW_CFG_INT"/>
     <symbolicName propertyId="p001.symbolic_name" value="ARDUINO_AN0"/>
@@ -1419,20 +1415,24 @@
       <configSetting altId="usbhs.usbhs_vbus.p408" configurationId="usbhs.usbhs_vbus"/>
       <configSetting altId="usbhs.usbhs_vbusen.pd07" configurationId="usbhs.usbhs_vbusen"/>
     </pincfg>
-    <pincfg active="false" name="R7KA8P1KFLCAC.pincfg" symbol="">
-      <configSetting altId="p208.gpio_mode.gpio_mode_peripheral" configurationId="p208.gpio_mode"/>
-      <configSetting altId="p208.jtag_fslash_swd.tdi" configurationId="p208"/>
-      <configSetting altId="p209.gpio_mode.gpio_mode_peripheral" configurationId="p209.gpio_mode"/>
-      <configSetting altId="p209.jtag_fslash_swd.tdo" configurationId="p209"/>
-      <configSetting altId="p210.gpio_mode.gpio_mode_peripheral" configurationId="p210.gpio_mode"/>
-      <configSetting altId="p210.jtag_fslash_swd.tms" configurationId="p210"/>
-      <configSetting altId="p211.gpio_mode.gpio_mode_peripheral" configurationId="p211.gpio_mode"/>
-      <configSetting altId="p211.jtag_fslash_swd.tck" configurationId="p211"/>
+    <pincfg active="false" name="R7KA8P1KFLCAC.pincfg" selected="false" symbol="">
       <configSetting altId="jtag_fslash_swd.mode.jtag.free" configurationId="jtag_fslash_swd.mode"/>
       <configSetting altId="jtag_fslash_swd.tck.p211" configurationId="jtag_fslash_swd.tck"/>
       <configSetting altId="jtag_fslash_swd.tdi.p208" configurationId="jtag_fslash_swd.tdi"/>
       <configSetting altId="jtag_fslash_swd.tdo.p209" configurationId="jtag_fslash_swd.tdo"/>
       <configSetting altId="jtag_fslash_swd.tms.p210" configurationId="jtag_fslash_swd.tms"/>
+      <configSetting altId="p208.jtag_fslash_swd.tdi" configurationId="p208"/>
+      <configSetting altId="p208.gpio_mode.gpio_mode_peripheral" configurationId="p208.gpio_mode"/>
+      <configSetting altId="p209.jtag_fslash_swd.tdo" configurationId="p209"/>
+      <configSetting altId="p209.gpio_mode.gpio_mode_peripheral" configurationId="p209.gpio_mode"/>
+      <configSetting altId="p210.jtag_fslash_swd.tms" configurationId="p210"/>
+      <configSetting altId="p210.gpio_mode.gpio_mode_peripheral" configurationId="p210.gpio_mode"/>
+      <configSetting altId="p211.jtag_fslash_swd.tck" configurationId="p211"/>
+      <configSetting altId="p211.gpio_mode.gpio_mode_peripheral" configurationId="p211.gpio_mode"/>
     </pincfg>
   </raPinConfiguration>
+  <raSmartBundles>
+    <bundle>${workspace_loc:/mimamori_sense_CPU0}/Debug/mimamori_sense_CPU0.sbd</bundle>
+    <bundle>${workspace_loc:/mimamori_sense_CPU1}/Debug/mimamori_sense_CPU1.sbd</bundle>
+  </raSmartBundles>
 </raSolution>
