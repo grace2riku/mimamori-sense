@@ -137,7 +137,7 @@
 
 #### F-003: 人の転倒検出
 - カメラで撮影した人の転倒をAIで検出する
-- 人の転倒検出はRUHMI Framework AI Compiler for MCUを使用し実現する
+- 人の転倒検出は[RUHMI Framework](https://github.com/renesas/ruhmi-framework-mcu)を使用し実現する
 
 #### F-004: 人の転倒検出を警報音で通知
 - 人の転倒を検出した場合に警報音で同居家族に通知する
