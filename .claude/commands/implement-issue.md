@@ -23,11 +23,21 @@ Issue #$ARGUMENTS を実装してください。
   - 失敗した場合（Issue番号の誤り等）はユーザーに報告し、処理を中断してください
 - Issue内容に基づき、以下から最適なサブエージェントを選択して実装してください:
   - **FSP設定が必要なIssue** → `.claude/agents/fsp-config-guide.md` を使用
-    - 対象: Issueタイトルに「FSPプロジェクト設定」を含むもの
+    - 対象: Issueタイトルに「FSPプロジェクト設定」を含むもの（S-001-1, S-005-1, S-007-1等）
     - configuration.xmlの変更手順書を生成し、ユーザーに手動操作を依頼する
-  - **リファレンスからのコード移植** → `.claude/agents/port-reference.md` を使用
-    - 対象: ドライバ実装、スレッド実装、フレームバッファ管理、シェルコマンド追加
-  - **LVGL設定・UI実装** → `.claude/agents/lvgl-ui.md` を使用
+  - **ディスプレイパイプライン（S-001, S-002, S-004）** → `.claude/agents/hw-display-pipeline.md` を使用
+    - 対象: SDRAM制御（S-001-2〜4）、GLCDC制御（S-002-1〜4）、Dave2D描画エンジン制御（S-004-1〜4）
+  - **MIPI CSI-2カメラIF（S-003）** → `.claude/agents/camera-mipi.md` を使用
+    - 対象: MIPI PHY初期化（S-003-1）、CSI-2受信制御（S-003-2）、VINキャプチャ（S-003-3）、動作確認（S-003-4）
+  - **音声出力制御（S-005）** → `.claude/agents/audio-output.md` を使用
+    - 対象: オーディオデバイス初期化（S-005-2）、警報音生成・再生（S-005-3）、動作確認（S-005-4）
+  - **コア間通信（S-006）** → `.claude/agents/ipc-multicore.md` を使用
+    - 対象: 共有メモリ設計（S-006-1）、IPCセマフォ（S-006-2）、メッセージング（S-006-3）、CPU1起動（S-006-4）、IPC動作確認（S-006-5）
+  - **NT-Shellコンソール・デバッグコマンド（S-007〜S-011）** → `.claude/agents/ntshell-debug.md` を使用
+    - 対象: NT-Shell基盤構築（S-007-2〜4）、メモリリード（S-008）、メモリダンプ（S-009）、メモリライト（S-010）、LED制御（S-011）
+  - **リファレンスからのコード移植（汎用）** → `.claude/agents/port-reference.md` を使用
+    - 対象: 上記に該当しないドライバ実装、スレッド実装、フレームバッファ管理
+  - **LVGL設定・UI実装（F-001）** → `.claude/agents/lvgl-ui.md` を使用
     - 対象: LVGL設定ファイル、画面レイアウト、ウィジェット、描画機能
   - **AIモデル調査・準備（F-003-1〜4）** → `.claude/agents/ai-model-research.md` を使用
     - 対象: 転倒検出AIモデルの調査・選定、データセット準備、学習・量子化、RUHMIツール変換
