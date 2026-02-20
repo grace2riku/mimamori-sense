@@ -131,6 +131,67 @@ F-003全体のEnd-to-End動作確認とKPI計測手順を文書化する。
 - 閾値パラメータはヘッダファイルのマクロ定数で定義（調整容易にする）
 - 移植元のリファレンスファイルパスと行番号をコメントで記載する
 
+## NT-Shellコマンドによる動作確認
+
+実装した機能の動作確認・デバッグのために、積極的にNT-Shellコマンドを追加すること。
+コマンドは `e2studio_CPU0/src/usrcmd.c` の `cmdlist[]` テーブルに登録する。
+
+### コマンド追加パターン
+
+```c
+// 1. 関数のforward declaration（usrcmd.c上部）
+static int usrcmd_fall(int argc, char **argv);
+
+// 2. cmdlist[]テーブルに登録
+static const cmd_table_t cmdlist[] = {
+    ...
+    { "fall", "fall detection control", usrcmd_fall },
+};
+
+// 3. コマンド関数の実装
+static int usrcmd_fall(int argc, char **argv)
+{
+    if (argc < 2) {
+        print_to_console("Usage: fall <subcommand>\r\n");
+        return 0;
+    }
+    if (ntlibc_strcmp(argv[1], "status") == 0) {
+        // サブコマンド処理
+    }
+    return 0;
+}
+```
+
+### 推奨コマンド例
+
+| Issue | コマンド | サブコマンド | 用途 |
+|---|---|---|---|
+| F-003-9 | `fall` | `fall status` | 転倒検出状態表示（NORMAL/SUSPECTED/CONFIRMED/COOLDOWN） |
+| F-003-9 | `fall` | `fall count` | 連続検出カウンター、転倒確定回数の累計表示 |
+| F-003-9 | `fall` | `fall threshold` | 現在の閾値パラメータ一覧表示（アスペクト比閾値、連続回数、クールダウン時間） |
+| F-003-9 | `fall` | `fall set <param> <value>` | 閾値パラメータのランタイム変更（デバッグ・チューニング用） |
+| F-003-9 | `fall` | `fall reset` | 転倒検出状態をNORMALにリセット |
+| F-003-10 | `fall` | `fall display` | 画面表示の状態確認（表示ON/OFF、描画FPS） |
+| F-003-11 | `fall` | `fall kpi` | KPI計測結果表示（推論時間、検出率、誤検出率の直近統計） |
+| F-003-11 | `fall` | `fall log` | 直近N件の検出イベントログ表示（タイムスタンプ、状態遷移履歴） |
+
+### ランタイムパラメータ調整の重要性
+
+転倒検出の精度チューニングでは以下のパラメータを実機上で繰り返し調整する必要がある。
+`fall set` コマンドによるランタイム変更を実装することで、ファームウェアの再ビルド・書き込みなしにパラメータ調整が可能になり、開発効率が大幅に向上する。
+
+- アスペクト比閾値（転倒候補判定）
+- 検出スコア閾値
+- 連続検出回数（時系列フィルタ）
+- クールダウン時間
+
+### 注意事項
+
+- コマンド実行はntshell_threadから行われるため、転倒検出ロジックのデータにアクセスする際はスレッドセーフに注意する
+- 状態遷移のログ出力は循環バッファ（リングバッファ）に記録しておくと `fall log` で参照しやすい
+- 出力は `print_to_console()` を使用する（`jlink_console.h`）
+- 文字列比較は `ntlibc_strcmp()` を使用する（`ntlibc.h`）
+
 ## 制約事項
 
 - configuration.xmlを直接編集してはならない

@@ -118,6 +118,56 @@ OV5640カメラ → MIPI-CSI → VIN → camera_capture_buffer[] (320x240 RGB565
 - Cファイル（.c/.h）: 既存の `e2studio_CPU0/src/` のスタイル
 - 移植元のリファレンスファイルパスと行番号をコメントで記載する
 
+## NT-Shellコマンドによる動作確認
+
+実装した機能の動作確認・デバッグのために、積極的にNT-Shellコマンドを追加すること。
+コマンドは `e2studio_CPU0/src/usrcmd.c` の `cmdlist[]` テーブルに登録する。
+
+### コマンド追加パターン
+
+```c
+// 1. 関数のforward declaration（usrcmd.c上部）
+static int usrcmd_ai(int argc, char **argv);
+
+// 2. cmdlist[]テーブルに登録
+static const cmd_table_t cmdlist[] = {
+    ...
+    { "ai", "AI inference control", usrcmd_ai },
+};
+
+// 3. コマンド関数の実装
+static int usrcmd_ai(int argc, char **argv)
+{
+    if (argc < 2) {
+        print_to_console("Usage: ai <subcommand>\r\n");
+        return 0;
+    }
+    if (ntlibc_strcmp(argv[1], "status") == 0) {
+        // サブコマンド処理
+    }
+    return 0;
+}
+```
+
+### 推奨コマンド例
+
+| Issue | コマンド | サブコマンド | 用途 |
+|---|---|---|---|
+| F-003-5 | `ai` | `ai model` | モデル情報表示（入力サイズ、出力サイズ、アリーナサイズ） |
+| F-003-6 | `ai` | `ai preproc` | 前処理の状態・処理時間表示 |
+| F-003-7 | `ai` | `ai status` | 推論スレッドの状態表示（初期化済み/推論中/アイドル） |
+| F-003-7 | `ai` | `ai infer` | 1回分の推論を手動トリガーし結果を表示 |
+| F-003-7 | `ai` | `ai time` | 推論時間の計測結果表示（前処理/推論/後処理/合計） |
+| F-003-8 | `ai` | `ai detect` | 最新の検出結果表示（バウンディングボックス座標、スコア、クラス） |
+| F-003-8 | `ai` | `ai nms` | NMSパラメータ表示（検出閾値、IoU閾値） |
+
+### 注意事項
+
+- コマンド実行はntshell_threadから行われるため、AI推論スレッドのデータにアクセスする際はスレッドセーフに注意する
+- グローバル変数（`g_ai_detection[]`等）の読み取りは基本的にアトミックだが、構造体の一貫性が必要な場合は適切な同期を行う
+- 出力は `print_to_console()` を使用する（`jlink_console.h`）
+- 文字列比較は `ntlibc_strcmp()` を使用する（`ntlibc.h`）
+
 ## 制約事項
 
 - configuration.xmlを直接編集してはならない

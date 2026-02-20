@@ -62,6 +62,51 @@ EK-RA8P1評価ボード上でLVGLを使用したリッチなタッチ操作対�
 - 不要な再描画を避けるため `lv_obj_invalidate()` の使用を最小限に
 - 目標: 30fps以上（`LV_USE_PERF_MONITOR`で計測）
 
+## NT-Shellコマンドによる動作確認
+
+LVGL UI機能の動作確認・デバッグのために、積極的にNT-Shellコマンドを追加すること。
+コマンドは `e2studio_CPU0/src/usrcmd.c` の `cmdlist[]` テーブルに登録する。
+
+### コマンド追加パターン
+
+```c
+// 1. 関数のforward declaration（usrcmd.c上部）
+static int usrcmd_lvgl(int argc, char **argv);
+
+// 2. cmdlist[]テーブルに登録
+static const cmd_table_t cmdlist[] = {
+    ...
+    { "lvgl", "LVGL control", usrcmd_lvgl },
+};
+
+// 3. コマンド関数の実装
+static int usrcmd_lvgl(int argc, char **argv)
+{
+    if (argc < 2) {
+        print_to_console("Usage: lvgl <subcommand>\r\n");
+        return 0;
+    }
+    if (ntlibc_strcmp(argv[1], "status") == 0) {
+        // サブコマンド処理
+    }
+    return 0;
+}
+```
+
+### 推奨コマンド例
+
+| コマンド | サブコマンド | 用途 |
+|---|---|---|
+| `lvgl` | `lvgl status` | LVGLの初期化状態、FPS、メモリ使用量の表示 |
+| `lvgl` | `lvgl mem` | LVGLヒープメモリの使用状況（`lv_mem_monitor()`）表示 |
+| `lvgl` | `lvgl screen` | 現在表示中の画面名、ウィジェット数の表示 |
+
+### 注意事項
+
+- コマンド実行はntshell_threadから行われるため、LVGLのAPI呼び出しが必要な場合は `lv_lock()` / `lv_unlock()` でスレッドセーフにすること
+- 出力は `print_to_console()` を使用する（`jlink_console.h`）
+- 文字列比較は `ntlibc_strcmp()` を使用する（`ntlibc.h`）
+
 ## 制約事項
 
 - configuration.xmlを直接編集してはならない
