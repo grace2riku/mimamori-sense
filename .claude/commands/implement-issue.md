@@ -29,6 +29,12 @@ Issue #$ARGUMENTS を実装してください。
     - 対象: ドライバ実装、スレッド実装、フレームバッファ管理、シェルコマンド追加
   - **LVGL設定・UI実装** → `.claude/agents/lvgl-ui.md` を使用
     - 対象: LVGL設定ファイル、画面レイアウト、ウィジェット、描画機能
+  - **AIモデル調査・準備（F-003-1〜4）** → `.claude/agents/ai-model-research.md` を使用
+    - 対象: 転倒検出AIモデルの調査・選定、データセット準備、学習・量子化、RUHMIツール変換
+  - **AI推論パイプライン実装（F-003-5〜8）** → `.claude/agents/ai-inference-impl.md` を使用
+    - 対象: AI推論設定ファイル、前処理関数、推論スレッド、YOLO後処理の実装
+  - **転倒検出アプリケーション（F-003-9〜11）** → `.claude/agents/fall-detection-app.md` を使用
+    - 対象: 転倒判定ロジック、LCD画面表示、結合テスト・KPI検証
 - テスト可能な変更の場合は、実装完了後にテストを実行してください
 - **以下のファイルは絶対に編集しないでください:**
   - `configuration.xml`（FSP設定ファイル）
