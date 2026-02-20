@@ -35,3 +35,13 @@
 - **パス**: `example_projects/ek_ra8p1/_quickstart/quickstart_ek_ra8p1_ep`
 - **タグ**: `v6.3.0.example.1` (`a7f7046a1f501de9bc71bf393a453851a2ca6d14`, 2025-12-27)
 - **FSPバージョン**: 6.3.0
+
+---
+
+## ruhmi-framework-mcu
+
+### 対象ソースコード
+- **リポジトリ**: https://github.com/renesas/ruhmi-framework-mcu
+- **コミット**: `82ebd1cfd663303f3de751936cd6279e054ed51a` (2026-02-08)
+- **直近のリリースタグ**: `Release-2026-02-02` (`a458bb2`)
+- **概要**: RUHMI Framework AI Compiler for MCU - EdgeCortix MERA を利用したAIモデル最適化・デプロイフレームワーク
