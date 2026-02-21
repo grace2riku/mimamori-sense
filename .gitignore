@@ -1,6 +1,9 @@
 .DS_Store
 
-# reference_projects: ビルド成果物を無視
+# reference_projects: 自動生成コードとビルド成果物を無視
+reference_projects/**/ra/
+reference_projects/**/ra_cfg/
+reference_projects/**/ra_gen/
 reference_projects/**/Debug/
 reference_projects/**/Release/
 reference_projects/**/build/
