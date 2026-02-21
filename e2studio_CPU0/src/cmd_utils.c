@@ -45,12 +45,14 @@ typedef struct {
  * considered safe to access via memory read/write commands.
  */
 static const cmd_mem_region_t s_valid_regions[] = {
-    { CMD_ADDR_FLASH_START,   CMD_ADDR_FLASH_END   },  /* Code Flash (4MB) */
-    { CMD_ADDR_SRAM_START,    CMD_ADDR_SRAM_END     },  /* Internal SRAM (1.5MB) */
-    { CMD_ADDR_PERIPH_START,  CMD_ADDR_PERIPH_END   },  /* Peripheral registers */
-    { CMD_ADDR_SDRAM_START,   CMD_ADDR_SDRAM_END    },  /* SDRAM (64MB) */
-    { CMD_ADDR_OSPI_START,    CMD_ADDR_OSPI_END     },  /* OSPI Flash (256MB) */
-    { CMD_ADDR_SYSTEM_START,  CMD_ADDR_SYSTEM_END   },  /* System registers (SCB, NVIC, etc.) */
+    { CMD_ADDR_ITCM_START,    CMD_ADDR_ITCM_END     },  /* ITCM (128KB) */
+    { CMD_ADDR_FLASH_START,   CMD_ADDR_FLASH_END     },  /* Code Flash & system area (OFS, OTP, UID) */
+    { CMD_ADDR_DTCM_START,    CMD_ADDR_DTCM_END      },  /* DTCM (128KB) */
+    { CMD_ADDR_SRAM_START,    CMD_ADDR_SRAM_END       },  /* Internal SRAM (~1.8MB) */
+    { CMD_ADDR_PERIPH_START,  CMD_ADDR_PERIPH_END     },  /* Peripheral registers */
+    { CMD_ADDR_SDRAM_START,   CMD_ADDR_SDRAM_END      },  /* SDRAM (128MB) */
+    { CMD_ADDR_OSPI_START,    CMD_ADDR_OSPI_END       },  /* OSPI Flash (OSPI1 + OSPI0) */
+    { CMD_ADDR_SYSTEM_START,  CMD_ADDR_SYSTEM_END     },  /* System registers (SCB, NVIC, etc.) */
 };
 
 /** Number of entries in the valid regions table */
