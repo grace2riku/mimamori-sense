@@ -9,6 +9,7 @@
  *  - The command dispatcher (ntopt callback)
  *  - Built-in commands: help, info, version, reset
  *  - Debug commands: mr (memory read), md (memory dump), mw (memory write)
+ *  - Hardware commands: led (LED control)
  *
  * To add a new command:
  *   1. Write a handler: static int usrcmd_foo(int argc, char **argv);
@@ -58,6 +59,7 @@
 #include "usrcmd.h"
 #include "cmd_utils.h"
 #include "fw_version.h"
+#include "led_ctrl.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -93,6 +95,7 @@ static int usrcmd_help(int argc, char **argv);
 static int usrcmd_info(int argc, char **argv);
 static int usrcmd_version(int argc, char **argv);
 static int usrcmd_reset(int argc, char **argv);
+static int usrcmd_led(int argc, char **argv);
 static int usrcmd_md(int argc, char **argv);
 static int usrcmd_mr(int argc, char **argv);
 static int usrcmd_mw(int argc, char **argv);
@@ -111,12 +114,11 @@ static int usrcmd_mw(int argc, char **argv);
  * To add a new command, insert a NTSHELL_CMD() entry below.
  * Keep entries in alphabetical order for readability.
  *
- * @note Debug commands (led, etc.) will be added here
- *       as they are implemented in subsequent Issues (S-011).
  */
 static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
+    NTSHELL_CMD("led",     "LED control: led list | led <id> <on|off|toggle|blink>", usrcmd_led),
     NTSHELL_CMD("md",      "Dump memory: md <addr> [length]",          usrcmd_md),
     NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
     NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
@@ -324,6 +326,166 @@ static int usrcmd_info(int argc, char **argv)
     print_to_console("  ver  - Version information\r\n");
     print_to_console("  (no args) - Show all information\r\n");
     return CMD_ERR_USAGE;
+}
+
+/**
+ * led command - Control user LEDs on the EK-RA8P1 board
+ *
+ * @details Provides on/off/toggle/blink control and status display for the
+ *          user LEDs on the EK-RA8P1 evaluation board.
+ *
+ * Usage:
+ *   led list                - Show all LEDs and their current state
+ *   led <id> on             - Turn on the specified LED
+ *   led <id> off            - Turn off the specified LED
+ *   led <id> toggle         - Toggle the specified LED state
+ *   led <id> blink [ms]     - Blink the LED (default: 500ms interval)
+ *
+ * Parameters:
+ *   id    - LED index: 0 (Blue), 1 (Green), 2 (Red)
+ *   ms    - Blink interval in milliseconds (optional, default: 500)
+ *
+ * EK-RA8P1 LED mapping:
+ *   0: LED1 (Blue)  - P600 (BSP_IO_PORT_06_PIN_00)
+ *   1: LED2 (Green) - P303 (BSP_IO_PORT_03_PIN_03)
+ *   2: LED3 (Red)   - PA07 (BSP_IO_PORT_10_PIN_07)
+ *
+ * Examples:
+ *   led list           -> Show all LED states
+ *   led 0 on           -> Turn on LED1 (Blue)
+ *   led 1 toggle       -> Toggle LED2 (Green)
+ *   led 2 blink 200    -> Blink LED3 (Red) at 200ms interval
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ * @return CMD_OK on success, CMD_ERR_* on error
+ */
+static int usrcmd_led(int argc, char **argv)
+{
+    char buf[PRINT_BUF_SIZE];
+
+    /* --- No arguments: show usage --- */
+    if (argc < 2) {
+        cmd_print_usage("led", "list | <id> <on|off|toggle|blink> [interval_ms]");
+        print_to_console("  list          - Show all LEDs and their current state\r\n");
+        print_to_console("  id            - LED index: 0 (Blue), 1 (Green), 2 (Red)\r\n");
+        print_to_console("  on/off/toggle - Control the LED\r\n");
+        print_to_console("  blink [ms]    - Blink (default: 500ms interval)\r\n");
+        return CMD_ERR_USAGE;
+    }
+
+    /* --- "led list" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "list") == 0) {
+        print_to_console("Available LEDs:\r\n");
+
+        for (uint32_t i = 0; i < LED_COUNT; i++) {
+            const led_info_t *info = led_ctrl_get_info(i);
+            led_state_t state = led_ctrl_get_state(i);
+            const char *state_str;
+
+            switch (state) {
+                case LED_STATE_ON:       state_str = "ON";       break;
+                case LED_STATE_BLINKING: state_str = "BLINKING"; break;
+                default:                 state_str = "OFF";      break;
+            }
+
+            snprintf(buf, sizeof(buf), "  %lu: %s (%-5s) - %-4s [%s]\r\n",
+                     (unsigned long)i, info->name, info->color,
+                     info->pin_name, state_str);
+            print_to_console(buf);
+        }
+
+        return CMD_OK;
+    }
+
+    /* --- Parse LED id --- */
+    if (argc < 3) {
+        cmd_print_usage("led", "<id> <on|off|toggle|blink> [interval_ms]");
+        return CMD_ERR_USAGE;
+    }
+
+    {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[1]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid LED id '%s'.\r\n", argv[1]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+
+        uint32_t id = result.value;
+
+        if (!led_ctrl_valid_id(id)) {
+            snprintf(buf, sizeof(buf),
+                     "Error: LED id %lu out of range. Valid: 0-%d.\r\n",
+                     (unsigned long)id, LED_COUNT - 1);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+
+        const led_info_t *info = led_ctrl_get_info(id);
+        const char *action = argv[2];
+
+        /* --- "on" action --- */
+        if (ntlibc_strcmp(action, "on") == 0) {
+            led_ctrl_on(id);
+            snprintf(buf, sizeof(buf), "%s (%s): ON\r\n", info->name, info->color);
+            print_to_console(buf);
+            return CMD_OK;
+        }
+
+        /* --- "off" action --- */
+        if (ntlibc_strcmp(action, "off") == 0) {
+            led_ctrl_off(id);
+            snprintf(buf, sizeof(buf), "%s (%s): OFF\r\n", info->name, info->color);
+            print_to_console(buf);
+            return CMD_OK;
+        }
+
+        /* --- "toggle" action --- */
+        if (ntlibc_strcmp(action, "toggle") == 0) {
+            led_state_t prev_state;
+            led_ctrl_toggle(id, &prev_state);
+            led_state_t new_state = led_ctrl_get_state(id);
+
+            const char *prev_str = (prev_state == LED_STATE_ON) ? "ON" : "OFF";
+            const char *new_str  = (new_state == LED_STATE_ON)  ? "ON" : "OFF";
+
+            snprintf(buf, sizeof(buf), "%s (%s): %s -> %s\r\n",
+                     info->name, info->color, prev_str, new_str);
+            print_to_console(buf);
+            return CMD_OK;
+        }
+
+        /* --- "blink" action --- */
+        if (ntlibc_strcmp(action, "blink") == 0) {
+            uint32_t interval_ms = LED_BLINK_DEFAULT_MS;
+
+            /* Parse optional interval */
+            if (argc >= 4) {
+                cmd_parse_result_t interval_result = cmd_parse_uint32(argv[3]);
+                if (!interval_result.valid || interval_result.value == 0) {
+                    cmd_print_error("Blink interval must be a positive number (ms).");
+                    return CMD_ERR_INVALID_ARG;
+                }
+                interval_ms = interval_result.value;
+            }
+
+            if (!led_ctrl_blink(id, interval_ms)) {
+                cmd_print_error("Failed to start blink timer.");
+                return CMD_ERR_EXECUTE;
+            }
+
+            snprintf(buf, sizeof(buf), "%s (%s): BLINKING (%lums interval)\r\n",
+                     info->name, info->color, (unsigned long)interval_ms);
+            print_to_console(buf);
+            return CMD_OK;
+        }
+
+        /* --- Unknown action --- */
+        snprintf(buf, sizeof(buf), "Error: Unknown action '%s'. Use on/off/toggle/blink.\r\n", action);
+        print_to_console(buf);
+        return CMD_ERR_INVALID_ARG;
+    }
 }
 
 /**

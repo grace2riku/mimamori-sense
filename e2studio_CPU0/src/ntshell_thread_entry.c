@@ -22,6 +22,7 @@
 #include "usrcmd.h"
 #include "fw_version.h"
 #include "fsp_version.h"
+#include "led_ctrl.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -155,6 +156,9 @@ void ntshell_thread_entry(void *pvParameters)
 
     /* SCI UARTドライバの初期化 */
     jlink_console_init();
+
+    /* LED制御モジュールの初期化（blinkタイマーの作成等） */
+    led_ctrl_init();
 
     /* 起動バナーの表示（プロジェクト名、バージョン、ビルド日時） */
     ntshell_print_banner();
