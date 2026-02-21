@@ -5,14 +5,25 @@
  * NT-Shell（Natural Tiny Shell）のFreeRTOSスレッドエントリ関数。
  * SCI UART経由で双方向コンソールを提供する。
  * UART I/Oコールバック（読み込み・書き込み）とコマンドディスパッチを実装する。
+ *
+ * FreeRTOSスレッド設定:
+ *   Symbol    : ntshell_thread
+ *   Name      : "NT-Shell Thread"
+ *   Stack size: 4096 bytes
+ *   Priority  : 1 (他のリアルタイムスレッドより低め)
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "ntshell_thread.h"
 #include "jlink_console.h"
 #include "ntshell.h"
 #include "usrcmd.h"
+#include "fw_version.h"
+#include "fsp_version.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -24,17 +35,42 @@
 /** NT-Shellプロンプト文字列 */
 #define NTSHELL_PROMPT_STR      "mimamori>"
 
-/** 起動バナー */
-#define NTSHELL_BANNER \
-    "\r\n" \
-    "======================================\r\n" \
-    " Mimamori-Sense Console\r\n" \
-    " Type 'help' for available commands.\r\n" \
-    "======================================\r\n"
+/** 起動バナー書式バッファサイズ */
+#define NTSHELL_BANNER_BUF_SIZE (256)
 
 /**********************************************************************************************************************
  Private (static) functions
  *********************************************************************************************************************/
+
+/**
+ * 起動バナーの表示
+ * @details プロジェクト名、ファームウェアバージョン、ビルド日時、
+ *          FSP・FreeRTOSバージョンをコンソールに表示する。
+ */
+static void ntshell_print_banner(void)
+{
+    char buf[NTSHELL_BANNER_BUF_SIZE];
+
+    print_to_console("\r\n");
+    print_to_console("======================================\r\n");
+
+    snprintf(buf, sizeof(buf), " %s Console (%s)\r\n", FW_PROJECT_NAME, FW_BOARD_NAME);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), " FW Version : v%d.%d.%d\r\n",
+             FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), " Built      : %s %s\r\n", __DATE__, __TIME__);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), " FSP %s / FreeRTOS %s\r\n",
+             FSP_VERSION_STRING, tskKERNEL_VERSION_NUMBER);
+    print_to_console(buf);
+
+    print_to_console(" Type 'help' for available commands.\r\n");
+    print_to_console("======================================\r\n");
+}
 
 /**
  * NT-Shell用シリアル読み込み関数
@@ -120,8 +156,8 @@ void ntshell_thread_entry(void *pvParameters)
     /* SCI UARTドライバの初期化 */
     jlink_console_init();
 
-    /* 起動バナーの表示 */
-    print_to_console(NTSHELL_BANNER);
+    /* 起動バナーの表示（プロジェクト名、バージョン、ビルド日時） */
+    ntshell_print_banner();
 
     /* NT-Shellの初期化 */
     ntshell_init(

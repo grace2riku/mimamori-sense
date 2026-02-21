@@ -46,6 +46,7 @@
 #include "ntshell.h"
 #include "jlink_console.h"
 #include "usrcmd.h"
+#include "fw_version.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -54,11 +55,6 @@
 /**********************************************************************************************************************
  Macro definitions
  *********************************************************************************************************************/
-
-/** ファームウェアバージョン */
-#define FW_VERSION_MAJOR    (0)
-#define FW_VERSION_MINOR    (1)
-#define FW_VERSION_PATCH    (0)
 
 /** コンソール出力用書式付き文字列バッファサイズ */
 #define PRINT_BUF_SIZE      (128)
@@ -200,7 +196,9 @@ static int usrcmd_info(int argc, char **argv)
     if (argc == 1) {
         /* 引数なしの場合は全情報を表示 */
         print_to_console("[System Information]\r\n");
-        print_to_console("  System    : Mimamori-Sense (EK-RA8P1)\r\n");
+
+        snprintf(buf, sizeof(buf), "  System    : %s (%s)\r\n", FW_PROJECT_NAME, FW_BOARD_NAME);
+        print_to_console(buf);
 
         snprintf(buf, sizeof(buf), "  CPU       : Cortex-M85 (Core %d)\r\n", _RA_CORE);
         print_to_console(buf);
@@ -229,7 +227,8 @@ static int usrcmd_info(int argc, char **argv)
     }
 
     if (ntlibc_strcmp(argv[1], "sys") == 0) {
-        print_to_console("  System    : Mimamori-Sense (EK-RA8P1)\r\n");
+        snprintf(buf, sizeof(buf), "  System    : %s (%s)\r\n", FW_PROJECT_NAME, FW_BOARD_NAME);
+        print_to_console(buf);
 
         snprintf(buf, sizeof(buf), "  CPU       : Cortex-M85 (Core %d)\r\n", _RA_CORE);
         print_to_console(buf);
@@ -281,7 +280,7 @@ static int usrcmd_version(int argc, char **argv)
 
     char buf[PRINT_BUF_SIZE];
 
-    snprintf(buf, sizeof(buf), "Mimamori-Sense Firmware v%d.%d.%d\r\n",
+    snprintf(buf, sizeof(buf), "%s Firmware v%d.%d.%d\r\n", FW_PROJECT_NAME,
              FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
     print_to_console(buf);
 
