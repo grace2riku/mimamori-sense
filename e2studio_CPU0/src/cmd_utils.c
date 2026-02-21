@@ -194,6 +194,79 @@ void cmd_print_addr_error(uint32_t addr)
 }
 
 /**
+ * Validate whether an address is in a writable memory region
+ *
+ * Writable regions:
+ *   DTCM, Internal SRAM, Peripheral registers, SDRAM, OSPI
+ *
+ * Read-only / protected regions (rejected):
+ *   ITCM, Code Flash & system area, System registers (SCB/NVIC)
+ */
+bool cmd_validate_writable(uint32_t addr, uint32_t size)
+{
+    uint32_t end_addr;
+
+    /* First, the address must be in a known accessible region */
+    if (!cmd_validate_address(addr, size)) {
+        return false;
+    }
+
+    /* Overflow check */
+    end_addr = addr + size;
+    if (end_addr < addr) {
+        return false;
+    }
+
+    /* Reject read-only / protected regions */
+
+    /* ITCM: 0x00000000 - 0x00020000 (code execution area) */
+    if (addr >= CMD_ADDR_ITCM_START && end_addr <= CMD_ADDR_ITCM_END) {
+        return false;
+    }
+
+    /* Code Flash & system area: 0x02000000 - 0x03000000 */
+    if (addr >= CMD_ADDR_FLASH_START && end_addr <= CMD_ADDR_FLASH_END) {
+        return false;
+    }
+
+    /* System registers: 0xE0000000 - 0xF0000000 (SCB, NVIC, etc.) */
+    if (addr >= CMD_ADDR_SYSTEM_START && end_addr <= CMD_ADDR_SYSTEM_END) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Print a write-protection error message
+ */
+void cmd_print_write_protect_error(uint32_t addr)
+{
+    char buf[CMD_INTERNAL_BUF_SIZE];
+
+    /* Provide a specific reason */
+    if (addr >= CMD_ADDR_ITCM_START && addr < CMD_ADDR_ITCM_END) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Address 0x%08lX is in ITCM (code execution area). Write blocked.\r\n",
+                 (unsigned long)addr);
+    } else if (addr >= CMD_ADDR_FLASH_START && addr < CMD_ADDR_FLASH_END) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Address 0x%08lX is in Code Flash / system area. Write blocked.\r\n",
+                 (unsigned long)addr);
+    } else if (addr >= CMD_ADDR_SYSTEM_START && addr < CMD_ADDR_SYSTEM_END) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Address 0x%08lX is in system register area (SCB/NVIC). Write blocked.\r\n",
+                 (unsigned long)addr);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "Error: Address 0x%08lX is not in a writable memory region.\r\n",
+                 (unsigned long)addr);
+    }
+
+    print_to_console(buf);
+}
+
+/**
  * Print command result message based on return code
  */
 void cmd_print_result(const char *cmd_name, int retval)

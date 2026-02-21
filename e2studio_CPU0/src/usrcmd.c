@@ -8,7 +8,7 @@
  *  - The central command table (cmdlist[])
  *  - The command dispatcher (ntopt callback)
  *  - Built-in commands: help, info, version, reset
- *  - Debug commands: mr (memory read), md (memory dump)
+ *  - Debug commands: mr (memory read), md (memory dump), mw (memory write)
  *
  * To add a new command:
  *   1. Write a handler: static int usrcmd_foo(int argc, char **argv);
@@ -82,6 +82,9 @@
 /** Maximum dump length in bytes (64KB) to prevent excessive output */
 #define MD_MAX_LENGTH       (0x10000UL)
 
+/** Maximum count for memory write fill operations */
+#define MW_MAX_COUNT        CMD_MW_MAX_COUNT
+
 /**********************************************************************************************************************
  Private (static) functions prototypes
  *********************************************************************************************************************/
@@ -92,6 +95,7 @@ static int usrcmd_version(int argc, char **argv);
 static int usrcmd_reset(int argc, char **argv);
 static int usrcmd_md(int argc, char **argv);
 static int usrcmd_mr(int argc, char **argv);
+static int usrcmd_mw(int argc, char **argv);
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -107,14 +111,15 @@ static int usrcmd_mr(int argc, char **argv);
  * To add a new command, insert a NTSHELL_CMD() entry below.
  * Keep entries in alphabetical order for readability.
  *
- * @note Debug commands (mw, led, etc.) will be added here
- *       as they are implemented in subsequent Issues (S-010, S-011).
+ * @note Debug commands (led, etc.) will be added here
+ *       as they are implemented in subsequent Issues (S-011).
  */
 static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
     NTSHELL_CMD("md",      "Dump memory: md <addr> [length]",          usrcmd_md),
     NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
+    NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
     NTSHELL_CMD("reset",   "Reset the system",                          usrcmd_reset),
     NTSHELL_CMD("version", "Show firmware version",                     usrcmd_version),
 };
@@ -635,5 +640,263 @@ static int usrcmd_mr(int argc, char **argv)
     }
 
     print_to_console(buf);
+    return CMD_OK;
+}
+
+/**
+ * mw command - Write memory at a specified address
+ *
+ * @details Writes a value of 1, 2, or 4 bytes to the given memory address
+ *          using volatile access. Optionally repeats the write for memory fill
+ *          operations. Performs readback verification after the write.
+ *
+ * Usage:
+ *   mw <address> <value> [size] [count]
+ *
+ * Parameters:
+ *   address - Memory address in hexadecimal (0x prefix) or decimal
+ *   value   - Value to write in hexadecimal (0x prefix) or decimal
+ *   size    - Access size: 1 (byte), 2 (halfword), 4 (word). Default is 4.
+ *   count   - Number of consecutive writes (fill). Default is 1. Max: 65536.
+ *
+ * Examples:
+ *   mw 0x68000000 0xDEADBEEF         -> Write 0xDEADBEEF to 0x68000000 (4 bytes)
+ *   mw 0x68000000 0xFF 1 256         -> Fill 256 bytes with 0xFF from 0x68000000
+ *   mw 0x68000000 0x0000 2           -> Write 0x0000 to 0x68000000 (2 bytes)
+ *
+ * Safety:
+ *   - Flash area (0x02000000-0x03000000) writes are blocked
+ *   - ITCM area (0x00000000-0x00020000) writes are blocked
+ *   - System registers (0xE0000000-0xF0000000) writes are blocked
+ *   - Count is limited to MW_MAX_COUNT to prevent runaway fills
+ *   - Address alignment is enforced for 2-byte and 4-byte accesses
+ *   - Readback verification is performed for single writes (count == 1)
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ * @return CMD_OK on success, CMD_ERR_* on error
+ */
+static int usrcmd_mw(int argc, char **argv)
+{
+    char buf[PRINT_BUF_SIZE];
+    uint32_t addr;
+    uint32_t value;
+    int access_size = CMD_ACCESS_SIZE_WORD;  /* Default: 4-byte (word) access */
+    uint32_t count = 1;                      /* Default: single write */
+
+    /* --- Argument count check --- */
+    if (argc < 3) {
+        cmd_print_usage("mw", "<address> <value> [size(1|2|4)] [count]");
+        print_to_console("  address - Memory address (hex with 0x prefix, or decimal)\r\n");
+        print_to_console("  value   - Value to write (hex with 0x prefix, or decimal)\r\n");
+        print_to_console("  size    - Access size: 1=byte, 2=halfword, 4=word (default: 4)\r\n");
+        print_to_console("  count   - Repeat count for fill operations (default: 1, max: 65536)\r\n");
+        return CMD_ERR_USAGE;
+    }
+
+    /* --- Parse address --- */
+    {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[1]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid address '%s'.\r\n", argv[1]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        addr = result.value;
+    }
+
+    /* --- Parse value --- */
+    {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[2]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid value '%s'.\r\n", argv[2]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        value = result.value;
+    }
+
+    /* --- Parse optional access size --- */
+    if (argc >= 4) {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[3]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid size '%s'.\r\n", argv[3]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        access_size = (int)result.value;
+    }
+
+    /* --- Parse optional count --- */
+    if (argc >= 5) {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[4]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid count '%s'.\r\n", argv[4]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        count = result.value;
+    }
+
+    /* --- Validate access size (must be 1, 2, or 4) --- */
+    if (!cmd_validate_access_size(access_size)) {
+        cmd_print_error("Size must be 1 (byte), 2 (halfword), or 4 (word).");
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    /* --- Validate value range for the access size --- */
+    if (access_size == CMD_ACCESS_SIZE_BYTE && value > 0xFFUL) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Value 0x%lX exceeds byte range (0x00-0xFF).\r\n",
+                 (unsigned long)value);
+        print_to_console(buf);
+        return CMD_ERR_INVALID_ARG;
+    }
+    if (access_size == CMD_ACCESS_SIZE_HALF && value > 0xFFFFUL) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Value 0x%lX exceeds halfword range (0x0000-0xFFFF).\r\n",
+                 (unsigned long)value);
+        print_to_console(buf);
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    /* --- Validate count --- */
+    if (count == 0) {
+        cmd_print_error("Count must be greater than 0.");
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    if (count > MW_MAX_COUNT) {
+        snprintf(buf, sizeof(buf),
+                 "Error: Count %lu exceeds maximum (%lu).\r\n",
+                 (unsigned long)count, (unsigned long)MW_MAX_COUNT);
+        print_to_console(buf);
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    /* --- Validate address alignment --- */
+    if (!cmd_validate_alignment(addr, (uint32_t)access_size)) {
+        cmd_print_align_error(addr, access_size);
+        return CMD_ERR_ALIGN;
+    }
+
+    /* --- Validate start address is in a writable memory region --- */
+    if (!cmd_validate_writable(addr, (uint32_t)access_size)) {
+        /* Check if address is accessible but read-only */
+        if (cmd_validate_address(addr, (uint32_t)access_size)) {
+            cmd_print_write_protect_error(addr);
+        } else {
+            cmd_print_addr_error(addr);
+        }
+        return CMD_ERR_INVALID_ADDR;
+    }
+
+    /* --- Validate end address for fill operations --- */
+    if (count > 1) {
+        uint32_t total_size = (uint32_t)access_size * count;
+        uint32_t end_addr = addr + total_size - 1;
+
+        /* Overflow check */
+        if (end_addr < addr) {
+            cmd_print_error("Address range overflow.");
+            return CMD_ERR_INVALID_ADDR;
+        }
+
+        if (!cmd_validate_writable(end_addr, (uint32_t)access_size)) {
+            snprintf(buf, sizeof(buf),
+                     "Error: End address 0x%08lX is not in a writable memory region.\r\n",
+                     (unsigned long)end_addr);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ADDR;
+        }
+    }
+
+    /* --- Perform memory write --- */
+    {
+        uint32_t i;
+        uint32_t current_addr;
+
+        for (i = 0; i < count; i++) {
+            current_addr = addr + (i * (uint32_t)access_size);
+
+            switch (access_size) {
+                case CMD_ACCESS_SIZE_BYTE:
+                    *(volatile uint8_t *)current_addr = (uint8_t)value;
+                    break;
+                case CMD_ACCESS_SIZE_HALF:
+                    *(volatile uint16_t *)current_addr = (uint16_t)value;
+                    break;
+                case CMD_ACCESS_SIZE_WORD:
+                    *(volatile uint32_t *)current_addr = value;
+                    break;
+                default:
+                    /* Should not reach here after validation */
+                    break;
+            }
+        }
+    }
+
+    /* --- Output result --- */
+    if (count == 1) {
+        /* Single write: show written value and readback verification */
+        switch (access_size) {
+            case CMD_ACCESS_SIZE_BYTE: {
+                uint8_t readback = *(volatile uint8_t *)addr;
+                snprintf(buf, sizeof(buf),
+                         "Written 0x%02X to 0x%08lX (%d byte)\r\n",
+                         (uint8_t)value, (unsigned long)addr, access_size);
+                print_to_console(buf);
+
+                if (readback != (uint8_t)value) {
+                    snprintf(buf, sizeof(buf),
+                             "Warning: Readback mismatch! Expected 0x%02X, got 0x%02X\r\n",
+                             (uint8_t)value, readback);
+                    print_to_console(buf);
+                }
+                break;
+            }
+            case CMD_ACCESS_SIZE_HALF: {
+                uint16_t readback = *(volatile uint16_t *)addr;
+                snprintf(buf, sizeof(buf),
+                         "Written 0x%04X to 0x%08lX (%d bytes)\r\n",
+                         (uint16_t)value, (unsigned long)addr, access_size);
+                print_to_console(buf);
+
+                if (readback != (uint16_t)value) {
+                    snprintf(buf, sizeof(buf),
+                             "Warning: Readback mismatch! Expected 0x%04X, got 0x%04X\r\n",
+                             (uint16_t)value, readback);
+                    print_to_console(buf);
+                }
+                break;
+            }
+            case CMD_ACCESS_SIZE_WORD: {
+                uint32_t readback = *(volatile uint32_t *)addr;
+                snprintf(buf, sizeof(buf),
+                         "Written 0x%08lX to 0x%08lX (%d bytes)\r\n",
+                         (unsigned long)value, (unsigned long)addr, access_size);
+                print_to_console(buf);
+
+                if (readback != value) {
+                    snprintf(buf, sizeof(buf),
+                             "Warning: Readback mismatch! Expected 0x%08lX, got 0x%08lX\r\n",
+                             (unsigned long)value, (unsigned long)readback);
+                    print_to_console(buf);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    } else {
+        /* Fill operation: show summary */
+        uint32_t total_bytes = count * (uint32_t)access_size;
+        snprintf(buf, sizeof(buf),
+                 "Filled %lu bytes with 0x%lX from 0x%08lX (%lu x %d-byte writes)\r\n",
+                 (unsigned long)total_bytes, (unsigned long)value,
+                 (unsigned long)addr, (unsigned long)count, access_size);
+        print_to_console(buf);
+    }
+
     return CMD_OK;
 }
