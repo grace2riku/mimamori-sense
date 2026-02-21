@@ -8,6 +8,7 @@
  *  - The central command table (cmdlist[])
  *  - The command dispatcher (ntopt callback)
  *  - Built-in commands: help, info, version, reset
+ *  - Debug commands: mr (memory read)
  *
  * To add a new command:
  *   1. Write a handler: static int usrcmd_foo(int argc, char **argv);
@@ -80,6 +81,7 @@ static int usrcmd_help(int argc, char **argv);
 static int usrcmd_info(int argc, char **argv);
 static int usrcmd_version(int argc, char **argv);
 static int usrcmd_reset(int argc, char **argv);
+static int usrcmd_mr(int argc, char **argv);
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -95,12 +97,13 @@ static int usrcmd_reset(int argc, char **argv);
  * To add a new command, insert a NTSHELL_CMD() entry below.
  * Keep entries in alphabetical order for readability.
  *
- * @note Future debug commands (mr, md, mw, led, etc.) will be added here
- *       as they are implemented in subsequent Issues (S-008 through S-011).
+ * @note Debug commands (md, mw, led, etc.) will be added here
+ *       as they are implemented in subsequent Issues (S-009 through S-011).
  */
 static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
+    NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
     NTSHELL_CMD("reset",   "Reset the system",                          usrcmd_reset),
     NTSHELL_CMD("version", "Show firmware version",                     usrcmd_version),
 };
@@ -345,5 +348,116 @@ static int usrcmd_reset(int argc, char **argv)
     NVIC_SystemReset();
 
     /* Should not reach here */
+    return CMD_OK;
+}
+
+/**
+ * mr command - Read memory at a specified address
+ *
+ * @details Reads 1, 2, or 4 bytes from the given memory address using volatile
+ *          access and prints the value in hexadecimal.
+ *
+ * Usage:
+ *   mr <address> [size]
+ *
+ * Parameters:
+ *   address - Memory address in hexadecimal (0x prefix) or decimal
+ *   size    - Access size: 1 (byte), 2 (halfword), 4 (word). Default is 4.
+ *
+ * Examples:
+ *   mr 0x40000000        -> 0x40000000: 0x12345678
+ *   mr 0x40000000 1      -> 0x40000000: 0x78
+ *   mr 0x40000000 2      -> 0x40000000: 0x5678
+ *
+ * Validation:
+ *   - Address must be within a known accessible memory region (see cmd_utils.h)
+ *   - Address must be aligned to the access size (2-byte or 4-byte boundary)
+ *   - Access size must be 1, 2, or 4
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ * @return CMD_OK on success, CMD_ERR_* on error
+ */
+static int usrcmd_mr(int argc, char **argv)
+{
+    char buf[PRINT_BUF_SIZE];
+    uint32_t addr;
+    int access_size = CMD_ACCESS_SIZE_WORD;  /* Default: 4-byte (word) access */
+
+    /* --- Argument count check --- */
+    if (argc < 2) {
+        cmd_print_usage("mr", "<address> [size(1|2|4)]");
+        print_to_console("  address - Memory address (hex with 0x prefix, or decimal)\r\n");
+        print_to_console("  size    - Access size: 1=byte, 2=halfword, 4=word (default: 4)\r\n");
+        return CMD_ERR_USAGE;
+    }
+
+    /* --- Parse address --- */
+    {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[1]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid address '%s'.\r\n", argv[1]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        addr = result.value;
+    }
+
+    /* --- Parse optional access size --- */
+    if (argc >= 3) {
+        cmd_parse_result_t result = cmd_parse_uint32(argv[2]);
+        if (!result.valid) {
+            snprintf(buf, sizeof(buf), "Error: Invalid size '%s'.\r\n", argv[2]);
+            print_to_console(buf);
+            return CMD_ERR_INVALID_ARG;
+        }
+        access_size = (int)result.value;
+    }
+
+    /* --- Validate access size (must be 1, 2, or 4) --- */
+    if (!cmd_validate_access_size(access_size)) {
+        cmd_print_error("Size must be 1 (byte), 2 (halfword), or 4 (word).");
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    /* --- Validate address alignment --- */
+    if (!cmd_validate_alignment(addr, (uint32_t)access_size)) {
+        cmd_print_align_error(addr, access_size);
+        return CMD_ERR_ALIGN;
+    }
+
+    /* --- Validate address is in an accessible memory region --- */
+    if (!cmd_validate_address(addr, (uint32_t)access_size)) {
+        cmd_print_addr_error(addr);
+        return CMD_ERR_INVALID_ADDR;
+    }
+
+    /* --- Perform memory read and display result --- */
+    switch (access_size) {
+        case CMD_ACCESS_SIZE_BYTE: {
+            uint8_t val = *(volatile uint8_t *)addr;
+            snprintf(buf, sizeof(buf), "0x%08lX: 0x%02X\r\n",
+                     (unsigned long)addr, val);
+            break;
+        }
+        case CMD_ACCESS_SIZE_HALF: {
+            uint16_t val = *(volatile uint16_t *)addr;
+            snprintf(buf, sizeof(buf), "0x%08lX: 0x%04X\r\n",
+                     (unsigned long)addr, val);
+            break;
+        }
+        case CMD_ACCESS_SIZE_WORD: {
+            uint32_t val = *(volatile uint32_t *)addr;
+            snprintf(buf, sizeof(buf), "0x%08lX: 0x%08lX\r\n",
+                     (unsigned long)addr, (unsigned long)val);
+            break;
+        }
+        default:
+            /* Should not reach here after validation */
+            cmd_print_error("Internal error: unexpected access size.");
+            return CMD_ERR_EXECUTE;
+    }
+
+    print_to_console(buf);
     return CMD_OK;
 }

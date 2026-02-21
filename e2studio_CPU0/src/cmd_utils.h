@@ -42,39 +42,49 @@
 /**
  * RA8P1 memory map regions (Cortex-M85 CPU0)
  *
- * The following address ranges are considered accessible for memory read/write commands.
+ * Address ranges based on the RA8P1 linker script (memory_regions.ld).
  * This is a conservative set; additional regions may be accessible depending on MPU configuration.
  */
 
-/** Internal SRAM start address */
-#define CMD_ADDR_SRAM_START         (0x20000000UL)
-/** Internal SRAM end address (exclusive) - 1.5MB */
-#define CMD_ADDR_SRAM_END           (0x20180000UL)
+/** ITCM start address */
+#define CMD_ADDR_ITCM_START         (0x00000000UL)
+/** ITCM end address (exclusive) - 128KB */
+#define CMD_ADDR_ITCM_END           (0x00020000UL)
 
-/** Code Flash start address */
-#define CMD_ADDR_FLASH_START        (0x00000000UL)
-/** Code Flash end address (exclusive) - 4MB */
-#define CMD_ADDR_FLASH_END          (0x00400000UL)
+/** Code Flash & system area start (includes Flash, OFS, OTP, Unique ID) */
+#define CMD_ADDR_FLASH_START        (0x02000000UL)
+/** Code Flash & system area end (exclusive) */
+#define CMD_ADDR_FLASH_END          (0x03000000UL)
+
+/** DTCM start address */
+#define CMD_ADDR_DTCM_START         (0x20000000UL)
+/** DTCM end address (exclusive) - 128KB */
+#define CMD_ADDR_DTCM_END           (0x20020000UL)
+
+/** Internal SRAM start address */
+#define CMD_ADDR_SRAM_START         (0x22000000UL)
+/** Internal SRAM end address (exclusive) - ~1.8MB */
+#define CMD_ADDR_SRAM_END           (0x221D4000UL)
 
 /** Peripheral register space start */
 #define CMD_ADDR_PERIPH_START       (0x40000000UL)
 /** Peripheral register space end (exclusive) */
 #define CMD_ADDR_PERIPH_END         (0x50000000UL)
 
-/** System register space start */
+/** SDRAM start address */
+#define CMD_ADDR_SDRAM_START        (0x68000000UL)
+/** SDRAM end address (exclusive) - 128MB */
+#define CMD_ADDR_SDRAM_END          (0x70000000UL)
+
+/** OSPI Flash start address (OSPI1 CS0) */
+#define CMD_ADDR_OSPI_START         (0x70000000UL)
+/** OSPI Flash end address (exclusive) - covers OSPI1 + OSPI0 */
+#define CMD_ADDR_OSPI_END           (0xA0000000UL)
+
+/** System register space start (SCB, NVIC, etc.) */
 #define CMD_ADDR_SYSTEM_START       (0xE0000000UL)
 /** System register space end (exclusive) */
 #define CMD_ADDR_SYSTEM_END         (0xF0000000UL)
-
-/** SDRAM start address */
-#define CMD_ADDR_SDRAM_START        (0x68000000UL)
-/** SDRAM end address (exclusive) - 64MB */
-#define CMD_ADDR_SDRAM_END          (0x6C000000UL)
-
-/** OSPI Flash start address */
-#define CMD_ADDR_OSPI_START         (0x80000000UL)
-/** OSPI Flash end address (exclusive) - 256MB */
-#define CMD_ADDR_OSPI_END           (0x90000000UL)
 
 /** Minimum access size for memory commands */
 #define CMD_ACCESS_SIZE_BYTE        (1)
