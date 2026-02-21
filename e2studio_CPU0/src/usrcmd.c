@@ -1,9 +1,18 @@
 /**
  * @file usrcmd.c
- * @brief NT-Shell ユーザーコマンド実装
+ * @brief NT-Shell command table and command dispatcher
  * @details
- * NT-Shellのコマンドテーブルとコマンドディスパッチャを実装する。
- * 基本コマンド（help, info, version, reset）を提供する。
+ * NT-Shell command registration framework implementation.
+ *
+ * This file contains:
+ *  - The central command table (cmdlist[])
+ *  - The command dispatcher (ntopt callback)
+ *  - Built-in commands: help, info, version, reset
+ *
+ * To add a new command:
+ *   1. Write a handler: static int usrcmd_foo(int argc, char **argv);
+ *   2. Add to cmdlist[]:  NTSHELL_CMD("foo", "Description", usrcmd_foo),
+ *   3. Done. The command appears in 'help' automatically.
  *
  * @author CuBeatSystems
  * @author Shinichiro Nakamura
@@ -46,6 +55,7 @@
 #include "ntshell.h"
 #include "jlink_console.h"
 #include "usrcmd.h"
+#include "cmd_utils.h"
 #include "fw_version.h"
 
 #include "FreeRTOS.h"
@@ -56,25 +66,11 @@
  Macro definitions
  *********************************************************************************************************************/
 
-/** コンソール出力用書式付き文字列バッファサイズ */
+/** Console output format buffer size */
 #define PRINT_BUF_SIZE      (128)
 
-/** コマンドテーブルのエントリ数を計算するマクロ */
+/** Compute the number of entries in a static array */
 #define CMD_TABLE_SIZE(tbl) (sizeof(tbl) / sizeof(tbl[0]))
-
-/**********************************************************************************************************************
- Local Typedef definitions
- *********************************************************************************************************************/
-
-/** コマンド関数の型定義 */
-typedef int (*USRCMDFUNC)(int argc, char **argv);
-
-/** コマンドテーブルエントリ */
-typedef struct {
-    const char *cmd;    /**< コマンド名 */
-    const char *desc;   /**< ヘルプ説明文 */
-    USRCMDFUNC func;    /**< コマンド実行関数 */
-} cmd_table_t;
 
 /**********************************************************************************************************************
  Private (static) functions prototypes
@@ -90,15 +86,23 @@ static int usrcmd_reset(int argc, char **argv);
  *********************************************************************************************************************/
 
 /**
- * コマンドテーブル
- * @note 新しいコマンドを追加する場合はこのテーブルにエントリを追加する。
- *       helpコマンドでこのテーブルの内容が一覧表示される。
+ * Central command table
+ *
+ * All NT-Shell commands are registered here. The 'help' command iterates
+ * this table to display the full list. Commands are matched by exact name
+ * using ntlibc_strcmp().
+ *
+ * To add a new command, insert a NTSHELL_CMD() entry below.
+ * Keep entries in alphabetical order for readability.
+ *
+ * @note Future debug commands (mr, md, mw, led, etc.) will be added here
+ *       as they are implemented in subsequent Issues (S-008 through S-011).
  */
 static const cmd_table_t cmdlist[] = {
-    { "help",    "Show available commands",                   usrcmd_help    },
-    { "info",    "Show system information (info sys|ver)",    usrcmd_info    },
-    { "version", "Show firmware version",                     usrcmd_version },
-    { "reset",   "Reset the system",                          usrcmd_reset   },
+    NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
+    NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
+    NTSHELL_CMD("reset",   "Reset the system",                          usrcmd_reset),
+    NTSHELL_CMD("version", "Show firmware version",                     usrcmd_version),
 };
 
 /**********************************************************************************************************************
@@ -106,13 +110,22 @@ static const cmd_table_t cmdlist[] = {
  *********************************************************************************************************************/
 
 /**
- * コマンド文字列を解析して実行する
- * @param text NT-Shellから渡されるコマンド文字列
- * @return コマンドの戻り値
+ * Execute a command string from NT-Shell
  */
 int usrcmd_execute(const char *text)
 {
     return ntopt_parse(text, usrcmd_ntopt_callback, 0);
+}
+
+/**
+ * Get the command table and its size
+ */
+const cmd_table_t *usrcmd_get_cmdlist(int *count)
+{
+    if (count != NULL) {
+        *count = (int)CMD_TABLE_SIZE(cmdlist);
+    }
+    return &cmdlist[0];
 }
 
 /**********************************************************************************************************************
@@ -120,12 +133,20 @@ int usrcmd_execute(const char *text)
  *********************************************************************************************************************/
 
 /**
- * ntoptコールバック（コマンドディスパッチャ）
- * @details パース済みのargc/argvからコマンドテーブルを検索し、該当するコマンド関数を実行する。
- * @param argc 引数の数
- * @param argv 引数の配列
- * @param extobj 拡張オブジェクト（未使用）
- * @return コマンドの戻り値。コマンドが見つからない場合は0。
+ * ntopt callback - Command dispatcher
+ * @details
+ * Called by ntopt_parse() after splitting the input text into argc/argv.
+ * Searches the command table for a matching command name and invokes it.
+ *
+ * Error handling:
+ *  - Empty input (argc == 0): silently returns 0.
+ *  - Unknown command: prints "Unknown command" message with hint.
+ *  - Command returns error: prints result via cmd_print_result() if needed.
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ * @param extobj External object (unused)
+ * @return Command handler return value, or 0 for empty/unknown input
  */
 static int usrcmd_ntopt_callback(int argc, char **argv, void *extobj)
 {
@@ -138,12 +159,19 @@ static int usrcmd_ntopt_callback(int argc, char **argv, void *extobj)
     const cmd_table_t *p = &cmdlist[0];
     for (int i = 0; i < (int)CMD_TABLE_SIZE(cmdlist); i++) {
         if (ntlibc_strcmp((const char *)argv[0], p->cmd) == 0) {
-            return p->func(argc, argv);
+            int retval = p->func(argc, argv);
+
+            /* Unified error reporting for non-zero returns */
+            if (retval != CMD_OK) {
+                cmd_print_result(p->cmd, retval);
+            }
+
+            return retval;
         }
         p++;
     }
 
-    /* 未登録コマンドのエラー表示 */
+    /* Unknown command */
     {
         char buf[PRINT_BUF_SIZE];
         snprintf(buf, sizeof(buf), "Unknown command: '%s'. Type 'help' for available commands.\r\n", argv[0]);
@@ -154,47 +182,59 @@ static int usrcmd_ntopt_callback(int argc, char **argv, void *extobj)
 }
 
 /**
- * helpコマンド - 登録コマンド一覧表示
- * @param argc 引数の数
- * @param argv 引数の配列
- * @return 0: 成功
+ * help command - Display all registered commands
+ * @details
+ * Lists all commands in the command table with their descriptions.
+ * If a command name is given as argument (e.g., "help info"), shows
+ * only that command's description.
  */
 static int usrcmd_help(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
-
     char buf[PRINT_BUF_SIZE];
     const cmd_table_t *p = &cmdlist[0];
+    const int count = (int)CMD_TABLE_SIZE(cmdlist);
 
+    if (argc >= 2) {
+        /* Show help for a specific command */
+        for (int i = 0; i < count; i++) {
+            if (ntlibc_strcmp((const char *)argv[1], cmdlist[i].cmd) == 0) {
+                snprintf(buf, sizeof(buf), "  %-12s %s\r\n", cmdlist[i].cmd, cmdlist[i].desc);
+                print_to_console(buf);
+                return CMD_OK;
+            }
+        }
+
+        snprintf(buf, sizeof(buf), "Unknown command: '%s'\r\n", argv[1]);
+        print_to_console(buf);
+        return CMD_ERR_USAGE;
+    }
+
+    /* Show all commands */
     print_to_console("Available commands:\r\n");
     print_to_console("-------------------------------------------\r\n");
 
-    for (int i = 0; i < (int)CMD_TABLE_SIZE(cmdlist); i++) {
+    for (int i = 0; i < count; i++) {
         snprintf(buf, sizeof(buf), "  %-12s %s\r\n", p->cmd, p->desc);
         print_to_console(buf);
         p++;
     }
 
-    return 0;
+    return CMD_OK;
 }
 
 /**
- * infoコマンド - システム情報表示
- * @details サブコマンドにより表示する情報を選択する。
- *          - info sys : システム名とビルド日時
- *          - info ver : FSP・FreeRTOS・NTShellのバージョン
- *          - 引数なし : 全情報を表示
- * @param argc 引数の数
- * @param argv 引数の配列
- * @return 0: 成功, -1: 不明なサブコマンド
+ * info command - Display system information
+ * @details Sub-commands:
+ *  - info sys : System name and build info
+ *  - info ver : FSP, FreeRTOS, NT-Shell version info
+ *  - (no args): Show all information
  */
 static int usrcmd_info(int argc, char **argv)
 {
     char buf[PRINT_BUF_SIZE];
 
     if (argc == 1) {
-        /* 引数なしの場合は全情報を表示 */
+        /* No arguments: show all information */
         print_to_console("[System Information]\r\n");
 
         snprintf(buf, sizeof(buf), "  System    : %s (%s)\r\n", FW_PROJECT_NAME, FW_BOARD_NAME);
@@ -223,7 +263,7 @@ static int usrcmd_info(int argc, char **argv)
             print_to_console(buf);
         }
 
-        return 0;
+        return CMD_OK;
     }
 
     if (ntlibc_strcmp(argv[1], "sys") == 0) {
@@ -236,7 +276,7 @@ static int usrcmd_info(int argc, char **argv)
         snprintf(buf, sizeof(buf), "  Built     : %s %s\r\n", __DATE__, __TIME__);
         print_to_console(buf);
 
-        return 0;
+        return CMD_OK;
     }
 
     if (ntlibc_strcmp(argv[1], "ver") == 0) {
@@ -257,21 +297,18 @@ static int usrcmd_info(int argc, char **argv)
             print_to_console(buf);
         }
 
-        return 0;
+        return CMD_OK;
     }
 
     print_to_console("Usage: info [sys|ver]\r\n");
     print_to_console("  sys  - System name and build info\r\n");
     print_to_console("  ver  - Version information\r\n");
     print_to_console("  (no args) - Show all information\r\n");
-    return -1;
+    return CMD_ERR_USAGE;
 }
 
 /**
- * versionコマンド - ファームウェアバージョン表示
- * @param argc 引数の数
- * @param argv 引数の配列
- * @return 0: 成功
+ * version command - Display firmware version
  */
 static int usrcmd_version(int argc, char **argv)
 {
@@ -287,15 +324,12 @@ static int usrcmd_version(int argc, char **argv)
     snprintf(buf, sizeof(buf), "Built: %s %s\r\n", __DATE__, __TIME__);
     print_to_console(buf);
 
-    return 0;
+    return CMD_OK;
 }
 
 /**
- * resetコマンド - システムリセット
- * @details CMSIS NVIC_SystemReset()を呼び出してシステムをリセットする。
- * @param argc 引数の数
- * @param argv 引数の配列
- * @return 通常は戻らない
+ * reset command - Perform system reset
+ * @details Calls CMSIS NVIC_SystemReset(). This function does not return.
  */
 static int usrcmd_reset(int argc, char **argv)
 {
@@ -304,12 +338,12 @@ static int usrcmd_reset(int argc, char **argv)
 
     print_to_console("System resetting...\r\n");
 
-    /* 送信完了を待つ */
+    /* Wait for transmit to complete */
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* CMSIS標準のシステムリセット */
+    /* CMSIS standard system reset */
     NVIC_SystemReset();
 
-    /* ここには到達しない */
-    return 0;
+    /* Should not reach here */
+    return CMD_OK;
 }
