@@ -93,6 +93,9 @@
 /** 32-bit access size */
 #define CMD_ACCESS_SIZE_WORD        (4)
 
+/** Maximum count for memory fill operations (mw command with count parameter) */
+#define CMD_MW_MAX_COUNT            (0x10000UL)
+
 /**********************************************************************************************************************
  Global Typedef definitions
  *********************************************************************************************************************/
@@ -176,6 +179,32 @@ void cmd_print_align_error(uint32_t addr, int access_size);
  * @param addr The invalid address
  */
 void cmd_print_addr_error(uint32_t addr);
+
+/**
+ * Validate whether an address is in a writable memory region
+ * @details Rejects read-only and protected areas:
+ *  - ITCM  (0x00000000-0x00020000) : Code execution area
+ *  - Flash (0x02000000-0x03000000) : Code Flash, OFS, OTP, Unique ID
+ *  - System (0xE0000000-0xF0000000): SCB, NVIC, etc.
+ *
+ * Allows writes to:
+ *  - DTCM  (0x20000000-0x20020000)
+ *  - SRAM  (0x22000000-0x221D4000)
+ *  - Peripheral registers (0x40000000-0x50000000)
+ *  - SDRAM (0x68000000-0x70000000)
+ *  - OSPI  (0x70000000-0xA0000000)
+ *
+ * @param addr Address to validate
+ * @param size Access size in bytes (1, 2, or 4)
+ * @return true if address range [addr, addr+size) is within a writable region
+ */
+bool cmd_validate_writable(uint32_t addr, uint32_t size);
+
+/**
+ * Print a write-protection error message
+ * @param addr The write-protected address
+ */
+void cmd_print_write_protect_error(uint32_t addr);
 
 /**
  * Print command result message based on return code
