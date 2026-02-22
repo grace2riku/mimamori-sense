@@ -5,6 +5,7 @@
 */
 
 #include "hal_data.h"
+#include "port/sdram_port.h"
 
 FSP_CPP_HEADER
 void R_BSP_WarmStart(bsp_warm_start_event_t event);
@@ -48,8 +49,21 @@ void R_BSP_WarmStart (bsp_warm_start_event_t event)
 
 #if BSP_CFG_SDRAM_ENABLED
 
-        /* Setup SDRAM and initialize it. Must configure pins first. */
+        /* Setup SDRAM and initialize it. Must configure pins first.
+         * R_BSP_SdramInit() performs the full SDRAM initialization sequence:
+         *   1. SDCLK output enable
+         *   2. PRECHARGE ALL command
+         *   3. AUTO REFRESH x8
+         *   4. MODE REGISTER SET (CAS latency=3, burst=1, sequential)
+         *   5. Timing parameters (tRAS, tRCD, tRP, tWR, tCL)
+         *   6. Auto-refresh enable
+         *   7. SDRAM access enable
+         * Reference: ra/fsp/src/bsp/mcu/all/bsp_sdram.c:59-147
+         */
         R_BSP_SdramInit(true);
+
+        /* Record initialization status with a quick sanity check */
+        sdram_port_init();
 #endif
     }
 }
