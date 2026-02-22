@@ -345,13 +345,13 @@
     <node id="board.clock.pclke.display" option="board.clock.pclke.display.value"/>
     <node id="board.clock.bclk.div" option="board.clock.bclk.div.8"/>
     <node id="board.clock.bclk.display" option="board.clock.bclk.display.value"/>
-    <node id="board.clock.bclka.source" option="board.clock.bclka.source.pll2q"/>
-    <node id="board.clock.bclka.div" option="board.clock.bclka.div.6"/>
+    <node id="board.clock.bclka.source" option="board.clock.bclka.source.pll1r"/>
+    <node id="board.clock.bclka.div" option="board.clock.bclka.div.3"/>
     <node id="board.clock.bclka.display" option="board.clock.bclka.display.value"/>
     <node id="board.clock.sdclkout.enable" option="board.clock.sdclkout.enable.enabled"/>
     <node id="board.clock.sdclkout.display" option="board.clock.sdclkout.display.value"/>
-    <node id="board.clock.ebclk.source" option="board.clock.ebclk.source.bclk"/>
-    <node id="board.clock.bclkout.div" option="board.clock.bclkout.div.2"/>
+    <node id="board.clock.ebclk.source" option="board.clock.ebclk.source.bclka"/>
+    <node id="board.clock.bclkout.div" option="board.clock.bclkout.div.0"/>
     <node id="board.clock.bclkout.display" option="board.clock.bclkout.display.value"/>
     <node id="board.clock.clkout.source" option="board.clock.clkout.source.hoco"/>
     <node id="board.clock.clkout.div" option="board.clock.clkout.div.1"/>
