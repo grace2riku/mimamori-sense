@@ -31,7 +31,7 @@
  *   - BSP config: ra_cfg/fsp_cfg/bsp/bsp_mcu_family_cfg.h:452-510
  *
  * @note
- * This file is part of the SDRAM control (S-001-2) implementation.
+ * This file is part of the SDRAM control (S-001-2, S-001-3) implementation.
  */
 
 /**********************************************************************************************************************
@@ -89,6 +89,7 @@ static const sdram_config_info_t s_sdram_config = {
 static bool sdram_write_read_verify(volatile uint32_t *addr, uint32_t pattern);
 static void sdram_cmd_status(void);
 static void sdram_cmd_check(void);
+static void sdram_cmd_map(void);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -285,9 +286,193 @@ static void sdram_cmd_check(void)
     print_to_console(buf);
 }
 
+/**
+ * Linker-defined symbols for SDRAM sections
+ *
+ * These symbols are defined in the FSP-generated linker script (Debug/fsp_gen.lld)
+ * and declared as extern in Debug/bsp_linker_info.h.
+ *
+ * Naming convention:
+ *   __<section_name>$$Base  = start address of section
+ *   __<section_name>$$Limit = end address of section (exclusive)
+ *
+ * Reference: Debug/fsp_gen.lld, lines 403-451 (SDRAM section definitions)
+ * Reference: Debug/bsp_linker_info.h, lines 171-174 (extern declarations)
+ */
+extern uint32_t __sdram_noinit_nocache$$Base;
+extern uint32_t __sdram_noinit_nocache$$Limit;
+extern uint32_t __sdram_zero_nocache$$Base;
+extern uint32_t __sdram_zero_nocache$$Limit;
+extern uint32_t __sdram_noinit$$Base;
+extern uint32_t __sdram_noinit$$Limit;
+extern uint32_t __sdram_zero$$Base;
+extern uint32_t __sdram_zero$$Limit;
+extern uint32_t __sdram_from_flash$$Base;
+extern uint32_t __sdram_from_flash$$Limit;
+
+/**
+ * "sdram map" sub-command handler
+ *
+ * @details Displays the SDRAM section memory layout by querying linker-defined
+ *          symbols. Shows the address range, size, and purpose of each section.
+ *
+ * Reference: Debug/fsp_gen.lld (section definitions)
+ */
+static void sdram_cmd_map(void)
+{
+    char buf[SDRAM_PRINT_BUF_SIZE];
+    sdram_section_info_t info;
+
+    sdram_port_get_section_info(&info);
+
+    print_to_console("[SDRAM Section Layout]\r\n");
+
+    snprintf(buf, sizeof(buf), "  SDRAM Region  : 0x%08lX - 0x%08lX\r\n",
+             (unsigned long)info.sdram_start, (unsigned long)info.sdram_end);
+    print_to_console(buf);
+
+    print_to_console("  -----------------------------------------------\r\n");
+
+    /* .sdram_from_flash (initialized data) */
+    {
+        uint32_t size = info.from_flash.limit - info.from_flash.base;
+        snprintf(buf, sizeof(buf), "  .sdram_from_flash     : 0x%08lX - 0x%08lX (%lu bytes)\r\n",
+                 (unsigned long)info.from_flash.base,
+                 (unsigned long)info.from_flash.limit,
+                 (unsigned long)size);
+        print_to_console(buf);
+        print_to_console("    -> Init from Flash, cacheable\r\n");
+    }
+
+    /* .sdram_noinit_nocache (framebuffers) */
+    {
+        uint32_t size = info.noinit_nocache.limit - info.noinit_nocache.base;
+        snprintf(buf, sizeof(buf), "  .sdram_noinit_nocache : 0x%08lX - 0x%08lX (%lu bytes)\r\n",
+                 (unsigned long)info.noinit_nocache.base,
+                 (unsigned long)info.noinit_nocache.limit,
+                 (unsigned long)size);
+        print_to_console(buf);
+        print_to_console("    -> No init, non-cacheable (GLCDC framebuffers)\r\n");
+    }
+
+    /* .sdram_nocache (zero-init, non-cached) */
+    {
+        uint32_t size = info.zero_nocache.limit - info.zero_nocache.base;
+        snprintf(buf, sizeof(buf), "  .sdram_nocache        : 0x%08lX - 0x%08lX (%lu bytes)\r\n",
+                 (unsigned long)info.zero_nocache.base,
+                 (unsigned long)info.zero_nocache.limit,
+                 (unsigned long)size);
+        print_to_console(buf);
+        print_to_console("    -> Zero-init, non-cacheable (DMA buffers)\r\n");
+    }
+
+    /* .sdram_noinit */
+    {
+        uint32_t size = info.noinit.limit - info.noinit.base;
+        snprintf(buf, sizeof(buf), "  .sdram_noinit         : 0x%08lX - 0x%08lX (%lu bytes)\r\n",
+                 (unsigned long)info.noinit.base,
+                 (unsigned long)info.noinit.limit,
+                 (unsigned long)size);
+        print_to_console(buf);
+        print_to_console("    -> No init, cacheable (capture/AI buffers)\r\n");
+    }
+
+    /* .sdram (zero-init) */
+    {
+        uint32_t size = info.zero.limit - info.zero.base;
+        snprintf(buf, sizeof(buf), "  .sdram                : 0x%08lX - 0x%08lX (%lu bytes)\r\n",
+                 (unsigned long)info.zero.base,
+                 (unsigned long)info.zero.limit,
+                 (unsigned long)size);
+        print_to_console(buf);
+        print_to_console("    -> Zero-init, cacheable (work buffers)\r\n");
+    }
+
+    print_to_console("  -----------------------------------------------\r\n");
+
+    snprintf(buf, sizeof(buf), "  Total used    : %lu bytes (%lu KB)\r\n",
+             (unsigned long)info.total_used,
+             (unsigned long)(info.total_used / 1024UL));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Total free    : %lu bytes (%lu KB)\r\n",
+             (unsigned long)info.total_free,
+             (unsigned long)(info.total_free / 1024UL));
+    print_to_console(buf);
+
+    /* Section placement guide */
+    print_to_console("\r\n[Section Placement Guide]\r\n");
+    print_to_console("  GLCDC framebuffer:\r\n");
+    print_to_console("    uint8_t fb[2][W*H*2] SDRAM_SECTION_NOINIT_NOCACHE;\r\n");
+    print_to_console("  Camera capture buffer:\r\n");
+    print_to_console("    uint8_t cap[W*H*2] SDRAM_SECTION_NOINIT;\r\n");
+    print_to_console("  Zero-init work buffer:\r\n");
+    print_to_console("    uint32_t work[1024] SDRAM_SECTION_ZERO;\r\n");
+}
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
+
+/**
+ * Get SDRAM section layout information from linker symbols
+ *
+ * @details Reads the linker-defined symbols for each SDRAM section and
+ *          calculates total usage and free space.
+ *
+ * Reference: Debug/fsp_gen.lld (SDRAM section definitions)
+ * Reference: Debug/bsp_linker_info.h (linker symbol extern declarations)
+ */
+void sdram_port_get_section_info(sdram_section_info_t *info)
+{
+    if (info == NULL) {
+        return;
+    }
+
+    /* Query linker symbols for each section */
+    info->noinit_nocache.base   = (uint32_t)&__sdram_noinit_nocache$$Base;
+    info->noinit_nocache.limit  = (uint32_t)&__sdram_noinit_nocache$$Limit;
+
+    info->zero_nocache.base     = (uint32_t)&__sdram_zero_nocache$$Base;
+    info->zero_nocache.limit    = (uint32_t)&__sdram_zero_nocache$$Limit;
+
+    info->noinit.base           = (uint32_t)&__sdram_noinit$$Base;
+    info->noinit.limit          = (uint32_t)&__sdram_noinit$$Limit;
+
+    info->zero.base             = (uint32_t)&__sdram_zero$$Base;
+    info->zero.limit            = (uint32_t)&__sdram_zero$$Limit;
+
+    info->from_flash.base       = (uint32_t)&__sdram_from_flash$$Base;
+    info->from_flash.limit      = (uint32_t)&__sdram_from_flash$$Limit;
+
+    /*
+     * SDRAM region boundaries: use compile-time constants from bsp_linker_info.h.
+     *
+     * __ddsc_SDRAM_START / __ddsc_SDRAM_END are linker symbols that mark the
+     * range of *used* sections, NOT the full SDRAM region. When no variables are
+     * placed in SDRAM, both resolve to the same address (0x68000000).
+     *
+     * BSP_PARTITION_SDRAM_CPU0_S_START/SIZE are compile-time constants that
+     * always reflect the full partition size regardless of usage.
+     */
+    info->sdram_start           = (uint32_t)BSP_PARTITION_SDRAM_CPU0_S_START;
+    info->sdram_end             = (uint32_t)(BSP_PARTITION_SDRAM_CPU0_S_START
+                                           + BSP_PARTITION_SDRAM_CPU0_S_SIZE);
+
+    /* Calculate total used and free space */
+    uint32_t used = 0;
+    used += (info->noinit_nocache.limit - info->noinit_nocache.base);
+    used += (info->zero_nocache.limit   - info->zero_nocache.base);
+    used += (info->noinit.limit         - info->noinit.base);
+    used += (info->zero.limit           - info->zero.base);
+    used += (info->from_flash.limit     - info->from_flash.base);
+
+    info->total_used = used;
+
+    /* Free space = total SDRAM partition minus used */
+    uint32_t total_region = BSP_PARTITION_SDRAM_CPU0_S_SIZE;
+    info->total_free = (total_region > used) ? (total_region - used) : 0;
+}
 
 /**
  * Record that SDRAM initialization has been performed by the BSP
@@ -423,6 +608,7 @@ int usrcmd_sdram(int argc, char **argv)
         cmd_print_usage("sdram", "<subcommand>");
         print_to_console("  status  - Show SDRAM initialization status and configuration\r\n");
         print_to_console("  check   - Perform quick write/read verification\r\n");
+        print_to_console("  map     - Show SDRAM section memory layout\r\n");
         return CMD_ERR_USAGE;
     }
 
@@ -436,6 +622,11 @@ int usrcmd_sdram(int argc, char **argv)
         return CMD_OK;
     }
 
+    if (ntlibc_strcmp(argv[1], "map") == 0) {
+        sdram_cmd_map();
+        return CMD_OK;
+    }
+
     /* Unknown sub-command */
     {
         char buf[SDRAM_PRINT_BUF_SIZE];
@@ -446,6 +637,7 @@ int usrcmd_sdram(int argc, char **argv)
     cmd_print_usage("sdram", "<subcommand>");
     print_to_console("  status  - Show SDRAM initialization status and configuration\r\n");
     print_to_console("  check   - Perform quick write/read verification\r\n");
+    print_to_console("  map     - Show SDRAM section memory layout\r\n");
 
     return CMD_ERR_INVALID_ARG;
 }
