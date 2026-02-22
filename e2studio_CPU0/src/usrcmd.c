@@ -124,7 +124,7 @@ static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
     NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
     NTSHELL_CMD("reset",   "Reset the system",                          usrcmd_reset),
-    NTSHELL_CMD("sdram",   "SDRAM control: sdram status|check|map",     usrcmd_sdram),
+    NTSHELL_CMD("sdram",   "SDRAM control: sdram status|check|map|test", usrcmd_sdram),
     NTSHELL_CMD("version", "Show firmware version",                     usrcmd_version),
 };
 
