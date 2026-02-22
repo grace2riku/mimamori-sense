@@ -64,7 +64,7 @@
  *   - BSP config: ra_cfg/fsp_cfg/bsp/bsp_mcu_family_cfg.h (BSP_CFG_SDRAM_*)
  *
  * @note
- * This file is part of the SDRAM control (S-001-2, S-001-3) implementation.
+ * This file is part of the SDRAM control (S-001-2, S-001-3, S-001-4) implementation.
  */
 
 #ifndef SDRAM_PORT_H
@@ -211,6 +211,37 @@ typedef enum {
     SDRAM_STATUS_ERROR,                 /**< Initialization failed or error detected */
 } sdram_status_t;
 
+/** SDRAM test type identifiers */
+typedef enum {
+    SDRAM_TEST_DATA_BUS = 0,            /**< Data bus test (walking 1s/0s on data lines) */
+    SDRAM_TEST_ADDRESS_BUS,             /**< Address bus test (alias detection) */
+    SDRAM_TEST_WALKING_ONES,            /**< Walking 1 pattern across full region */
+    SDRAM_TEST_PATTERN,                 /**< Full region pattern fill/verify */
+    SDRAM_TEST_ALL,                     /**< Run all tests */
+} sdram_test_type_t;
+
+/** SDRAM test result for a single test */
+typedef struct {
+    sdram_test_type_t   test_type;      /**< Type of test executed */
+    bool                passed;         /**< true if test passed */
+    uint32_t            error_address;  /**< Address where first error was detected (0 if passed) */
+    uint32_t            expected_value; /**< Expected value at error address */
+    uint32_t            actual_value;   /**< Actual value read at error address */
+    uint32_t            elapsed_ms;     /**< Test execution time in milliseconds */
+} sdram_test_result_t;
+
+/** SDRAM full test report (all tests) */
+typedef struct {
+    sdram_test_result_t data_bus;       /**< Data bus test result */
+    sdram_test_result_t address_bus;    /**< Address bus test result */
+    sdram_test_result_t walking_ones;   /**< Walking 1 test result */
+    sdram_test_result_t pattern;        /**< Full region pattern test result */
+    bool                all_passed;     /**< true if all tests passed */
+    uint32_t            total_elapsed_ms; /**< Total test execution time */
+    uint32_t            test_base;      /**< Test region base address */
+    uint32_t            test_size;      /**< Test region size in bytes */
+} sdram_test_report_t;
+
 /** SDRAM configuration information (read-only) */
 typedef struct {
     uint32_t    base_address;       /**< SDRAM base address */
@@ -324,6 +355,95 @@ bool sdram_port_sanity_check(void);
 void sdram_port_get_section_info(sdram_section_info_t *info);
 
 /**
+ * Run SDRAM data bus test
+ *
+ * @details Tests each data line independently using walking 1s and walking 0s
+ *          patterns at a single address. Verifies all 16 data lines are
+ *          functioning correctly (SDRAM bus width is 16-bit, tested as 32-bit
+ *          pairs via the 32-bit CPU bus interface).
+ *
+ * @param result Pointer to test result structure to fill
+ * @retval true  Data bus test passed
+ * @retval false Data bus test failed (stuck or shorted data line detected)
+ */
+bool sdram_test_data_bus(sdram_test_result_t *result);
+
+/**
+ * Run SDRAM address bus test
+ *
+ * @details Tests address lines for independence by writing unique patterns
+ *          at power-of-2 offset addresses and verifying no address aliasing
+ *          occurs. Detects stuck or shorted address lines.
+ *
+ *          Algorithm:
+ *            1. Write a base pattern to the base address
+ *            2. For each address bit, write an anti-pattern at the
+ *               power-of-2 offset
+ *            3. Verify the base address still holds the base pattern
+ *               (no alias)
+ *            4. Verify each power-of-2 offset holds its anti-pattern
+ *
+ * @param result Pointer to test result structure to fill
+ * @retval true  Address bus test passed
+ * @retval false Address bus test failed (aliased address detected)
+ */
+bool sdram_test_address_bus(sdram_test_result_t *result);
+
+/**
+ * Run SDRAM walking ones test
+ *
+ * @details Writes a walking-1 pattern (single bit set, shifted through all
+ *          bit positions) across the SDRAM region. Tests data retention and
+ *          data line connectivity at multiple addresses.
+ *
+ *          The test steps through the SDRAM in 4KB increments and at each
+ *          location writes/reads all 32 walking-1 patterns (0x00000001,
+ *          0x00000002, 0x00000004, ..., 0x80000000).
+ *
+ * @param result Pointer to test result structure to fill
+ * @retval true  Walking ones test passed
+ * @retval false Walking ones test failed
+ */
+bool sdram_test_walking_ones(sdram_test_result_t *result);
+
+/**
+ * Run SDRAM full region pattern test
+ *
+ * @details Fills the entire SDRAM region with a pattern, then reads back
+ *          and verifies every location. Repeats with multiple patterns:
+ *            - 0x55AA55AA (alternating bits)
+ *            - 0xAA55AA55 (complement)
+ *            - 0x00000000 (all zeros)
+ *            - 0xFFFFFFFF (all ones)
+ *
+ *          This is the most thorough test but takes the longest to execute
+ *          (several seconds for 32MB).
+ *
+ * @param result Pointer to test result structure to fill
+ * @retval true  All patterns passed
+ * @retval false Pattern test failed (data corruption detected)
+ */
+bool sdram_test_pattern(sdram_test_result_t *result);
+
+/**
+ * Run all SDRAM tests and generate a full report
+ *
+ * @details Executes all four SDRAM tests in sequence:
+ *          1. Data bus test
+ *          2. Address bus test
+ *          3. Walking ones test
+ *          4. Full region pattern test
+ *
+ *          Test execution stops early if a critical test (data bus, address
+ *          bus) fails, as subsequent tests would produce unreliable results.
+ *
+ * @param report Pointer to test report structure to fill
+ * @retval true  All tests passed
+ * @retval false One or more tests failed
+ */
+bool sdram_test_run_all(sdram_test_report_t *report);
+
+/**
  * NT-Shell command handler for SDRAM control
  *
  * @details Registered as the "sdram" command in usrcmd.c.
@@ -331,6 +451,7 @@ void sdram_port_get_section_info(sdram_section_info_t *info);
  *            sdram status  - Show SDRAM initialization status and configuration
  *            sdram check   - Perform a quick sanity check (write/read pattern)
  *            sdram map     - Show SDRAM section memory layout
+ *            sdram test    - Run comprehensive SDRAM memory tests
  *
  * @param argc Argument count
  * @param argv Argument vector
