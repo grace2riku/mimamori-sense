@@ -118,7 +118,7 @@ static int usrcmd_mw(int argc, char **argv);
  *
  */
 static const cmd_table_t cmdlist[] = {
-    NTSHELL_CMD("display", "GLCDC display: display status|fb|test",     usrcmd_display),
+    NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test", usrcmd_display),
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
     NTSHELL_CMD("led",     "LED control: led list | led <id> <on|off|toggle|blink>", usrcmd_led),
