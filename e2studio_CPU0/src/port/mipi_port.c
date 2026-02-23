@@ -39,6 +39,7 @@
 #include <string.h>
 
 #include "mipi_port.h"
+#include "csi2_port.h"
 #include "bsp_api.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
@@ -478,12 +479,89 @@ void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing)
 }
 
 /**
- * NT-Shell "camera" command handler (S-003-1 / S-003-4)
+ * Print camera command usage help
+ */
+static void mipi_cmd_print_help(void)
+{
+    cmd_print_usage("camera", "<subcommand>");
+    print_to_console("  phy     - Show MIPI D-PHY configuration and status (S-003-1)\r\n");
+    print_to_console("  timing  - Show D-PHY timing parameters (S-003-1)\r\n");
+    print_to_console("  init    - Initialize MIPI D-PHY (S-003-1)\r\n");
+    print_to_console("  csi     - Show CSI-2 receiver status and error counters (S-003-2)\r\n");
+    print_to_console("  csi reset - Reset CSI-2 error/frame counters (S-003-2)\r\n");
+    print_to_console("  csi init  - Initialize CSI-2 receiver (S-003-2)\r\n");
+    print_to_console("  csi start - Start CSI-2 reception (S-003-2)\r\n");
+    print_to_console("  csi stop  - Stop CSI-2 reception (S-003-2)\r\n");
+}
+
+/**
+ * "camera csi init" sub-command handler
+ */
+static void mipi_cmd_csi_init(void)
+{
+    print_to_console("  Initializing CSI-2 receiver...\r\n");
+
+    bool result = csi2_port_init();
+
+    if (result) {
+        print_to_console("  CSI-2 receiver initialized successfully.\r\n");
+    } else {
+        csi2_status_t status = csi2_port_get_status();
+        if (status == CSI2_STATUS_NO_FSP_MODULE) {
+            print_to_console("  Error: FSP MIPI CSI module is not configured.\r\n");
+            print_to_console("  Add MIPI CSI module in configuration.xml first.\r\n");
+        } else {
+            print_to_console("  Error: CSI-2 receiver initialization failed.\r\n");
+        }
+    }
+}
+
+/**
+ * "camera csi start" sub-command handler
+ */
+static void mipi_cmd_csi_start(void)
+{
+    if (!csi2_port_is_available()) {
+        print_to_console("  Error: CSI-2 receiver is not initialized.\r\n");
+        print_to_console("  Run 'camera csi init' first.\r\n");
+        return;
+    }
+
+    print_to_console("  Starting CSI-2 reception...\r\n");
+
+    if (csi2_port_start()) {
+        print_to_console("  CSI-2 reception started.\r\n");
+    } else {
+        print_to_console("  Error: Failed to start CSI-2 reception.\r\n");
+    }
+}
+
+/**
+ * "camera csi stop" sub-command handler
+ */
+static void mipi_cmd_csi_stop(void)
+{
+    print_to_console("  Stopping CSI-2 reception...\r\n");
+
+    if (csi2_port_stop()) {
+        print_to_console("  CSI-2 reception stopped.\r\n");
+    } else {
+        print_to_console("  Error: Failed to stop CSI-2 reception.\r\n");
+    }
+}
+
+/**
+ * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-4)
  *
  * @details Provides camera/MIPI diagnostic sub-commands:
- *   camera phy     - Show MIPI PHY initialization state and configuration
- *   camera timing  - Show D-PHY timing parameters
- *   camera init    - Initialize MIPI PHY (manual trigger)
+ *   camera phy       - Show MIPI PHY initialization state and configuration
+ *   camera timing    - Show D-PHY timing parameters
+ *   camera init      - Initialize MIPI PHY (manual trigger)
+ *   camera csi       - Show CSI-2 receiver status and error counters
+ *   camera csi reset - Reset CSI-2 error/frame counters
+ *   camera csi init  - Initialize CSI-2 receiver
+ *   camera csi start - Start CSI-2 reception
+ *   camera csi stop  - Stop CSI-2 reception
  *
  * @param argc Argument count
  * @param argv Argument vector
@@ -492,13 +570,11 @@ void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing)
 int usrcmd_camera(int argc, char **argv)
 {
     if (argc < 2) {
-        cmd_print_usage("camera", "<subcommand>");
-        print_to_console("  phy     - Show MIPI D-PHY configuration and status\r\n");
-        print_to_console("  timing  - Show D-PHY timing parameters\r\n");
-        print_to_console("  init    - Initialize MIPI D-PHY\r\n");
+        mipi_cmd_print_help();
         return CMD_ERR_USAGE;
     }
 
+    /* S-003-1: D-PHY sub-commands */
     if (ntlibc_strcmp(argv[1], "phy") == 0) {
         mipi_cmd_phy();
         return CMD_OK;
@@ -514,6 +590,44 @@ int usrcmd_camera(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* S-003-2: CSI-2 sub-commands */
+    if (ntlibc_strcmp(argv[1], "csi") == 0) {
+        if (argc < 3) {
+            /* "camera csi" with no further args: show status */
+            csi2_cmd_status();
+            return CMD_OK;
+        }
+
+        if (ntlibc_strcmp(argv[2], "reset") == 0) {
+            csi2_cmd_reset();
+            return CMD_OK;
+        }
+
+        if (ntlibc_strcmp(argv[2], "init") == 0) {
+            mipi_cmd_csi_init();
+            return CMD_OK;
+        }
+
+        if (ntlibc_strcmp(argv[2], "start") == 0) {
+            mipi_cmd_csi_start();
+            return CMD_OK;
+        }
+
+        if (ntlibc_strcmp(argv[2], "stop") == 0) {
+            mipi_cmd_csi_stop();
+            return CMD_OK;
+        }
+
+        /* Unknown CSI sub-command */
+        {
+            char buf[MIPI_PRINT_BUF_SIZE];
+            snprintf(buf, sizeof(buf), "Error: Unknown CSI sub-command '%s'.\r\n", argv[2]);
+            print_to_console(buf);
+        }
+        print_to_console("  Available: csi [reset|init|start|stop]\r\n");
+        return CMD_ERR_INVALID_ARG;
+    }
+
     /* Unknown sub-command */
     {
         char buf[MIPI_PRINT_BUF_SIZE];
@@ -521,10 +635,7 @@ int usrcmd_camera(int argc, char **argv)
         print_to_console(buf);
     }
 
-    cmd_print_usage("camera", "<subcommand>");
-    print_to_console("  phy     - Show MIPI D-PHY configuration and status\r\n");
-    print_to_console("  timing  - Show D-PHY timing parameters\r\n");
-    print_to_console("  init    - Initialize MIPI D-PHY\r\n");
+    mipi_cmd_print_help();
 
     return CMD_ERR_INVALID_ARG;
 }
