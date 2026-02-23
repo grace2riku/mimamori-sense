@@ -65,6 +65,8 @@
 #include "port/dave2d_port.h"
 #include "port/mipi_port.h"
 
+#include "lvgl.h"
+
 #include "FreeRTOS.h"
 #include "task.h"
 #include "fsp_version.h"
@@ -100,6 +102,7 @@ static int usrcmd_info(int argc, char **argv);
 static int usrcmd_version(int argc, char **argv);
 static int usrcmd_reset(int argc, char **argv);
 static int usrcmd_led(int argc, char **argv);
+static int usrcmd_lvgl(int argc, char **argv);
 static int usrcmd_md(int argc, char **argv);
 static int usrcmd_mr(int argc, char **argv);
 static int usrcmd_mw(int argc, char **argv);
@@ -126,6 +129,7 @@ static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
     NTSHELL_CMD("led",     "LED control: led list | led <id> <on|off|toggle|blink>", usrcmd_led),
+    NTSHELL_CMD("lvgl",    "LVGL control: lvgl status|mem|screen|conf", usrcmd_lvgl),
     NTSHELL_CMD("md",      "Dump memory: md <addr> [length]",          usrcmd_md),
     NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
     NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
@@ -334,6 +338,286 @@ static int usrcmd_info(int argc, char **argv)
     print_to_console("  ver  - Version information\r\n");
     print_to_console("  (no args) - Show all information\r\n");
     return CMD_ERR_USAGE;
+}
+
+/**
+ * lvgl command - LVGL status, memory, and configuration diagnostics
+ *
+ * @details Provides diagnostic information about the LVGL library state.
+ *          This command is called from ntshell_thread, so all LVGL API
+ *          calls must be protected with lv_lock() / lv_unlock() for
+ *          thread safety.
+ *
+ * Usage:
+ *   lvgl status  - Show LVGL initialization state and version
+ *   lvgl mem     - Show LVGL heap memory usage (lv_mem_monitor)
+ *   lvgl screen  - Show current screen information
+ *   lvgl conf    - Show key lv_conf_user.h settings
+ *
+ * Issue: #4 (F-001-3)
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ * @return CMD_OK on success, CMD_ERR_* on error
+ */
+static int usrcmd_lvgl(int argc, char **argv)
+{
+    char buf[PRINT_BUF_SIZE];
+
+    if (argc < 2) {
+        cmd_print_usage("lvgl", "<subcommand>");
+        print_to_console("  status - LVGL initialization state and version\r\n");
+        print_to_console("  mem    - LVGL heap memory usage\r\n");
+        print_to_console("  screen - Current screen information\r\n");
+        print_to_console("  conf   - Key lv_conf_user.h settings\r\n");
+        return CMD_ERR_USAGE;
+    }
+
+    /* --- "lvgl status" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "status") == 0) {
+        print_to_console("[LVGL Status]\r\n");
+
+        /* LVGL version */
+        snprintf(buf, sizeof(buf), "  Version   : %d.%d.%d %s\r\n",
+                 LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
+                 LVGL_VERSION_INFO);
+        print_to_console(buf);
+
+        /* lv_is_initialized() check - requires lv_lock for thread safety */
+        lv_lock();
+        {
+            bool initialized = lv_is_initialized();
+            snprintf(buf, sizeof(buf), "  Initialized: %s\r\n",
+                     initialized ? "Yes" : "No");
+            print_to_console(buf);
+
+            /* Display info */
+            lv_display_t *disp = lv_display_get_default();
+            if (disp != NULL) {
+                int32_t hor = lv_display_get_horizontal_resolution(disp);
+                int32_t ver = lv_display_get_vertical_resolution(disp);
+                snprintf(buf, sizeof(buf), "  Display   : %ldx%ld\r\n",
+                         (long)hor, (long)ver);
+                print_to_console(buf);
+            } else {
+                print_to_console("  Display   : Not initialized\r\n");
+            }
+
+            /* Color depth */
+            snprintf(buf, sizeof(buf), "  Color depth: %d bits\r\n", LV_COLOR_DEPTH);
+            print_to_console(buf);
+
+            /* Dave2D status */
+#if LV_USE_DRAW_DAVE2D
+            print_to_console("  Dave2D GPU : Enabled\r\n");
+#else
+            print_to_console("  Dave2D GPU : Disabled\r\n");
+#endif
+
+            /* Refresh period */
+            snprintf(buf, sizeof(buf), "  Refresh   : %d ms (~%d FPS)\r\n",
+                     LV_DEF_REFR_PERIOD, 1000 / LV_DEF_REFR_PERIOD);
+            print_to_console(buf);
+        }
+        lv_unlock();
+
+        return CMD_OK;
+    }
+
+    /* --- "lvgl mem" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "mem") == 0) {
+        print_to_console("[LVGL Memory]\r\n");
+
+        lv_lock();
+        {
+            lv_mem_monitor_t mon;
+            lv_mem_monitor(&mon);
+
+            snprintf(buf, sizeof(buf), "  Total size    : %lu bytes (%lu KB)\r\n",
+                     (unsigned long)mon.total_size,
+                     (unsigned long)(mon.total_size / 1024));
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Free          : %lu bytes (%lu KB)\r\n",
+                     (unsigned long)mon.free_size,
+                     (unsigned long)(mon.free_size / 1024));
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Used          : %lu bytes (%lu KB)\r\n",
+                     (unsigned long)(mon.total_size - mon.free_size),
+                     (unsigned long)((mon.total_size - mon.free_size) / 1024));
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Max used      : %lu bytes (%lu KB)\r\n",
+                     (unsigned long)mon.max_used,
+                     (unsigned long)(mon.max_used / 1024));
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Biggest free  : %lu bytes (%lu KB)\r\n",
+                     (unsigned long)mon.free_biggest_size,
+                     (unsigned long)(mon.free_biggest_size / 1024));
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Used blocks   : %lu\r\n",
+                     (unsigned long)mon.used_cnt);
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Free blocks   : %lu\r\n",
+                     (unsigned long)mon.free_cnt);
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Used %%        : %u%%\r\n", mon.used_pct);
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Fragmentation : %u%%\r\n", mon.frag_pct);
+            print_to_console(buf);
+        }
+        lv_unlock();
+
+        return CMD_OK;
+    }
+
+    /* --- "lvgl screen" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "screen") == 0) {
+        print_to_console("[LVGL Screen]\r\n");
+
+        lv_lock();
+        {
+            lv_display_t *disp = lv_display_get_default();
+            if (disp == NULL) {
+                print_to_console("  No display initialized\r\n");
+                lv_unlock();
+                return CMD_OK;
+            }
+
+            lv_obj_t *scr = lv_display_get_screen_active(disp);
+            if (scr == NULL) {
+                print_to_console("  No active screen\r\n");
+                lv_unlock();
+                return CMD_OK;
+            }
+
+            uint32_t child_count = lv_obj_get_child_count(scr);
+            snprintf(buf, sizeof(buf), "  Active screen : %p\r\n", (void *)scr);
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Child widgets : %lu\r\n",
+                     (unsigned long)child_count);
+            print_to_console(buf);
+
+            int32_t w = lv_obj_get_width(scr);
+            int32_t h = lv_obj_get_height(scr);
+            snprintf(buf, sizeof(buf), "  Screen size   : %ldx%ld\r\n",
+                     (long)w, (long)h);
+            print_to_console(buf);
+
+            /* List top-level children */
+            if (child_count > 0) {
+                uint32_t max_show = (child_count > 10) ? 10 : child_count;
+                print_to_console("  Top-level children:\r\n");
+                for (uint32_t i = 0; i < max_show; i++) {
+                    lv_obj_t *child = lv_obj_get_child(scr, (int32_t)i);
+                    const lv_obj_class_t *cls = lv_obj_get_class(child);
+                    int32_t cw = lv_obj_get_width(child);
+                    int32_t ch = lv_obj_get_height(child);
+                    snprintf(buf, sizeof(buf), "    [%lu] class=%p size=%ldx%ld\r\n",
+                             (unsigned long)i, (void *)cls, (long)cw, (long)ch);
+                    print_to_console(buf);
+                }
+                if (child_count > max_show) {
+                    snprintf(buf, sizeof(buf), "    ... and %lu more\r\n",
+                             (unsigned long)(child_count - max_show));
+                    print_to_console(buf);
+                }
+            }
+        }
+        lv_unlock();
+
+        return CMD_OK;
+    }
+
+    /* --- "lvgl conf" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "conf") == 0) {
+        print_to_console("[LVGL Configuration (lv_conf_user.h)]\r\n");
+
+        snprintf(buf, sizeof(buf), "  LV_MEM_SIZE              : %lu bytes (%lu KB)\r\n",
+                 (unsigned long)LV_MEM_SIZE,
+                 (unsigned long)(LV_MEM_SIZE / 1024));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  LV_DEF_REFR_PERIOD       : %d ms\r\n",
+                 LV_DEF_REFR_PERIOD);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  LV_COLOR_DEPTH            : %d bits\r\n",
+                 LV_COLOR_DEPTH);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  LV_DRAW_LAYER_SIMPLE_BUF  : %lu bytes (%lu KB)\r\n",
+                 (unsigned long)LV_DRAW_LAYER_SIMPLE_BUF_SIZE,
+                 (unsigned long)(LV_DRAW_LAYER_SIMPLE_BUF_SIZE / 1024));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  LV_DRAW_LAYER_MAX_MEMORY  : %lu bytes (%lu KB)\r\n",
+                 (unsigned long)LV_DRAW_LAYER_MAX_MEMORY,
+                 (unsigned long)(LV_DRAW_LAYER_MAX_MEMORY / 1024));
+        print_to_console(buf);
+
+#if LV_USE_DRAW_DAVE2D
+        print_to_console("  LV_USE_DRAW_DAVE2D        : 1 (Enabled)\r\n");
+#else
+        print_to_console("  LV_USE_DRAW_DAVE2D        : 0 (Disabled)\r\n");
+#endif
+
+#if LV_USE_LOG
+        print_to_console("  LV_USE_LOG                : 1 (Enabled)\r\n");
+    #if LV_LOG_LEVEL == LV_LOG_LEVEL_TRACE
+        print_to_console("  LV_LOG_LEVEL              : TRACE\r\n");
+    #elif LV_LOG_LEVEL == LV_LOG_LEVEL_INFO
+        print_to_console("  LV_LOG_LEVEL              : INFO\r\n");
+    #elif LV_LOG_LEVEL == LV_LOG_LEVEL_WARN
+        print_to_console("  LV_LOG_LEVEL              : WARN\r\n");
+    #elif LV_LOG_LEVEL == LV_LOG_LEVEL_ERROR
+        print_to_console("  LV_LOG_LEVEL              : ERROR\r\n");
+    #else
+        print_to_console("  LV_LOG_LEVEL              : OTHER\r\n");
+    #endif
+        snprintf(buf, sizeof(buf), "  LV_LOG_PRINTF             : %d\r\n", LV_LOG_PRINTF);
+        print_to_console(buf);
+#else
+        print_to_console("  LV_USE_LOG                : 0 (Disabled)\r\n");
+#endif
+
+#if LV_USE_SYSMON
+        print_to_console("  LV_USE_SYSMON             : 1 (Enabled)\r\n");
+    #if LV_USE_PERF_MONITOR
+        print_to_console("  LV_USE_PERF_MONITOR       : 1 (Enabled)\r\n");
+    #else
+        print_to_console("  LV_USE_PERF_MONITOR       : 0 (Disabled)\r\n");
+    #endif
+    #if LV_USE_MEM_MONITOR
+        print_to_console("  LV_USE_MEM_MONITOR        : 1 (Enabled)\r\n");
+    #else
+        print_to_console("  LV_USE_MEM_MONITOR        : 0 (Disabled)\r\n");
+    #endif
+#else
+        print_to_console("  LV_USE_SYSMON             : 0 (Disabled)\r\n");
+#endif
+
+#if LV_USE_TINY_TTF
+        print_to_console("  LV_USE_TINY_TTF           : 1 (Enabled)\r\n");
+#else
+        print_to_console("  LV_USE_TINY_TTF           : 0 (Disabled)\r\n");
+#endif
+
+        return CMD_OK;
+    }
+
+    /* --- Unknown sub-command --- */
+    snprintf(buf, sizeof(buf), "Error: Unknown sub-command '%s'.\r\n", argv[1]);
+    print_to_console(buf);
+    cmd_print_usage("lvgl", "status|mem|screen|conf");
+    return CMD_ERR_INVALID_ARG;
 }
 
 /**
