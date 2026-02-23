@@ -2,12 +2,13 @@
  * @file dave2d_port.c
  * @brief Dave2D (D/AVE 2D) graphics accelerator port layer implementation
  * @details
- * Implements Dave2D initialization tracking, status query, and diagnostic
- * functions for the Renesas D/AVE 2D hardware graphics engine.
+ * Implements Dave2D initialization tracking, status query, basic drawing
+ * wrapper functions, color conversion utilities, and diagnostic functions
+ * for the Renesas D/AVE 2D hardware graphics engine.
  *
- * This module acts as a diagnostic and tracking layer over the Dave2D
- * initialization performed by LVGL internally. It does NOT duplicate
- * the Dave2D initialization sequence.
+ * This module acts as a diagnostic, tracking, and drawing wrapper layer
+ * over the Dave2D initialization performed by LVGL internally. It does
+ * NOT duplicate the Dave2D initialization sequence.
  *
  * Dave2D Initialization Flow:
  *   1. lv_init() is called from lvgl_thread_entry.c
@@ -22,6 +23,25 @@
  *   4. dave2d_port_init() (this module) verifies the handle is valid
  *
  *   Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:541-604
+ *
+ * Drawing Wrapper Architecture (S-004-2):
+ *   The wrapper functions use the LVGL-managed Dave2D resources:
+ *     - _d2_handle: The Dave2D device handle (created by LVGL)
+ *     - _blit_renderbuffer: Separate render buffer for non-LVGL operations
+ *     - xd2Semaphore: LVGL's Dave2D mutex for thread safety
+ *
+ *   Each drawing wrapper follows this pattern:
+ *     1. Check dave2d is available (dave2d_port_is_available)
+ *     2. Lock the LVGL Dave2D mutex (lv_mutex_lock)
+ *     3. Select _blit_renderbuffer (separate from LVGL's main buffer)
+ *     4. Set up framebuffer, clip rect, color, alpha
+ *     5. Issue the rendering command (d2_renderbox, d2_renderline, etc.)
+ *     6. Execute and flush (d2_executerenderbuffer + d2_flushframe)
+ *     7. Restore _renderbuffer selection
+ *     8. Unlock the mutex
+ *
+ *   Reference for blit pattern:
+ *     e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:156-213
  *
  * The LVGL Dave2D draw unit (lv_draw_dave2d_unit_t) stores the handle
  * in its d2_handle member and uses it for all hardware-accelerated
@@ -40,7 +60,7 @@
  *   - FSP d2_handle0: e2studio_CPU0/ra_gen/common_data.c:4
  *
  * @note
- * This file is part of the Dave2D control (S-004-1) implementation.
+ * This file is part of the Dave2D control (S-004-1, S-004-2) implementation.
  */
 
 /**********************************************************************************************************************
@@ -51,10 +71,14 @@
 
 #include "dave2d_port.h"
 #include "dave_driver.h"
+#include "lvgl.h"
 #include "common_data.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
+
+#include "FreeRTOS.h"
+#include "task.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -62,6 +86,18 @@
 
 /** Console output buffer size */
 #define DAVE2D_PRINT_BUF_SIZE   (128)
+
+/**
+ * D2_FIX4 macro for converting integer to 12:4 fixed-point
+ *
+ * Reference: e2studio_CPU0/ra/tes/dave2d/inc/dave_driver.h
+ *   "if you want to pass an integer value of 42 to a function that expects
+ *    an argument of e.g. type <d2_point> you would have to write :
+ *    > function( 42 << 4 );    // conversion from integer to fixedpoint"
+ */
+#ifndef D2_FIX4
+#define D2_FIX4(x)  ((d2_s32)((x) << 4))
+#endif
 
 /**********************************************************************************************************************
  External declarations
@@ -82,6 +118,39 @@
  */
 #if LV_USE_DRAW_DAVE2D
 extern d2_device *_d2_handle;
+
+/**
+ * LVGL internal blit render buffer
+ *
+ * Used by the wrapper functions to avoid interfering with LVGL's main
+ * render buffer (_renderbuffer). The blit render buffer is created by
+ * lv_dave2d_init() at:
+ *   e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:580-585
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:60
+ */
+extern d2_renderbuffer *_blit_renderbuffer;
+
+/**
+ * LVGL internal main render buffer
+ *
+ * The primary render buffer used by LVGL for draw operations. The wrapper
+ * functions restore selection to this buffer after using _blit_renderbuffer.
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:59
+ */
+extern d2_renderbuffer *_renderbuffer;
+
+/**
+ * LVGL Dave2D mutex for thread safety
+ *
+ * All Dave2D operations must be serialized via this mutex because the
+ * Dave2D hardware is a shared resource between the LVGL draw thread and
+ * any other thread (e.g., NT-Shell) that uses the wrapper functions.
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:65
+ */
+extern lv_mutex_t xd2Semaphore;
 #endif
 
 /**********************************************************************************************************************
@@ -95,6 +164,14 @@ static dave2d_status_t s_dave2d_status = DAVE2D_STATUS_NOT_INITIALIZED;
  Private (static) functions prototypes
  *********************************************************************************************************************/
 static void dave2d_cmd_status(void);
+static void dave2d_cmd_test(int argc, char **argv);
+
+#if LV_USE_DRAW_DAVE2D
+static void dave2d_cmd_test_rect(void);
+static void dave2d_cmd_test_line(void);
+static void dave2d_cmd_test_blit(void);
+static void dave2d_cmd_test_alpha(void);
+#endif
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -185,6 +262,14 @@ static void dave2d_cmd_status(void)
     print_to_console("  Label/Text      : d2_setblitsrc (lv_draw_dave2d_label)\r\n");
     print_to_console("  Triangle        : d2_rendertri (lv_draw_dave2d_triangle)\r\n");
 
+    print_to_console("[Wrapper Functions (S-004-2)]\r\n");
+    print_to_console("  dave2d_port_fill_rect()     - Filled rectangle\r\n");
+    print_to_console("  dave2d_port_draw_rect()     - Rectangle outline\r\n");
+    print_to_console("  dave2d_port_draw_line()     - Line drawing\r\n");
+    print_to_console("  dave2d_port_blit()          - Texture BLIT (1:1 copy)\r\n");
+    print_to_console("  dave2d_port_blit_scaled()   - Texture BLIT (scaled)\r\n");
+    print_to_console("  dave2d_port_set_blend_mode()- Alpha blend mode\r\n");
+
     print_to_console("[Initialization Architecture]\r\n");
     print_to_console("  lv_init()\r\n");
     print_to_console("    -> lv_draw_dave2d_init()\r\n");
@@ -198,9 +283,314 @@ static void dave2d_cmd_status(void)
     print_to_console("    -> Records status for diagnostics\r\n");
 }
 
+/**
+ * "dave2d test" sub-command dispatcher (S-004-2)
+ *
+ * @details Dispatches test sub-commands for drawing wrapper verification.
+ *          Test patterns are drawn directly to the GLCDC framebuffer
+ *          using the Dave2D wrapper functions.
+ *
+ *          Note: These tests bypass LVGL and write directly to the
+ *          framebuffer. LVGL rendering will overwrite the test patterns.
+ *
+ * @param argc  Argument count (from the original command)
+ * @param argv  Argument vector
+ */
+static void dave2d_cmd_test(int argc, char **argv)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        print_to_console("  Error: Dave2D is not available.\r\n");
+        return;
+    }
+
+    if (argc < 3) {
+        print_to_console("Usage: dave2d test <pattern>\r\n");
+        print_to_console("  rect   - Draw filled and outlined rectangles\r\n");
+        print_to_console("  line   - Draw lines with various widths\r\n");
+        print_to_console("  blit   - Draw BLIT test (source buffer copy)\r\n");
+        print_to_console("  alpha  - Draw alpha blending test\r\n");
+        print_to_console("  all    - Run all drawing tests\r\n");
+        return;
+    }
+
+    const char *pattern = argv[2];
+
+    if (ntlibc_strcmp(pattern, "rect") == 0) {
+        dave2d_cmd_test_rect();
+    } else if (ntlibc_strcmp(pattern, "line") == 0) {
+        dave2d_cmd_test_line();
+    } else if (ntlibc_strcmp(pattern, "blit") == 0) {
+        dave2d_cmd_test_blit();
+    } else if (ntlibc_strcmp(pattern, "alpha") == 0) {
+        dave2d_cmd_test_alpha();
+    } else if (ntlibc_strcmp(pattern, "all") == 0) {
+        print_to_console("  Running all Dave2D drawing tests...\r\n");
+        dave2d_cmd_test_rect();
+        dave2d_cmd_test_line();
+        dave2d_cmd_test_blit();
+        dave2d_cmd_test_alpha();
+        print_to_console("  All tests completed.\r\n");
+    } else {
+        char buf[DAVE2D_PRINT_BUF_SIZE];
+        snprintf(buf, sizeof(buf), "  Error: Unknown test '%s'.\r\n", pattern);
+        print_to_console(buf);
+        print_to_console("  Available: rect, line, blit, alpha, all\r\n");
+    }
+#else
+    (void)argc;
+    (void)argv;
+    print_to_console("  Error: LV_USE_DRAW_DAVE2D is disabled.\r\n");
+#endif
+}
+
+#if LV_USE_DRAW_DAVE2D
+
+/**
+ * "dave2d test rect" - Draw test rectangles on both framebuffers
+ *
+ * @details Draws filled rectangles and outlined rectangles on the display
+ *          to verify dave2d_port_fill_rect() and dave2d_port_draw_rect().
+ *          Draws to both framebuffers for visibility with double buffering.
+ */
+static void dave2d_cmd_test_rect(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    int result;
+    dave2d_fb_t fb;
+
+    print_to_console("  [Dave2D Test: Rectangle]\r\n");
+
+    /* Draw to both framebuffers for visibility */
+    for (uint32_t i = 0; i < 2; i++) {
+        if (!dave2d_port_fb_from_glcdc(&fb, i)) {
+            snprintf(buf, sizeof(buf), "  Error: Cannot get FB[%lu].\r\n",
+                     (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Red filled rectangle at (50, 50), 200x100 */
+        result = dave2d_port_fill_rect(&fb, 50, 50, 200, 100,
+                                       dave2d_port_rgb888_to_d2color(255, 0, 0), 255);
+        if (result != DAVE2D_OK) {
+            snprintf(buf, sizeof(buf), "  Error: fill_rect failed (%d) on FB[%lu].\r\n",
+                     result, (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Green filled rectangle at (300, 50), 200x100 */
+        dave2d_port_fill_rect(&fb, 300, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(0, 255, 0), 255);
+
+        /* Blue filled rectangle at (550, 50), 200x100 */
+        dave2d_port_fill_rect(&fb, 550, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(0, 0, 255), 255);
+
+        /* White outlined rectangle at (50, 200), 300x150, border 3px */
+        dave2d_port_draw_rect(&fb, 50, 200, 300, 150,
+                              dave2d_port_rgb888_to_d2color(255, 255, 255), 255, 3);
+
+        /* Yellow outlined rectangle at (400, 200), 300x150, border 5px */
+        dave2d_port_draw_rect(&fb, 400, 200, 300, 150,
+                              dave2d_port_rgb888_to_d2color(255, 255, 0), 255, 5);
+    }
+
+    print_to_console("  Done. 3 filled rects (R,G,B) + 2 outlined rects (W,Y).\r\n");
+}
+
+/**
+ * "dave2d test line" - Draw test lines on both framebuffers
+ *
+ * @details Draws lines with various colors and widths to verify
+ *          dave2d_port_draw_line().
+ */
+static void dave2d_cmd_test_line(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    int result;
+    dave2d_fb_t fb;
+
+    print_to_console("  [Dave2D Test: Line]\r\n");
+
+    for (uint32_t i = 0; i < 2; i++) {
+        if (!dave2d_port_fb_from_glcdc(&fb, i)) {
+            snprintf(buf, sizeof(buf), "  Error: Cannot get FB[%lu].\r\n",
+                     (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Red horizontal line, width 2 */
+        result = dave2d_port_draw_line(&fb, 50, 400, 400, 400,
+                                       dave2d_port_rgb888_to_d2color(255, 0, 0), 255, 2);
+        if (result != DAVE2D_OK) {
+            snprintf(buf, sizeof(buf), "  Error: draw_line failed (%d) on FB[%lu].\r\n",
+                     result, (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Green vertical line, width 3 */
+        dave2d_port_draw_line(&fb, 500, 370, 500, 550,
+                              dave2d_port_rgb888_to_d2color(0, 255, 0), 255, 3);
+
+        /* Blue diagonal line, width 4 */
+        dave2d_port_draw_line(&fb, 550, 370, 900, 550,
+                              dave2d_port_rgb888_to_d2color(0, 0, 255), 255, 4);
+
+        /* White cross pattern, width 1 */
+        dave2d_port_draw_line(&fb, 50, 450, 400, 550,
+                              dave2d_port_rgb888_to_d2color(255, 255, 255), 255, 1);
+        dave2d_port_draw_line(&fb, 50, 550, 400, 450,
+                              dave2d_port_rgb888_to_d2color(255, 255, 255), 255, 1);
+    }
+
+    print_to_console("  Done. Horizontal, vertical, diagonal, and cross lines.\r\n");
+}
+
+/**
+ * "dave2d test blit" - Draw a test BLIT pattern on both framebuffers
+ *
+ * @details Creates a small RGB565 source buffer with a checkerboard pattern
+ *          and blits it to the framebuffer at multiple positions, including
+ *          a scaled copy, to verify dave2d_port_blit() and
+ *          dave2d_port_blit_scaled().
+ */
+static void dave2d_cmd_test_blit(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    int result;
+    dave2d_fb_t fb;
+
+    print_to_console("  [Dave2D Test: BLIT]\r\n");
+
+    /*
+     * Create a small 32x32 checkerboard source buffer in RGB565 format.
+     * The buffer is allocated on the stack. For larger images, SDRAM
+     * allocation would be needed.
+     */
+    #define BLIT_TEST_SIZE  (32)
+    static uint16_t src_buf[BLIT_TEST_SIZE * BLIT_TEST_SIZE];
+
+    /* Fill source buffer with 4x4 pixel checkerboard (cyan/magenta) */
+    for (int32_t y = 0; y < BLIT_TEST_SIZE; y++) {
+        for (int32_t x = 0; x < BLIT_TEST_SIZE; x++) {
+            uint32_t block_x = (uint32_t)x / 4;
+            uint32_t block_y = (uint32_t)y / 4;
+            if ((block_x ^ block_y) & 1U) {
+                src_buf[y * BLIT_TEST_SIZE + x] = 0x07FF;  /* Cyan (RGB565) */
+            } else {
+                src_buf[y * BLIT_TEST_SIZE + x] = 0xF81F;  /* Magenta (RGB565) */
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < 2; i++) {
+        if (!dave2d_port_fb_from_glcdc(&fb, i)) {
+            snprintf(buf, sizeof(buf), "  Error: Cannot get FB[%lu].\r\n",
+                     (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* 1:1 BLIT at position (800, 50) */
+        result = dave2d_port_blit(&fb,
+                                  src_buf, BLIT_TEST_SIZE,
+                                  BLIT_TEST_SIZE, BLIT_TEST_SIZE,
+                                  d2_mode_rgb565,
+                                  800, 50);
+        if (result != DAVE2D_OK) {
+            snprintf(buf, sizeof(buf), "  Error: blit failed (%d) on FB[%lu].\r\n",
+                     result, (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Scaled BLIT (32x32 -> 96x96) at position (840, 50) */
+        dave2d_port_blit_scaled(&fb,
+                                src_buf, BLIT_TEST_SIZE,
+                                BLIT_TEST_SIZE, BLIT_TEST_SIZE,
+                                d2_mode_rgb565,
+                                840, 100, 96, 96);
+
+        /* 1:1 BLIT at another position (800, 200) */
+        dave2d_port_blit(&fb,
+                         src_buf, BLIT_TEST_SIZE,
+                         BLIT_TEST_SIZE, BLIT_TEST_SIZE,
+                         d2_mode_rgb565,
+                         800, 200);
+    }
+
+    print_to_console("  Done. 32x32 checkerboard blitted at 1:1 and 3x scaled.\r\n");
+    #undef BLIT_TEST_SIZE
+}
+
+/**
+ * "dave2d test alpha" - Draw alpha blending test on both framebuffers
+ *
+ * @details Draws overlapping rectangles with different alpha values to
+ *          verify dave2d_port_fill_rect() alpha parameter and
+ *          dave2d_port_set_blend_mode().
+ */
+static void dave2d_cmd_test_alpha(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+
+    print_to_console("  [Dave2D Test: Alpha Blending]\r\n");
+
+    for (uint32_t i = 0; i < 2; i++) {
+        if (!dave2d_port_fb_from_glcdc(&fb, i)) {
+            snprintf(buf, sizeof(buf), "  Error: Cannot get FB[%lu].\r\n",
+                     (unsigned long)i);
+            print_to_console(buf);
+            return;
+        }
+
+        /* Draw a white background rectangle */
+        dave2d_port_fill_rect(&fb, 50, 370, 400, 200,
+                              dave2d_port_rgb888_to_d2color(255, 255, 255), 255);
+
+        /* Red with alpha 255 (fully opaque) */
+        dave2d_port_fill_rect(&fb, 60, 380, 80, 80,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 255);
+
+        /* Red with alpha 192 (75% opaque) */
+        dave2d_port_fill_rect(&fb, 150, 380, 80, 80,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 192);
+
+        /* Red with alpha 128 (50% opaque) */
+        dave2d_port_fill_rect(&fb, 240, 380, 80, 80,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 128);
+
+        /* Red with alpha 64 (25% opaque) */
+        dave2d_port_fill_rect(&fb, 330, 380, 80, 80,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 64);
+
+        /* Overlapping: Green semi-transparent over previous */
+        dave2d_port_fill_rect(&fb, 100, 420, 300, 80,
+                              dave2d_port_rgb888_to_d2color(0, 255, 0), 128);
+
+        /* Overlapping: Blue semi-transparent over previous */
+        dave2d_port_fill_rect(&fb, 150, 460, 250, 80,
+                              dave2d_port_rgb888_to_d2color(0, 0, 255), 128);
+    }
+
+    print_to_console("  Done. Red rects at 100%%/75%%/50%%/25%% alpha,\r\n");
+    print_to_console("        overlapping green (50%%) and blue (50%%).\r\n");
+}
+
+#endif /* LV_USE_DRAW_DAVE2D */
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
+
+/* ============================================================
+ *  Initialization / Status (S-004-1)
+ * ============================================================ */
 
 /**
  * Verify and record Dave2D initialization status
@@ -329,22 +719,631 @@ void dave2d_port_get_info(dave2d_info_t *info)
 #endif
 }
 
+/* ============================================================
+ *  Drawing Wrapper Functions (S-004-2)
+ * ============================================================ */
+
+/**
+ * Fill a rectangle with a solid color using Dave2D hardware acceleration
+ *
+ * @details Uses the LVGL-managed _blit_renderbuffer to avoid interfering
+ *          with LVGL's main rendering pipeline. The pattern follows the
+ *          reference _dave2d_buf_copy() implementation.
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d_fill.c:126-139
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:156-213
+ */
+int dave2d_port_fill_rect(const dave2d_fb_t *fb,
+                          int32_t x, int32_t y,
+                          int32_t w, int32_t h,
+                          uint32_t color, uint8_t alpha)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    if (fb == NULL || fb->p_base == NULL || w <= 0 || h <= 0) {
+        return DAVE2D_ERR_PARAM;
+    }
+
+    d2_s32 result;
+    lv_result_t status;
+
+    /* Acquire the LVGL Dave2D mutex for thread safety */
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    /* Select the blit render buffer (separate from LVGL's main buffer) */
+    result = d2_selectrenderbuffer(_d2_handle, _blit_renderbuffer);
+    if (D2_OK != result) {
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    /* Set up the target framebuffer */
+    result = d2_framebuffer(_d2_handle, fb->p_base,
+                            (d2_s32)fb->pitch,
+                            (d2_u32)fb->width,
+                            (d2_u32)fb->height,
+                            (d2_s32)fb->format);
+    if (D2_OK != result) {
+        d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    /* Set clip rectangle to the full framebuffer */
+    d2_cliprect(_d2_handle, 0, 0,
+                (d2_border)(fb->width - 1),
+                (d2_border)(fb->height - 1));
+
+    /* Set rendering parameters */
+    d2_setfillmode(_d2_handle, d2_fm_color);
+    d2_setcolor(_d2_handle, 0, (d2_color)color);
+    d2_setalpha(_d2_handle, alpha);
+    d2_setblendmode(_d2_handle, d2_bm_alpha, d2_bm_one_minus_alpha);
+
+    /* Render the filled rectangle */
+    result = d2_renderbox(_d2_handle,
+                          (d2_point)D2_FIX4(x),
+                          (d2_point)D2_FIX4(y),
+                          (d2_width)D2_FIX4(w),
+                          (d2_width)D2_FIX4(h));
+
+    /* Execute and flush */
+    d2_executerenderbuffer(_d2_handle, _blit_renderbuffer, 0);
+    d2_flushframe(_d2_handle);
+
+    /* Restore the main render buffer */
+    d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+
+    /* Release the mutex */
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    (void)fb; (void)x; (void)y; (void)w; (void)h;
+    (void)color; (void)alpha;
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/**
+ * Draw a rectangle outline using Dave2D hardware acceleration
+ *
+ * @details Draws four thin filled rectangles to form a border.
+ *          All four edges are batched into one render buffer execution
+ *          for efficiency.
+ */
+int dave2d_port_draw_rect(const dave2d_fb_t *fb,
+                          int32_t x, int32_t y,
+                          int32_t w, int32_t h,
+                          uint32_t color, uint8_t alpha,
+                          int32_t border_w)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    if (fb == NULL || fb->p_base == NULL || w <= 0 || h <= 0 || border_w <= 0) {
+        return DAVE2D_ERR_PARAM;
+    }
+
+    /* Clamp border width to half the shorter dimension */
+    int32_t max_border = (w < h ? w : h) / 2;
+    if (border_w > max_border) {
+        border_w = max_border;
+    }
+
+    d2_s32 result;
+    lv_result_t status;
+
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    result = d2_selectrenderbuffer(_d2_handle, _blit_renderbuffer);
+    if (D2_OK != result) {
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    d2_framebuffer(_d2_handle, fb->p_base,
+                   (d2_s32)fb->pitch,
+                   (d2_u32)fb->width,
+                   (d2_u32)fb->height,
+                   (d2_s32)fb->format);
+
+    d2_cliprect(_d2_handle, 0, 0,
+                (d2_border)(fb->width - 1),
+                (d2_border)(fb->height - 1));
+
+    d2_setfillmode(_d2_handle, d2_fm_color);
+    d2_setcolor(_d2_handle, 0, (d2_color)color);
+    d2_setalpha(_d2_handle, alpha);
+    d2_setblendmode(_d2_handle, d2_bm_alpha, d2_bm_one_minus_alpha);
+
+    /*
+     * Draw four edges of the rectangle:
+     *   Top:    (x, y) -> width w, height border_w
+     *   Bottom: (x, y+h-border_w) -> width w, height border_w
+     *   Left:   (x, y+border_w) -> width border_w, height (h - 2*border_w)
+     *   Right:  (x+w-border_w, y+border_w) -> width border_w, height (h - 2*border_w)
+     */
+
+    /* Top edge */
+    d2_renderbox(_d2_handle,
+                 (d2_point)D2_FIX4(x),
+                 (d2_point)D2_FIX4(y),
+                 (d2_width)D2_FIX4(w),
+                 (d2_width)D2_FIX4(border_w));
+
+    /* Bottom edge */
+    d2_renderbox(_d2_handle,
+                 (d2_point)D2_FIX4(x),
+                 (d2_point)D2_FIX4(y + h - border_w),
+                 (d2_width)D2_FIX4(w),
+                 (d2_width)D2_FIX4(border_w));
+
+    /* Left edge (excluding corners already drawn) */
+    int32_t inner_h = h - 2 * border_w;
+    if (inner_h > 0) {
+        d2_renderbox(_d2_handle,
+                     (d2_point)D2_FIX4(x),
+                     (d2_point)D2_FIX4(y + border_w),
+                     (d2_width)D2_FIX4(border_w),
+                     (d2_width)D2_FIX4(inner_h));
+
+        /* Right edge */
+        d2_renderbox(_d2_handle,
+                     (d2_point)D2_FIX4(x + w - border_w),
+                     (d2_point)D2_FIX4(y + border_w),
+                     (d2_width)D2_FIX4(border_w),
+                     (d2_width)D2_FIX4(inner_h));
+    }
+
+    /* Execute all four edges at once */
+    result = d2_executerenderbuffer(_d2_handle, _blit_renderbuffer, 0);
+    d2_flushframe(_d2_handle);
+
+    d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    (void)fb; (void)x; (void)y; (void)w; (void)h;
+    (void)color; (void)alpha; (void)border_w;
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/**
+ * Draw a line using Dave2D hardware acceleration
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d_line.c:77-78
+ */
+int dave2d_port_draw_line(const dave2d_fb_t *fb,
+                          int32_t x1, int32_t y1,
+                          int32_t x2, int32_t y2,
+                          uint32_t color, uint8_t alpha,
+                          int32_t width)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    if (fb == NULL || fb->p_base == NULL || width <= 0) {
+        return DAVE2D_ERR_PARAM;
+    }
+
+    d2_s32 result;
+    lv_result_t status;
+
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    result = d2_selectrenderbuffer(_d2_handle, _blit_renderbuffer);
+    if (D2_OK != result) {
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    d2_framebuffer(_d2_handle, fb->p_base,
+                   (d2_s32)fb->pitch,
+                   (d2_u32)fb->width,
+                   (d2_u32)fb->height,
+                   (d2_s32)fb->format);
+
+    d2_cliprect(_d2_handle, 0, 0,
+                (d2_border)(fb->width - 1),
+                (d2_border)(fb->height - 1));
+
+    d2_setcolor(_d2_handle, 0, (d2_color)color);
+    d2_setalpha(_d2_handle, alpha);
+    d2_setblendmode(_d2_handle, d2_bm_alpha, d2_bm_one_minus_alpha);
+    d2_setlinecap(_d2_handle, d2_lc_butt);
+
+    result = d2_renderline(_d2_handle,
+                           (d2_point)D2_FIX4(x1),
+                           (d2_point)D2_FIX4(y1),
+                           (d2_point)D2_FIX4(x2),
+                           (d2_point)D2_FIX4(y2),
+                           (d2_width)D2_FIX4(width),
+                           d2_le_exclude_none);
+
+    d2_executerenderbuffer(_d2_handle, _blit_renderbuffer, 0);
+    d2_flushframe(_d2_handle);
+
+    d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    (void)fb; (void)x1; (void)y1; (void)x2; (void)y2;
+    (void)color; (void)alpha; (void)width;
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/**
+ * Copy a rectangular region from source to framebuffer (1:1 BLIT)
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:186-193
+ */
+int dave2d_port_blit(const dave2d_fb_t *fb,
+                     const void *p_src, int32_t src_pitch,
+                     int32_t src_w, int32_t src_h, uint32_t src_format,
+                     int32_t dst_x, int32_t dst_y)
+{
+    /* 1:1 copy: destination size equals source size */
+    return dave2d_port_blit_scaled(fb, p_src, src_pitch,
+                                  src_w, src_h, src_format,
+                                  dst_x, dst_y,
+                                  src_w, src_h);
+}
+
+/**
+ * Copy and scale a rectangular region from source to framebuffer (scaled BLIT)
+ *
+ * @details Uses d2_setblitsrc() to configure the source texture and
+ *          d2_blitcopy() to perform the hardware-accelerated copy with
+ *          optional scaling. The blend mode is set to opaque (src=1, dst=0)
+ *          so the source overwrites the destination completely.
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:171-213
+ */
+int dave2d_port_blit_scaled(const dave2d_fb_t *fb,
+                            const void *p_src, int32_t src_pitch,
+                            int32_t src_w, int32_t src_h, uint32_t src_format,
+                            int32_t dst_x, int32_t dst_y,
+                            int32_t dst_w, int32_t dst_h)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    if (fb == NULL || fb->p_base == NULL || p_src == NULL) {
+        return DAVE2D_ERR_PARAM;
+    }
+
+    if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0 || src_pitch <= 0) {
+        return DAVE2D_ERR_PARAM;
+    }
+
+    d2_s32 result;
+    lv_result_t status;
+
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    /* Save current blend mode to restore later */
+    d2_u32 saved_src_blend = d2_getblendmodesrc(_d2_handle);
+    d2_u32 saved_dst_blend = d2_getblendmodedst(_d2_handle);
+
+    result = d2_selectrenderbuffer(_d2_handle, _blit_renderbuffer);
+    if (D2_OK != result) {
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    /* Set destination framebuffer */
+    d2_framebuffer(_d2_handle, fb->p_base,
+                   (d2_s32)fb->pitch,
+                   (d2_u32)fb->width,
+                   (d2_u32)fb->height,
+                   (d2_s32)fb->format);
+
+    d2_cliprect(_d2_handle,
+                (d2_border)dst_x,
+                (d2_border)dst_y,
+                (d2_border)(dst_x + dst_w - 1),
+                (d2_border)(dst_y + dst_h - 1));
+
+    /* Opaque blit: source overwrites destination completely */
+    d2_setblendmode(_d2_handle, d2_bm_one, d2_bm_zero);
+
+    /* Set the source bitmap for blitting */
+    result = d2_setblitsrc(_d2_handle, (void *)p_src,
+                           (d2_s32)src_pitch,
+                           (d2_s32)src_w,
+                           (d2_s32)src_h,
+                           (d2_u32)src_format);
+    if (D2_OK != result) {
+        d2_setblendmode(_d2_handle, saved_src_blend, saved_dst_blend);
+        d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+        lv_mutex_unlock(&xd2Semaphore);
+        return DAVE2D_ERR_HW;
+    }
+
+    /*
+     * Perform the blit copy.
+     *
+     * d2_blitcopy parameters:
+     *   srcwidth, srcheight: Source dimensions (integer)
+     *   srcx, srcy: Source offset (integer)
+     *   dstwidth, dstheight: Destination dimensions (4:4 fixed-point)
+     *   dstx, dsty: Destination position (4:4 fixed-point)
+     *   flags: 0 for default
+     *
+     * Reference: e2studio_CPU0/ra/tes/dave2d/inc/dave_driver.h:622
+     */
+    result = d2_blitcopy(_d2_handle,
+                         (d2_s32)src_w,
+                         (d2_s32)src_h,
+                         (d2_blitpos)0,       /* Source origin x */
+                         (d2_blitpos)0,       /* Source origin y */
+                         (d2_width)D2_FIX4(dst_w),
+                         (d2_width)D2_FIX4(dst_h),
+                         (d2_point)D2_FIX4(dst_x),
+                         (d2_point)D2_FIX4(dst_y),
+                         0);
+
+    /* Execute and flush */
+    d2_executerenderbuffer(_d2_handle, _blit_renderbuffer, 0);
+    d2_flushframe(_d2_handle);
+
+    /* Restore previous blend mode and render buffer */
+    d2_setblendmode(_d2_handle, saved_src_blend, saved_dst_blend);
+    d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    (void)fb; (void)p_src; (void)src_pitch;
+    (void)src_w; (void)src_h; (void)src_format;
+    (void)dst_x; (void)dst_y; (void)dst_w; (void)dst_h;
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/**
+ * Set the alpha blending mode
+ *
+ * Reference: e2studio_CPU0/ra/tes/dave2d/inc/dave_driver.h:537
+ */
+int dave2d_port_set_blend_mode(uint32_t src_factor, uint32_t dst_factor)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    lv_result_t status;
+    d2_s32 result;
+
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    result = d2_setblendmode(_d2_handle, src_factor, dst_factor);
+
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    (void)src_factor; (void)dst_factor;
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/* ============================================================
+ *  Rendering Pipeline Control (S-004-2)
+ * ============================================================ */
+
+/**
+ * Execute the render buffer and wait for completion
+ *
+ * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:619-623
+ */
+int dave2d_port_execute_and_flush(void)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        return DAVE2D_ERR_NOT_INIT;
+    }
+
+    lv_result_t status;
+    d2_s32 result;
+
+    status = lv_mutex_lock(&xd2Semaphore);
+    if (LV_RESULT_OK != status) {
+        return DAVE2D_ERR_HW;
+    }
+
+    result = d2_executerenderbuffer(_d2_handle, _blit_renderbuffer, 0);
+    if (D2_OK == result) {
+        result = d2_flushframe(_d2_handle);
+    }
+
+    d2_selectrenderbuffer(_d2_handle, _renderbuffer);
+
+    lv_mutex_unlock(&xd2Semaphore);
+
+    return (D2_OK == result) ? DAVE2D_OK : DAVE2D_ERR_HW;
+#else
+    return DAVE2D_ERR_NOT_INIT;
+#endif
+}
+
+/* ============================================================
+ *  Color Conversion Utilities (S-004-2)
+ * ============================================================ */
+
+/**
+ * Convert RGB565 color to Dave2D color format (0x00RRGGBB)
+ *
+ * @details Unpacks the 16-bit RGB565 into 8-bit per channel.
+ *   RGB565: RRRR RGGG GGGB BBBB
+ *   R5 (bits 15:11) -> R8 by: (R5 << 3) | (R5 >> 2)
+ *   G6 (bits 10:5)  -> G8 by: (G6 << 2) | (G6 >> 4)
+ *   B5 (bits 4:0)   -> B8 by: (B5 << 3) | (B5 >> 2)
+ */
+uint32_t dave2d_port_rgb565_to_d2color(uint16_t rgb565)
+{
+    uint32_t r5 = (rgb565 >> 11) & 0x1FU;
+    uint32_t g6 = (rgb565 >> 5)  & 0x3FU;
+    uint32_t b5 = rgb565 & 0x1FU;
+
+    /* Expand to 8 bits with LSB replication for accurate color */
+    uint32_t r8 = (r5 << 3) | (r5 >> 2);
+    uint32_t g8 = (g6 << 2) | (g6 >> 4);
+    uint32_t b8 = (b5 << 3) | (b5 >> 2);
+
+    return (r8 << 16) | (g8 << 8) | b8;
+}
+
+/**
+ * Convert Dave2D color format (0x00RRGGBB) to RGB565
+ */
+uint16_t dave2d_port_d2color_to_rgb565(uint32_t d2color)
+{
+    uint32_t r8 = (d2color >> 16) & 0xFFU;
+    uint32_t g8 = (d2color >> 8)  & 0xFFU;
+    uint32_t b8 = d2color & 0xFFU;
+
+    uint16_t r5 = (uint16_t)(r8 >> 3);
+    uint16_t g6 = (uint16_t)(g8 >> 2);
+    uint16_t b5 = (uint16_t)(b8 >> 3);
+
+    return (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+}
+
+/**
+ * Convert an RGB888 triplet to Dave2D color format
+ */
+uint32_t dave2d_port_rgb888_to_d2color(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+/**
+ * Convert a YUV (YCbCr BT.601) pixel to RGB565
+ *
+ * @details Uses integer arithmetic with fixed-point scaling to avoid
+ *          floating-point operations. The BT.601 conversion coefficients
+ *          are scaled by 256 for fixed-point computation:
+ *
+ *          R = Y + 359 * (V - 128) / 256
+ *          G = Y -  88 * (U - 128) / 256 - 183 * (V - 128) / 256
+ *          B = Y + 454 * (U - 128) / 256
+ *
+ *          Results are clamped to [0, 255] before conversion to RGB565.
+ */
+uint16_t dave2d_port_yuv_to_rgb565(uint8_t y_val, uint8_t u_val, uint8_t v_val)
+{
+    int32_t y = (int32_t)y_val;
+    int32_t u = (int32_t)u_val - 128;
+    int32_t v = (int32_t)v_val - 128;
+
+    /* BT.601 conversion with fixed-point coefficients (x256) */
+    int32_t r = y + ((359 * v) >> 8);
+    int32_t g = y - ((88 * u + 183 * v) >> 8);
+    int32_t b = y + ((454 * u) >> 8);
+
+    /* Clamp to [0, 255] */
+    if (r < 0) r = 0; else if (r > 255) r = 255;
+    if (g < 0) g = 0; else if (g > 255) g = 255;
+    if (b < 0) b = 0; else if (b > 255) b = 255;
+
+    /* Pack into RGB565 */
+    return (uint16_t)(((uint32_t)r >> 3) << 11 |
+                      ((uint32_t)g >> 2) << 5 |
+                      ((uint32_t)b >> 3));
+}
+
+/* ============================================================
+ *  Framebuffer Helper (S-004-2)
+ * ============================================================ */
+
+/**
+ * Initialize a dave2d_fb_t descriptor for the GLCDC framebuffer
+ *
+ * @details Creates a framebuffer descriptor targeting one of the two
+ *          GLCDC framebuffers (fb_background[0] or fb_background[1]).
+ *
+ * Reference: e2studio_CPU0/ra_gen/common_data.c:7 (fb_background)
+ * Reference: e2studio_CPU0/ra_gen/common_data.h:63-64 (DISPLAY_BUFFER_STRIDE_*)
+ */
+bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index)
+{
+#if GLCDC_CFG_LAYER_1_ENABLE
+    if (fb == NULL || index > 1) {
+        return false;
+    }
+
+    fb->p_base = &fb_background[index][0];
+    fb->pitch  = (int32_t)DISPLAY_BUFFER_STRIDE_PIXELS_INPUT0;
+    fb->width  = (uint32_t)DISPLAY_HSIZE_INPUT0;
+    fb->height = (uint32_t)DISPLAY_VSIZE_INPUT0;
+    fb->format = d2_mode_rgb565;
+
+    return true;
+#else
+    (void)fb; (void)index;
+    return false;
+#endif
+}
+
+/* ============================================================
+ *  NT-Shell Command (S-004-1, S-004-2)
+ * ============================================================ */
+
 /**
  * NT-Shell "dave2d" command handler
  *
- * @details Provides Dave2D diagnostic sub-commands:
- *   dave2d status  - Show Dave2D initialization state, HW/driver info, LVGL integration
+ * @details Provides Dave2D diagnostic and test sub-commands:
+ *   dave2d status          - Show Dave2D initialization state, HW/driver info
+ *   dave2d test <pattern>  - Draw test patterns using Dave2D wrappers (S-004-2)
  */
 int usrcmd_dave2d(int argc, char **argv)
 {
     if (argc < 2) {
         cmd_print_usage("dave2d", "<subcommand>");
         print_to_console("  status  - Show Dave2D initialization state and hardware info\r\n");
+        print_to_console("  test    - Draw test patterns using Dave2D wrappers\r\n");
         return CMD_ERR_USAGE;
     }
 
     if (ntlibc_strcmp(argv[1], "status") == 0) {
         dave2d_cmd_status();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "test") == 0) {
+        dave2d_cmd_test(argc, argv);
         return CMD_OK;
     }
 
@@ -357,6 +1356,7 @@ int usrcmd_dave2d(int argc, char **argv)
 
     cmd_print_usage("dave2d", "<subcommand>");
     print_to_console("  status  - Show Dave2D initialization state and hardware info\r\n");
+    print_to_console("  test    - Draw test patterns using Dave2D wrappers\r\n");
 
     return CMD_ERR_INVALID_ARG;
 }
