@@ -70,29 +70,26 @@
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_BUILTIN
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
-    /** LVGL heap size: 1MB
+    /** LVGL heap size: 256KB
      *
      * Rationale:
-     *   - The mimamori-sense UI requires multiple screens (home, camera view,
-     *     alert display, settings) with image assets and dynamic widgets
-     *   - 1024x600 RGB565 display: a single full-screen image buffer alone
-     *     would consume ~1.2MB (1024 * 600 * 2 bytes), but LVGL manages
-     *     rendering via partial buffers, not full-screen image allocation
-     *   - 1MB provides sufficient headroom for:
-     *     * Multiple screen objects and widget trees
-     *     * Style and theme data
-     *     * Temporary draw buffers for layer compositing
-     *     * Animation state tracking
-     *     * Future expansion (additional screens, more complex widgets)
-     *   - The EK-RA8P1 has 128MB SDRAM available for framebuffers and large
-     *     assets, so 1MB from internal SRAM for the LVGL heap is acceptable
-     *   - Matches the reference project setting
+     *   - Increased from FSP default (128KB) to support multiple screens
+     *     (home, camera view, alert display, settings) with dynamic widgets
+     *   - Limited to 256KB because the LVGL heap is allocated in internal
+     *     SRAM, which has limited capacity (~1MB total shared with FreeRTOS
+     *     stacks, BSS, and other allocations)
+     *   - 1MB (as originally specified in Issue #4) causes a linker overflow
+     *     (~370KB over the RAM region limit)
+     *   - To use a larger LVGL heap (e.g., 1MB), the heap must be placed
+     *     in SDRAM via linker script modifications (future enhancement)
+     *   - 256KB is sufficient for the initial UI implementation with
+     *     moderate widget complexity
      *
-     * FSP default: 0x20000 (128KB) -- too small for rich UI with multiple screens
+     * FSP default: 0x20000 (128KB)
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/lv_conf_user.h:35
      */
-    #define LV_MEM_SIZE (1024 * 1024U)          /**< [bytes] 1MB */
+    #define LV_MEM_SIZE (256 * 1024U)           /**< [bytes] 256KB */
 #endif  /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
 
 /*=============================================================
@@ -278,15 +275,16 @@
     /** Route log output to printf
      *
      * Rationale:
-     *   - printf output is captured by the J-Link RTT console, which is
-     *     already configured in this project for NT-Shell
-     *   - Simpler than registering a custom callback via lv_log_register_print_cb()
-     *   - Set to 0 if a custom log callback is needed (e.g., to route logs
-     *     to a file or network)
+     *   - Disabled because the embedded toolchain (LLVM Embedded) does not
+     *     provide the `stdout` symbol required by vprintf/printf
+     *   - LVGL log output can be captured by registering a custom callback
+     *     via lv_log_register_print_cb() that routes to the J-Link UART
+     *   - The reference project enables this (=1) but uses a different
+     *     toolchain/libc configuration that provides stdout
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/lv_conf_user.h:64
      */
-    #define LV_LOG_PRINTF 1
+    #define LV_LOG_PRINTF 0
 
     /** Print timestamp with log messages
      *
