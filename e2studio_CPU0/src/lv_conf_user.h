@@ -16,7 +16,7 @@
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
     /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
-    #define LV_MEM_SIZE (1024 * 1024U)          /**< [bytes] */
+    #define LV_MEM_SIZE (0x20000)               /**< [bytes] 128KB (matches FSP default) */
 #endif  /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
 
 #define LV_DEF_REFR_PERIOD  16      /**< [ms] */
@@ -30,7 +30,7 @@
 #define LV_USE_LOG 1
 #if LV_USE_LOG
     #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
-    #define LV_LOG_PRINTF 1
+    #define LV_LOG_PRINTF 0
     #define LV_LOG_USE_TIMESTAMP 1
     #define LV_LOG_USE_FILE_LINE 1
 #endif  /*LV_USE_LOG*/
