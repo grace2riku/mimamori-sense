@@ -241,6 +241,7 @@ static void dave2d_bench_blit_fullscreen(void);
 static void dave2d_bench_alpha_blend(void);
 static void dave2d_bench_cpu_fill_rect(void);
 static void dave2d_bench_cpu_fill_fullscreen(void);
+static void dave2d_bench_cpu_alpha_blend(void);
 static void dave2d_bench_summary(void);
 #endif
 
@@ -1085,6 +1086,87 @@ static void dave2d_bench_cpu_fill_fullscreen(void)
 }
 
 /**
+ * Benchmark: CPU software alpha blending (comparison baseline)
+ *
+ * @details Measures the time to alpha-blend a 200x100 area using CPU
+ *          read-modify-write operations. For each pixel:
+ *          1. Read destination RGB565
+ *          2. Extract R/G/B components
+ *          3. Blend: result = src * alpha + dst * (255 - alpha)
+ *          4. Pack back to RGB565 and write
+ *
+ *          This is significantly more expensive than a simple fill because
+ *          it requires reading back each pixel. Dave2D handles this in
+ *          hardware, which is where its acceleration advantage shows.
+ */
+static void dave2d_bench_cpu_alpha_blend(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("  [CPU Alpha blend 200x100, alpha=128 (SW baseline)]\r\n");
+
+    /* Source color: Blue (R=0, G=0, B=255) with alpha=128 */
+    uint8_t src_r = 0, src_g = 0, src_b = 255;
+    uint8_t alpha = 128;
+    uint8_t inv_alpha = (uint8_t)(255U - alpha);
+    int32_t x0 = 50, y0 = 50, w = 200, h = 100;
+
+    total_cycles = 0;
+    for (uint32_t iter = 0; iter < DAVE2D_BENCH_ITERATIONS; iter++) {
+        start = dave2d_dwt_get_cycles();
+
+        for (int32_t y = y0; y < y0 + h; y++) {
+            uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                               (uint32_t)y * (uint32_t)fb.pitch * sizeof(uint16_t));
+            for (int32_t x = x0; x < x0 + w; x++) {
+                /* Read destination pixel (RGB565) */
+                uint16_t dst = p_line[x];
+
+                /* Extract RGB components from RGB565 (5-6-5 bit) */
+                uint8_t dst_r = (uint8_t)((dst >> 11) & 0x1FU);
+                uint8_t dst_g = (uint8_t)((dst >> 5) & 0x3FU);
+                uint8_t dst_b = (uint8_t)(dst & 0x1FU);
+
+                /* Scale to 8-bit for blending */
+                dst_r = (uint8_t)((dst_r << 3) | (dst_r >> 2));
+                dst_g = (uint8_t)((dst_g << 2) | (dst_g >> 4));
+                dst_b = (uint8_t)((dst_b << 3) | (dst_b >> 2));
+
+                /* Alpha blend: out = src * alpha + dst * (255 - alpha) */
+                uint8_t out_r = (uint8_t)(((uint16_t)src_r * alpha + (uint16_t)dst_r * inv_alpha) / 255U);
+                uint8_t out_g = (uint8_t)(((uint16_t)src_g * alpha + (uint16_t)dst_g * inv_alpha) / 255U);
+                uint8_t out_b = (uint8_t)(((uint16_t)src_b * alpha + (uint16_t)dst_b * inv_alpha) / 255U);
+
+                /* Pack back to RGB565 */
+                p_line[x] = (uint16_t)(((out_r >> 3) << 11) |
+                                       ((out_g >> 2) << 5) |
+                                       (out_b >> 3));
+            }
+        }
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    CPU SW: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
  * Print benchmark summary with Dave2D vs CPU comparison
  *
  * @details Runs both Dave2D and CPU fill benchmarks side by side and
@@ -1219,6 +1301,67 @@ static void dave2d_bench_summary(void)
         }
     }
 
+    /* --- Alpha blend 200x100 comparison --- */
+    print_to_console("  [Alpha blend 200x100, alpha=128]\r\n");
+
+    /* Dave2D alpha blend */
+    dave2d_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+        dave2d_port_fill_rect(&fb, 50, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(0, 0, 255), 128);
+        end = dave2d_dwt_get_cycles();
+        dave2d_cycles += (end - start);
+    }
+    dave2d_cycles /= DAVE2D_BENCH_ITERATIONS;
+
+    /* CPU alpha blend */
+    cpu_cycles = 0;
+    {
+        uint8_t src_r = 0, src_g = 0, src_b = 255;
+        uint8_t alpha = 128;
+        uint8_t inv_alpha = (uint8_t)(255U - alpha);
+        for (uint32_t iter = 0; iter < DAVE2D_BENCH_ITERATIONS; iter++) {
+            start = dave2d_dwt_get_cycles();
+            for (int32_t y = 50; y < 150; y++) {
+                uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                                   (uint32_t)y * (uint32_t)fb.pitch * sizeof(uint16_t));
+                for (int32_t x = 50; x < 250; x++) {
+                    uint16_t dst = p_line[x];
+                    uint8_t dst_r = (uint8_t)((dst >> 11) & 0x1FU);
+                    uint8_t dst_g = (uint8_t)((dst >> 5) & 0x3FU);
+                    uint8_t dst_b = (uint8_t)(dst & 0x1FU);
+                    dst_r = (uint8_t)((dst_r << 3) | (dst_r >> 2));
+                    dst_g = (uint8_t)((dst_g << 2) | (dst_g >> 4));
+                    dst_b = (uint8_t)((dst_b << 3) | (dst_b >> 2));
+                    uint8_t out_r = (uint8_t)(((uint16_t)src_r * alpha + (uint16_t)dst_r * inv_alpha) / 255U);
+                    uint8_t out_g = (uint8_t)(((uint16_t)src_g * alpha + (uint16_t)dst_g * inv_alpha) / 255U);
+                    uint8_t out_b = (uint8_t)(((uint16_t)src_b * alpha + (uint16_t)dst_b * inv_alpha) / 255U);
+                    p_line[x] = (uint16_t)(((out_r >> 3) << 11) |
+                                           ((out_g >> 2) << 5) |
+                                           (out_b >> 3));
+                }
+            }
+            end = dave2d_dwt_get_cycles();
+            cpu_cycles += (end - start);
+        }
+        cpu_cycles /= DAVE2D_BENCH_ITERATIONS;
+    }
+
+    {
+        uint32_t dave2d_us = dave2d_cycles_to_us(dave2d_cycles);
+        uint32_t cpu_us = dave2d_cycles_to_us(cpu_cycles);
+        uint32_t speedup_x10 = (dave2d_us > 0) ? (cpu_us * 10 / dave2d_us) : 0;
+
+        snprintf(buf, sizeof(buf),
+                 "    Dave2D : %lu us  |  CPU : %lu us  |  Speedup : %lu.%lux\r\n",
+                 (unsigned long)dave2d_us,
+                 (unsigned long)cpu_us,
+                 (unsigned long)(speedup_x10 / 10),
+                 (unsigned long)(speedup_x10 % 10));
+        print_to_console(buf);
+    }
+
     /* --- LVGL Performance Monitor Data --- */
     print_to_console("[LVGL Performance Monitor]\r\n");
     print_to_console("  Check the on-screen LVGL perf monitor for live FPS/CPU data.\r\n");
@@ -1279,6 +1422,7 @@ static void dave2d_cmd_bench(int argc, char **argv)
 
         dave2d_bench_cpu_fill_rect();
         dave2d_bench_cpu_fill_fullscreen();
+        dave2d_bench_cpu_alpha_blend();
 
         print_to_console("-------------------------------------------\r\n");
 
@@ -1310,6 +1454,7 @@ static void dave2d_cmd_bench(int argc, char **argv)
         dave2d_dwt_init();
         dave2d_bench_cpu_fill_rect();
         dave2d_bench_cpu_fill_fullscreen();
+        dave2d_bench_cpu_alpha_blend();
     } else if (ntlibc_strcmp(sub, "compare") == 0) {
         dave2d_dwt_init();
         dave2d_bench_summary();
