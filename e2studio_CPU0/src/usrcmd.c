@@ -119,7 +119,7 @@ static int usrcmd_mw(int argc, char **argv);
  *
  */
 static const cmd_table_t cmdlist[] = {
-    NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|test",              usrcmd_dave2d),
+    NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test",  usrcmd_dave2d),
     NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),

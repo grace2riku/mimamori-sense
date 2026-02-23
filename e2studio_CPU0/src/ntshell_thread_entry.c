@@ -23,6 +23,7 @@
 #include "fw_version.h"
 #include "fsp_version.h"
 #include "led_ctrl.h"
+#include "port/dave2d_port.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -162,6 +163,13 @@ void ntshell_thread_entry(void *pvParameters)
 
     /* 起動バナーの表示（プロジェクト名、バージョン、ビルド日時） */
     ntshell_print_banner();
+
+    /* Dave2D GPU加速ステータスの表示 (S-004-3) */
+    if (dave2d_port_is_available()) {
+        print_to_console(" Dave2D GPU  : Enabled\r\n");
+    } else {
+        print_to_console(" Dave2D GPU  : NOT available\r\n");
+    }
 
     /* NT-Shellの初期化 */
     ntshell_init(
