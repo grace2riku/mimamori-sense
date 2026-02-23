@@ -40,6 +40,7 @@
 
 #include "mipi_port.h"
 #include "csi2_port.h"
+#include "vin_port.h"
 #include "bsp_api.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
@@ -484,14 +485,20 @@ void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing)
 static void mipi_cmd_print_help(void)
 {
     cmd_print_usage("camera", "<subcommand>");
-    print_to_console("  phy     - Show MIPI D-PHY configuration and status (S-003-1)\r\n");
-    print_to_console("  timing  - Show D-PHY timing parameters (S-003-1)\r\n");
-    print_to_console("  init    - Initialize MIPI D-PHY (S-003-1)\r\n");
-    print_to_console("  csi     - Show CSI-2 receiver status and error counters (S-003-2)\r\n");
-    print_to_console("  csi reset - Reset CSI-2 error/frame counters (S-003-2)\r\n");
-    print_to_console("  csi init  - Initialize CSI-2 receiver (S-003-2)\r\n");
-    print_to_console("  csi start - Start CSI-2 reception (S-003-2)\r\n");
-    print_to_console("  csi stop  - Stop CSI-2 reception (S-003-2)\r\n");
+    print_to_console("  phy      - Show MIPI D-PHY configuration and status (S-003-1)\r\n");
+    print_to_console("  timing   - Show D-PHY timing parameters (S-003-1)\r\n");
+    print_to_console("  init     - Initialize MIPI D-PHY (S-003-1)\r\n");
+    print_to_console("  csi      - Show CSI-2 receiver status and error counters (S-003-2)\r\n");
+    print_to_console("  csi reset  - Reset CSI-2 error/frame counters (S-003-2)\r\n");
+    print_to_console("  csi init   - Initialize CSI-2 receiver (S-003-2)\r\n");
+    print_to_console("  csi start  - Start CSI-2 reception (S-003-2)\r\n");
+    print_to_console("  csi stop   - Stop CSI-2 reception (S-003-2)\r\n");
+    print_to_console("  status   - Show VIN capture status and statistics (S-003-3)\r\n");
+    print_to_console("  start    - Start VIN capture (S-003-3)\r\n");
+    print_to_console("  stop     - Stop VIN capture (S-003-3)\r\n");
+    print_to_console("  capture  - Capture 1 frame, show buffer address (S-003-3)\r\n");
+    print_to_console("  info     - Show camera module and pipeline info (S-003-3)\r\n");
+    print_to_console("  reset    - Reset VIN capture statistics (S-003-3)\r\n");
 }
 
 /**
@@ -551,17 +558,189 @@ static void mipi_cmd_csi_stop(void)
 }
 
 /**
- * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-4)
+ * "camera start" sub-command handler (S-003-3)
+ *
+ * @details Initializes VIN (if needed) and starts continuous capture.
+ */
+static void mipi_cmd_vin_start(void)
+{
+    vin_port_status_t status = vin_port_get_status();
+
+    /* Auto-initialize if not yet initialized */
+    if (status == VIN_PORT_STATUS_NOT_INITIALIZED ||
+        status == VIN_PORT_STATUS_NO_FSP_MODULE) {
+        print_to_console("  Initializing VIN module...\r\n");
+        if (!vin_port_init()) {
+            vin_port_status_t new_status = vin_port_get_status();
+            if (new_status == VIN_PORT_STATUS_NO_FSP_MODULE) {
+                print_to_console("  Error: FSP VIN module is not configured.\r\n");
+                print_to_console("  Add VIN module in configuration.xml first.\r\n");
+            } else {
+                print_to_console("  Error: VIN initialization failed.\r\n");
+            }
+            return;
+        }
+        print_to_console("  VIN module initialized.\r\n");
+    }
+
+    if (vin_port_get_status() == VIN_PORT_STATUS_CAPTURING) {
+        print_to_console("  VIN capture is already running.\r\n");
+        return;
+    }
+
+    print_to_console("  Starting VIN capture...\r\n");
+    if (vin_port_capture_start()) {
+        print_to_console("  VIN capture started (continuous mode).\r\n");
+    } else {
+        print_to_console("  Error: Failed to start VIN capture.\r\n");
+    }
+}
+
+/**
+ * "camera stop" sub-command handler (S-003-3)
+ *
+ * @details Stops VIN continuous capture.
+ */
+static void mipi_cmd_vin_stop(void)
+{
+    if (!vin_port_is_available()) {
+        print_to_console("  Error: VIN is not initialized.\r\n");
+        return;
+    }
+
+    if (vin_port_get_status() != VIN_PORT_STATUS_CAPTURING) {
+        print_to_console("  VIN capture is not running.\r\n");
+        return;
+    }
+
+    print_to_console("  Stopping VIN capture...\r\n");
+    if (vin_port_capture_stop()) {
+        print_to_console("  VIN capture stopped.\r\n");
+    } else {
+        print_to_console("  Error: Failed to stop VIN capture.\r\n");
+    }
+}
+
+/**
+ * "camera capture" sub-command handler (S-003-3)
+ *
+ * @details Performs a single-shot capture by starting capture, waiting
+ *          briefly, and displaying the buffer address and first bytes.
+ */
+static void mipi_cmd_vin_capture(void)
+{
+    char buf[MIPI_PRINT_BUF_SIZE];
+    vin_port_status_t status = vin_port_get_status();
+
+    /* Auto-initialize if needed */
+    if (status == VIN_PORT_STATUS_NOT_INITIALIZED ||
+        status == VIN_PORT_STATUS_NO_FSP_MODULE) {
+        print_to_console("  Initializing VIN module...\r\n");
+        if (!vin_port_init()) {
+            vin_port_status_t new_status = vin_port_get_status();
+            if (new_status == VIN_PORT_STATUS_NO_FSP_MODULE) {
+                print_to_console("  Error: FSP VIN module is not configured.\r\n");
+            } else {
+                print_to_console("  Error: VIN initialization failed.\r\n");
+            }
+            return;
+        }
+    }
+
+    /* Start capture if not already running */
+    bool was_capturing = (vin_port_get_status() == VIN_PORT_STATUS_CAPTURING);
+    if (!was_capturing) {
+        print_to_console("  Starting capture...\r\n");
+        if (!vin_port_capture_start()) {
+            print_to_console("  Error: Failed to start capture.\r\n");
+            return;
+        }
+    }
+
+    /* Wait for at least one frame (with timeout) */
+    print_to_console("  Waiting for frame...\r\n");
+    uint32_t initial_count;
+    vin_port_info_t info;
+    vin_port_get_info(&info);  /* Internally uses __disable_irq for atomic copy */
+    initial_count = info.stats.frame_complete;
+
+    /* Poll for frame completion (simple busy-wait with iteration limit) */
+    uint32_t timeout = 1000000;
+    uint8_t *frame_ptr = NULL;
+    while (timeout > 0) {
+        frame_ptr = vin_port_get_last_frame();
+        vin_port_get_info(&info);
+        if (info.stats.frame_complete > initial_count && frame_ptr != NULL) {
+            break;
+        }
+        timeout--;
+    }
+
+    if (timeout == 0 || frame_ptr == NULL) {
+        print_to_console("  Timeout: No frame captured.\r\n");
+        if (!was_capturing) {
+            vin_port_capture_stop();
+        }
+        return;
+    }
+
+    /* Display capture result */
+    snprintf(buf, sizeof(buf), "  Frame captured at: 0x%08lX\r\n",
+             (unsigned long)(uintptr_t)frame_ptr);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Frame size: %lu bytes\r\n",
+             (unsigned long)VIN_FRAME_SIZE_BYTES);
+    print_to_console(buf);
+
+    /* Show first 16 bytes of the captured frame */
+    print_to_console("  First 16 bytes:\r\n    ");
+    for (int i = 0; i < 16; i++) {
+        snprintf(buf, sizeof(buf), "%02X ", frame_ptr[i]);
+        print_to_console(buf);
+    }
+    print_to_console("\r\n");
+
+    snprintf(buf, sizeof(buf), "  Use 'md 0x%08lX 64' to dump more data.\r\n",
+             (unsigned long)(uintptr_t)frame_ptr);
+    print_to_console(buf);
+
+    /* Stop capture if we started it */
+    if (!was_capturing) {
+        vin_port_capture_stop();
+        print_to_console("  Capture stopped.\r\n");
+    }
+}
+
+/**
+ * "camera reset" sub-command handler (S-003-3)
+ *
+ * @details Resets VIN capture statistics counters.
+ */
+static void mipi_cmd_vin_reset(void)
+{
+    vin_port_reset_stats();
+    print_to_console("  VIN capture statistics reset.\r\n");
+}
+
+/**
+ * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-3 / S-003-4)
  *
  * @details Provides camera/MIPI diagnostic sub-commands:
- *   camera phy       - Show MIPI PHY initialization state and configuration
- *   camera timing    - Show D-PHY timing parameters
- *   camera init      - Initialize MIPI PHY (manual trigger)
- *   camera csi       - Show CSI-2 receiver status and error counters
- *   camera csi reset - Reset CSI-2 error/frame counters
- *   camera csi init  - Initialize CSI-2 receiver
- *   camera csi start - Start CSI-2 reception
- *   camera csi stop  - Stop CSI-2 reception
+ *   camera phy       - Show MIPI PHY initialization state and configuration (S-003-1)
+ *   camera timing    - Show D-PHY timing parameters (S-003-1)
+ *   camera init      - Initialize MIPI PHY (S-003-1)
+ *   camera csi       - Show CSI-2 receiver status and error counters (S-003-2)
+ *   camera csi reset - Reset CSI-2 error/frame counters (S-003-2)
+ *   camera csi init  - Initialize CSI-2 receiver (S-003-2)
+ *   camera csi start - Start CSI-2 reception (S-003-2)
+ *   camera csi stop  - Stop CSI-2 reception (S-003-2)
+ *   camera status    - Show VIN capture status and statistics (S-003-3)
+ *   camera start     - Start VIN capture (S-003-3)
+ *   camera stop      - Stop VIN capture (S-003-3)
+ *   camera capture   - Capture 1 frame, show buffer address (S-003-3)
+ *   camera info      - Show camera module and pipeline info (S-003-3)
+ *   camera reset     - Reset VIN capture statistics (S-003-3)
  *
  * @param argc Argument count
  * @param argv Argument vector
@@ -626,6 +805,37 @@ int usrcmd_camera(int argc, char **argv)
         }
         print_to_console("  Available: csi [reset|init|start|stop]\r\n");
         return CMD_ERR_INVALID_ARG;
+    }
+
+    /* S-003-3: VIN capture sub-commands */
+    if (ntlibc_strcmp(argv[1], "status") == 0) {
+        vin_cmd_status();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "start") == 0) {
+        mipi_cmd_vin_start();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "stop") == 0) {
+        mipi_cmd_vin_stop();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "capture") == 0) {
+        mipi_cmd_vin_capture();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "info") == 0) {
+        vin_cmd_info();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "reset") == 0) {
+        mipi_cmd_vin_reset();
+        return CMD_OK;
     }
 
     /* Unknown sub-command */
