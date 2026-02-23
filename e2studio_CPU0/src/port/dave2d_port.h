@@ -36,7 +36,8 @@
  *     - Basic drawing wrappers: rect fill, rect outline, line, blit, alpha (S-004-2)
  *     - Color conversion utilities: RGB565<->d2_color, YUV->RGB (S-004-2)
  *     - Rendering pipeline control: execute + flush wrappers (S-004-2)
- *     - Diagnostic output: NT-Shell "dave2d status/test" commands
+ *     - Performance benchmarking: Dave2D vs CPU comparison (S-004-4)
+ *     - Diagnostic output: NT-Shell "dave2d status/test/bench" commands
  *     - Clean shutdown support: dave2d_port_deinit() for orderly shutdown
  *
  *   The LVGL internal handle (_d2_handle) is accessed via the extern
@@ -128,7 +129,8 @@
  *     - lv_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:541-603
  *
  * @note
- * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3) implementation.
+ * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3, S-004-4)
+ * implementation.
  */
 
 #ifndef DAVE2D_PORT_H
@@ -594,21 +596,29 @@ uint16_t dave2d_port_yuv_to_rgb565(uint8_t y_val, uint8_t u_val, uint8_t v_val);
 bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index);
 
 /* ============================================================
- *  NT-Shell Command (S-004-1, S-004-2, S-004-3)
+ *  NT-Shell Command (S-004-1, S-004-2, S-004-3, S-004-4)
  * ============================================================ */
 
 /**
- * NT-Shell command handler for Dave2D diagnostics and testing
+ * NT-Shell command handler for Dave2D diagnostics, testing, and benchmarking
  *
  * @details Registered as the "dave2d" command in usrcmd.c.
  *          Sub-commands:
- *            dave2d status          - Show Dave2D initialization state and HW info
- *            dave2d integration     - Show LVGL-Dave2D integration status (S-004-3)
- *            dave2d test rect       - Draw test rectangles on the display
- *            dave2d test line       - Draw test lines on the display
- *            dave2d test blit       - Draw a test BLIT pattern
- *            dave2d test alpha      - Draw alpha blending test
- *            dave2d test all        - Run all drawing tests
+ *            dave2d status              - Show Dave2D initialization state and HW info
+ *            dave2d integration         - Show LVGL-Dave2D integration status (S-004-3)
+ *            dave2d test rect           - Draw test rectangles on the display
+ *            dave2d test line           - Draw test lines on the display
+ *            dave2d test blit           - Draw a test BLIT pattern
+ *            dave2d test alpha          - Draw alpha blending test
+ *            dave2d test all            - Run all drawing tests
+ *            dave2d bench               - Run all benchmarks (Dave2D vs CPU) (S-004-4)
+ *            dave2d bench fill          - Benchmark rectangle fill only
+ *            dave2d bench line          - Benchmark line drawing only
+ *            dave2d bench blit          - Benchmark 64x64 BLIT only
+ *            dave2d bench alpha         - Benchmark alpha blending only
+ *            dave2d bench fullscreen    - Benchmark full-screen fill only
+ *            dave2d bench cpu           - Run CPU software baseline benchmarks
+ *            dave2d bench compare       - Run Dave2D vs CPU comparison summary
  *
  * @param argc Argument count
  * @param argv Argument vector

@@ -7,10 +7,10 @@
  * query, and diagnostic functions for the Renesas D/AVE 2D hardware
  * graphics engine.
  *
- * This module acts as a diagnostic, tracking, integration query, and
- * drawing wrapper layer over the Dave2D initialization performed by
- * LVGL internally. It does
- * NOT duplicate the Dave2D initialization sequence.
+ * This module acts as a diagnostic, tracking, integration query,
+ * drawing wrapper, and performance benchmarking layer over the Dave2D
+ * initialization performed by LVGL internally. It does NOT duplicate
+ * the Dave2D initialization sequence.
  *
  * Dave2D Initialization Flow:
  *   1. lv_init() is called from lvgl_thread_entry.c
@@ -61,8 +61,27 @@
  *   - Dave2D API: e2studio_CPU0/ra/tes/dave2d/inc/dave_driver.h
  *   - FSP d2_handle0: e2studio_CPU0/ra_gen/common_data.c:4
  *
+ * Performance Benchmarking (S-004-4):
+ *   The benchmark functions use the DWT (Data Watchpoint and Trace) cycle
+ *   counter on the Cortex-M85 to measure drawing operation times with
+ *   sub-microsecond precision. The DWT CYCCNT register counts CPU clock
+ *   cycles (1 GHz = 1ns per cycle).
+ *
+ *   Benchmark tests measure:
+ *     - Rectangle fill (200x100): Dave2D vs CPU software
+ *     - Line drawing (400px diagonal)
+ *     - BLIT (64x64 source to framebuffer)
+ *     - Alpha blending (200x100 with 50% alpha)
+ *     - Full-screen fill (1024x600): Dave2D vs CPU software
+ *
+ *   Results include per-operation timing (microseconds), cycle counts,
+ *   and speedup ratios (Dave2D vs CPU).
+ *
+ *   Reference: ARM Cortex-M85 TRM, DWT registers (0xE0001000)
+ *
  * @note
- * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3) implementation.
+ * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3, S-004-4)
+ * implementation.
  */
 
 /**********************************************************************************************************************
@@ -72,6 +91,7 @@
 #include <string.h>
 
 #include "dave2d_port.h"
+#include "glcdc_port.h"
 #include "dave_driver.h"
 #include "lvgl.h"
 #include "common_data.h"
@@ -100,6 +120,40 @@
 #ifndef D2_FIX4
 #define D2_FIX4(x)  ((d2_s32)((x) << 4))
 #endif
+
+/**
+ * CPU clock frequency for DWT cycle counter to microsecond conversion
+ *
+ * CPUCLK = PLL1P (1GHz) / 1 = 1,000,000,000 Hz
+ *
+ * Reference: e2studio_CPU0/ra_gen/bsp_clock_cfg.h:13,28-29
+ *   BSP_CFG_PLL1P_FREQUENCY_HZ = 1,000,000,000
+ *   BSP_CFG_CPUCLK_DIV = BSP_CLOCKS_SYS_CLOCK_DIV_1
+ */
+#define DAVE2D_CPUCLK_HZ       (1000000000UL)
+
+/** Number of benchmark iterations for averaging */
+#define DAVE2D_BENCH_ITERATIONS (100)
+
+/**
+ * DWT (Data Watchpoint and Trace) register addresses for Cortex-M85
+ *
+ * The DWT provides a 32-bit cycle counter (CYCCNT) that counts CPU clock
+ * cycles. On Cortex-M85, DWT is accessible at the standard ARM address.
+ *
+ * Reference: ARM Cortex-M85 Technical Reference Manual
+ */
+#define DWT_CTRL_ADDR           (0xE0001000UL)
+#define DWT_CYCCNT_ADDR         (0xE0001004UL)
+#define DWT_CTRL_CYCCNTENA_Msk  (1UL << 0)
+
+/** Benchmark source buffer size for BLIT tests (64x64 pixels, RGB565) */
+#define BENCH_BLIT_SRC_SIZE     (64)
+
+/** Full-screen BLIT test width (matches display) */
+#define BENCH_FULLSCREEN_W      GLCDC_DISPLAY_HSIZE
+/** Full-screen BLIT test height (matches display) */
+#define BENCH_FULLSCREEN_H      GLCDC_DISPLAY_VSIZE
 
 /**********************************************************************************************************************
  External declarations
@@ -168,12 +222,26 @@ static dave2d_status_t s_dave2d_status = DAVE2D_STATUS_NOT_INITIALIZED;
 static void dave2d_cmd_status(void);
 static void dave2d_cmd_integration(void);
 static void dave2d_cmd_test(int argc, char **argv);
+static void dave2d_cmd_bench(int argc, char **argv);
 
 #if LV_USE_DRAW_DAVE2D
 static void dave2d_cmd_test_rect(void);
 static void dave2d_cmd_test_line(void);
 static void dave2d_cmd_test_blit(void);
 static void dave2d_cmd_test_alpha(void);
+
+/* Benchmark helper functions (S-004-4) */
+static void dave2d_dwt_init(void);
+static uint32_t dave2d_dwt_get_cycles(void);
+static uint32_t dave2d_cycles_to_us(uint32_t cycles);
+static void dave2d_bench_fill_rect(void);
+static void dave2d_bench_draw_line(void);
+static void dave2d_bench_blit(void);
+static void dave2d_bench_blit_fullscreen(void);
+static void dave2d_bench_alpha_blend(void);
+static void dave2d_bench_cpu_fill_rect(void);
+static void dave2d_bench_cpu_fill_fullscreen(void);
+static void dave2d_bench_summary(void);
 #endif
 
 /**********************************************************************************************************************
@@ -601,7 +669,663 @@ static void dave2d_cmd_test_alpha(void)
     print_to_console("        overlapping green (50%%) and blue (50%%).\r\n");
 }
 
+/* ============================================================
+ *  Benchmark Functions (S-004-4)
+ * ============================================================ */
+
+/**
+ * Initialize the DWT cycle counter for performance measurement
+ *
+ * @details Enables the DWT CYCCNT register on the Cortex-M85 processor.
+ *          The cycle counter runs at the CPU core clock frequency (1 GHz)
+ *          and provides sub-microsecond timing resolution.
+ *
+ *          DWT_CTRL bit 0 (CYCCNTENA) must be set to enable the counter.
+ *          The counter wraps around after ~4.295 seconds at 1 GHz.
+ *
+ * Reference: ARM Cortex-M85 Technical Reference Manual, DWT registers
+ * Reference: e2studio_CPU0/ra_gen/bsp_clock_cfg.h:13 (CPUCLK = 1GHz)
+ */
+static void dave2d_dwt_init(void)
+{
+    volatile uint32_t *dwt_ctrl   = (volatile uint32_t *)DWT_CTRL_ADDR;
+    volatile uint32_t *dwt_cyccnt = (volatile uint32_t *)DWT_CYCCNT_ADDR;
+
+    /* Reset the cycle counter */
+    *dwt_cyccnt = 0;
+
+    /* Enable the cycle counter */
+    *dwt_ctrl |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/**
+ * Read the current DWT cycle count
+ *
+ * @return Current value of the DWT CYCCNT register
+ */
+static uint32_t dave2d_dwt_get_cycles(void)
+{
+    volatile uint32_t *dwt_cyccnt = (volatile uint32_t *)DWT_CYCCNT_ADDR;
+    return *dwt_cyccnt;
+}
+
+/**
+ * Convert DWT cycle count to microseconds
+ *
+ * @details At 1 GHz CPUCLK, 1000 cycles = 1 microsecond.
+ *
+ * @param cycles  Number of CPU clock cycles
+ * @return Elapsed time in microseconds
+ */
+static uint32_t dave2d_cycles_to_us(uint32_t cycles)
+{
+    return cycles / (DAVE2D_CPUCLK_HZ / 1000000UL);
+}
+
+/**
+ * Benchmark: Rectangle fill (Dave2D accelerated)
+ *
+ * @details Measures the time to fill a 200x100 rectangle using
+ *          dave2d_port_fill_rect(). Averages over DAVE2D_BENCH_ITERATIONS
+ *          iterations.
+ */
+static void dave2d_bench_fill_rect(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("  [Fill Rect 200x100]\r\n");
+
+    total_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+
+        dave2d_port_fill_rect(&fb, 50, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 255);
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    Dave2D: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
+ * Benchmark: Line drawing (Dave2D accelerated)
+ *
+ * @details Measures the time to draw a diagonal line (400 pixels long,
+ *          2 pixels wide) using dave2d_port_draw_line(). Averages over
+ *          DAVE2D_BENCH_ITERATIONS iterations.
+ */
+static void dave2d_bench_draw_line(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("  [Line 400px diagonal, width 2]\r\n");
+
+    total_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+
+        dave2d_port_draw_line(&fb, 50, 50, 450, 350,
+                              dave2d_port_rgb888_to_d2color(0, 255, 0), 255, 2);
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    Dave2D: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
+ * Benchmark: BLIT 64x64 (Dave2D accelerated)
+ *
+ * @details Measures the time to blit a 64x64 RGB565 source buffer to
+ *          the framebuffer using dave2d_port_blit(). Averages over
+ *          DAVE2D_BENCH_ITERATIONS iterations.
+ */
+static void dave2d_bench_blit(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    /* Create a 64x64 test source buffer (checkerboard pattern) */
+    static uint16_t bench_src[BENCH_BLIT_SRC_SIZE * BENCH_BLIT_SRC_SIZE];
+    for (int32_t y = 0; y < BENCH_BLIT_SRC_SIZE; y++) {
+        for (int32_t x = 0; x < BENCH_BLIT_SRC_SIZE; x++) {
+            bench_src[y * BENCH_BLIT_SRC_SIZE + x] =
+                ((x ^ y) & 1U) ? 0xFFFFU : 0x0000U;
+        }
+    }
+
+    print_to_console("  [BLIT 64x64 RGB565]\r\n");
+
+    total_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+
+        dave2d_port_blit(&fb,
+                         bench_src, BENCH_BLIT_SRC_SIZE,
+                         BENCH_BLIT_SRC_SIZE, BENCH_BLIT_SRC_SIZE,
+                         d2_mode_rgb565,
+                         100, 100);
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    Dave2D: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
+ * Benchmark: Full-screen fill (1024x600, Dave2D accelerated)
+ *
+ * @details Measures the time to fill the entire 1024x600 framebuffer
+ *          using dave2d_port_fill_rect(). This simulates a full-screen
+ *          background update.
+ *
+ *          Target: < 16.7ms (60fps frame budget)
+ *
+ * Reference: Issue #44 acceptance criterion:
+ *   "Full-screen drawing completes within 16.7ms (60fps)"
+ */
+static void dave2d_bench_blit_fullscreen(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+    uint32_t iterations = 10;  /* Fewer iterations for full-screen (expensive) */
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "  [Full-screen fill %ux%u]\r\n",
+             (unsigned int)BENCH_FULLSCREEN_W,
+             (unsigned int)BENCH_FULLSCREEN_H);
+    print_to_console(buf);
+
+    total_cycles = 0;
+    for (uint32_t i = 0; i < iterations; i++) {
+        start = dave2d_dwt_get_cycles();
+
+        dave2d_port_fill_rect(&fb, 0, 0,
+                              (int32_t)BENCH_FULLSCREEN_W,
+                              (int32_t)BENCH_FULLSCREEN_H,
+                              dave2d_port_rgb888_to_d2color(0, 0, (uint8_t)(i * 25)), 255);
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / iterations;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+    uint32_t avg_ms_x10 = avg_us / 100;  /* ms * 10 for one decimal place */
+
+    snprintf(buf, sizeof(buf),
+             "    Dave2D: %lu us (%lu.%lu ms, %lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)(avg_ms_x10 / 10),
+             (unsigned long)(avg_ms_x10 % 10),
+             (unsigned long)avg_cycles,
+             (unsigned long)iterations);
+    print_to_console(buf);
+
+    /* Check against 60fps frame budget */
+    if (avg_us <= 16700) {
+        print_to_console("    Result: PASS (within 16.7ms 60fps budget)\r\n");
+    } else {
+        print_to_console("    Result: FAIL (exceeds 16.7ms 60fps budget)\r\n");
+    }
+}
+
+/**
+ * Benchmark: Alpha blending fill (Dave2D accelerated)
+ *
+ * @details Measures the time to fill a 200x100 rectangle with 50% alpha
+ *          blending using dave2d_port_fill_rect(). Alpha blending requires
+ *          the GPU to read-modify-write the destination, which is more
+ *          expensive than an opaque fill.
+ */
+static void dave2d_bench_alpha_blend(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("  [Alpha blend fill 200x100, alpha=128]\r\n");
+
+    total_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+
+        dave2d_port_fill_rect(&fb, 50, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(0, 0, 255), 128);
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    Dave2D: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
+ * Benchmark: CPU software fill (comparison baseline)
+ *
+ * @details Measures the time to fill a 200x100 area using CPU memset/loop
+ *          for comparison with Dave2D accelerated fill. This provides a
+ *          baseline to quantify the GPU acceleration benefit.
+ *
+ *          Uses direct memory writes (volatile pointer) to the framebuffer.
+ *          No Dave2D hardware is involved.
+ */
+static void dave2d_bench_cpu_fill_rect(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("  [CPU Fill Rect 200x100 (SW baseline)]\r\n");
+
+    uint16_t color565 = 0xF800U;  /* Red in RGB565 */
+    int32_t x0 = 50, y0 = 50, w = 200, h = 100;
+
+    total_cycles = 0;
+    for (uint32_t iter = 0; iter < DAVE2D_BENCH_ITERATIONS; iter++) {
+        start = dave2d_dwt_get_cycles();
+
+        /*
+         * CPU software fill: write each pixel individually.
+         * This uses the stride from the framebuffer descriptor.
+         */
+        for (int32_t y = y0; y < y0 + h; y++) {
+            uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                               (uint32_t)y * (uint32_t)fb.pitch * sizeof(uint16_t));
+            for (int32_t x = x0; x < x0 + w; x++) {
+                p_line[x] = color565;
+            }
+        }
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / DAVE2D_BENCH_ITERATIONS;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+
+    snprintf(buf, sizeof(buf),
+             "    CPU SW: %lu us/op (%lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)avg_cycles,
+             (unsigned long)DAVE2D_BENCH_ITERATIONS);
+    print_to_console(buf);
+}
+
+/**
+ * Benchmark: Full-screen CPU software fill (comparison baseline)
+ *
+ * @details Measures the time to fill the entire 1024x600 framebuffer
+ *          using CPU software writes for comparison with Dave2D.
+ */
+static void dave2d_bench_cpu_fill_fullscreen(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end, total_cycles;
+    uint32_t iterations = 10;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "  [CPU Full-screen fill %ux%u (SW baseline)]\r\n",
+             (unsigned int)BENCH_FULLSCREEN_W,
+             (unsigned int)BENCH_FULLSCREEN_H);
+    print_to_console(buf);
+
+    total_cycles = 0;
+    for (uint32_t iter = 0; iter < iterations; iter++) {
+        uint16_t color565 = (uint16_t)(0x001FU + iter * 0x0200U);
+
+        start = dave2d_dwt_get_cycles();
+
+        for (uint32_t y = 0; y < BENCH_FULLSCREEN_H; y++) {
+            uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                               y * (uint32_t)fb.pitch * sizeof(uint16_t));
+            for (uint32_t x = 0; x < BENCH_FULLSCREEN_W; x++) {
+                p_line[x] = color565;
+            }
+        }
+
+        end = dave2d_dwt_get_cycles();
+        total_cycles += (end - start);
+    }
+
+    uint32_t avg_cycles = total_cycles / iterations;
+    uint32_t avg_us = dave2d_cycles_to_us(avg_cycles);
+    uint32_t avg_ms_x10 = avg_us / 100;
+
+    snprintf(buf, sizeof(buf),
+             "    CPU SW: %lu us (%lu.%lu ms, %lu cycles, %lu iterations)\r\n",
+             (unsigned long)avg_us,
+             (unsigned long)(avg_ms_x10 / 10),
+             (unsigned long)(avg_ms_x10 % 10),
+             (unsigned long)avg_cycles,
+             (unsigned long)iterations);
+    print_to_console(buf);
+
+    if (avg_us <= 16700) {
+        print_to_console("    Result: PASS (within 16.7ms 60fps budget)\r\n");
+    } else {
+        print_to_console("    Result: FAIL (exceeds 16.7ms 60fps budget)\r\n");
+    }
+}
+
+/**
+ * Print benchmark summary with Dave2D vs CPU comparison
+ *
+ * @details Runs both Dave2D and CPU fill benchmarks side by side and
+ *          calculates the speedup ratio. Also reports LVGL performance
+ *          monitor data (FPS and CPU usage) if available.
+ */
+static void dave2d_bench_summary(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_fb_t fb;
+    uint32_t start, end;
+    uint32_t dave2d_cycles, cpu_cycles;
+
+    if (!dave2d_port_fb_from_glcdc(&fb, 0)) {
+        print_to_console("  Error: Cannot get framebuffer.\r\n");
+        return;
+    }
+
+    print_to_console("[Performance Comparison: Dave2D vs CPU]\r\n");
+
+    /* --- Fill rect 200x100 comparison --- */
+    print_to_console("  [Fill Rect 200x100]\r\n");
+
+    /* Dave2D fill */
+    dave2d_cycles = 0;
+    for (uint32_t i = 0; i < DAVE2D_BENCH_ITERATIONS; i++) {
+        start = dave2d_dwt_get_cycles();
+        dave2d_port_fill_rect(&fb, 50, 50, 200, 100,
+                              dave2d_port_rgb888_to_d2color(255, 0, 0), 255);
+        end = dave2d_dwt_get_cycles();
+        dave2d_cycles += (end - start);
+    }
+    dave2d_cycles /= DAVE2D_BENCH_ITERATIONS;
+
+    /* CPU fill */
+    cpu_cycles = 0;
+    {
+        uint16_t color565 = 0xF800U;
+        for (uint32_t iter = 0; iter < DAVE2D_BENCH_ITERATIONS; iter++) {
+            start = dave2d_dwt_get_cycles();
+            for (int32_t y = 50; y < 150; y++) {
+                uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                                   (uint32_t)y * (uint32_t)fb.pitch * sizeof(uint16_t));
+                for (int32_t x = 50; x < 250; x++) {
+                    p_line[x] = color565;
+                }
+            }
+            end = dave2d_dwt_get_cycles();
+            cpu_cycles += (end - start);
+        }
+        cpu_cycles /= DAVE2D_BENCH_ITERATIONS;
+    }
+
+    {
+        uint32_t dave2d_us = dave2d_cycles_to_us(dave2d_cycles);
+        uint32_t cpu_us = dave2d_cycles_to_us(cpu_cycles);
+        uint32_t speedup_x10 = (cpu_us > 0) ? (cpu_us * 10 / dave2d_us) : 0;
+
+        snprintf(buf, sizeof(buf),
+                 "    Dave2D : %lu us  |  CPU : %lu us  |  Speedup : %lu.%lux\r\n",
+                 (unsigned long)dave2d_us,
+                 (unsigned long)cpu_us,
+                 (unsigned long)(speedup_x10 / 10),
+                 (unsigned long)(speedup_x10 % 10));
+        print_to_console(buf);
+    }
+
+    /* --- Full-screen fill comparison --- */
+    snprintf(buf, sizeof(buf), "  [Full-screen fill %ux%u]\r\n",
+             (unsigned int)BENCH_FULLSCREEN_W,
+             (unsigned int)BENCH_FULLSCREEN_H);
+    print_to_console(buf);
+
+    /* Dave2D full-screen */
+    dave2d_cycles = 0;
+    {
+        uint32_t iterations = 10;
+        for (uint32_t i = 0; i < iterations; i++) {
+            start = dave2d_dwt_get_cycles();
+            dave2d_port_fill_rect(&fb, 0, 0,
+                                  (int32_t)BENCH_FULLSCREEN_W,
+                                  (int32_t)BENCH_FULLSCREEN_H,
+                                  dave2d_port_rgb888_to_d2color(0, 0, 128), 255);
+            end = dave2d_dwt_get_cycles();
+            dave2d_cycles += (end - start);
+        }
+        dave2d_cycles /= iterations;
+    }
+
+    /* CPU full-screen */
+    cpu_cycles = 0;
+    {
+        uint32_t iterations = 10;
+        uint16_t color565 = 0x0010U;
+        for (uint32_t iter = 0; iter < iterations; iter++) {
+            start = dave2d_dwt_get_cycles();
+            for (uint32_t y = 0; y < BENCH_FULLSCREEN_H; y++) {
+                uint16_t *p_line = (uint16_t *)((uint8_t *)fb.p_base +
+                                   y * (uint32_t)fb.pitch * sizeof(uint16_t));
+                for (uint32_t x = 0; x < BENCH_FULLSCREEN_W; x++) {
+                    p_line[x] = color565;
+                }
+            }
+            end = dave2d_dwt_get_cycles();
+            cpu_cycles += (end - start);
+        }
+        cpu_cycles /= iterations;
+    }
+
+    {
+        uint32_t dave2d_us = dave2d_cycles_to_us(dave2d_cycles);
+        uint32_t cpu_us = dave2d_cycles_to_us(cpu_cycles);
+        uint32_t dave2d_ms_x10 = dave2d_us / 100;
+        uint32_t cpu_ms_x10 = cpu_us / 100;
+        uint32_t speedup_x10 = (dave2d_us > 0) ? (cpu_us * 10 / dave2d_us) : 0;
+
+        snprintf(buf, sizeof(buf),
+                 "    Dave2D : %lu.%lu ms  |  CPU : %lu.%lu ms  |  Speedup : %lu.%lux\r\n",
+                 (unsigned long)(dave2d_ms_x10 / 10),
+                 (unsigned long)(dave2d_ms_x10 % 10),
+                 (unsigned long)(cpu_ms_x10 / 10),
+                 (unsigned long)(cpu_ms_x10 % 10),
+                 (unsigned long)(speedup_x10 / 10),
+                 (unsigned long)(speedup_x10 % 10));
+        print_to_console(buf);
+
+        /* 60fps budget check */
+        if (dave2d_us <= 16700) {
+            print_to_console("    Dave2D: PASS (within 16.7ms 60fps budget)\r\n");
+        } else {
+            print_to_console("    Dave2D: FAIL (exceeds 16.7ms 60fps budget)\r\n");
+        }
+    }
+
+    /* --- LVGL Performance Monitor Data --- */
+    print_to_console("[LVGL Performance Monitor]\r\n");
+    print_to_console("  Check the on-screen LVGL perf monitor for live FPS/CPU data.\r\n");
+    print_to_console("  LV_USE_PERF_MONITOR is enabled in lv_conf_user.h.\r\n");
+    print_to_console("  Location: bottom-right corner of the display.\r\n");
+}
+
 #endif /* LV_USE_DRAW_DAVE2D */
+
+/**
+ * "dave2d bench" sub-command dispatcher (S-004-4)
+ *
+ * @details Dispatches benchmark sub-commands for Dave2D performance measurement.
+ *          Measures individual drawing operations and compares Dave2D GPU
+ *          performance against CPU software rendering.
+ *
+ *          Each benchmark uses the DWT cycle counter for precise timing at
+ *          the CPU clock frequency (1 GHz).
+ *
+ *          Note: These benchmarks write directly to the GLCDC framebuffer,
+ *          bypassing LVGL. The display content will be overwritten.
+ *
+ * @param argc  Argument count (from the original command)
+ * @param argv  Argument vector
+ */
+static void dave2d_cmd_bench(int argc, char **argv)
+{
+#if LV_USE_DRAW_DAVE2D
+    if (!dave2d_port_is_available()) {
+        print_to_console("  Error: Dave2D is not available.\r\n");
+        return;
+    }
+
+    /* Initialize the DWT cycle counter */
+    dave2d_dwt_init();
+
+    if (argc < 3) {
+        /* No sub-sub-command: run all benchmarks */
+        print_to_console("[Dave2D Performance Benchmark (S-004-4)]\r\n");
+        print_to_console("  CPU Clock  : 1000 MHz (Cortex-M85)\r\n");
+        print_to_console("  Display    : 1024x600 RGB565\r\n");
+        print_to_console("  Timer      : DWT CYCCNT (1ns resolution)\r\n");
+
+        char buf[DAVE2D_PRINT_BUF_SIZE];
+        snprintf(buf, sizeof(buf), "  Iterations : %u (per test, except full-screen: 10)\r\n",
+                 (unsigned int)DAVE2D_BENCH_ITERATIONS);
+        print_to_console(buf);
+
+        print_to_console("-------------------------------------------\r\n");
+
+        dave2d_bench_fill_rect();
+        dave2d_bench_draw_line();
+        dave2d_bench_blit();
+        dave2d_bench_alpha_blend();
+        dave2d_bench_blit_fullscreen();
+
+        print_to_console("-------------------------------------------\r\n");
+
+        dave2d_bench_cpu_fill_rect();
+        dave2d_bench_cpu_fill_fullscreen();
+
+        print_to_console("-------------------------------------------\r\n");
+
+        dave2d_bench_summary();
+
+        print_to_console("-------------------------------------------\r\n");
+        print_to_console("Benchmark complete.\r\n");
+        return;
+    }
+
+    const char *sub = argv[2];
+
+    if (ntlibc_strcmp(sub, "fill") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_fill_rect();
+    } else if (ntlibc_strcmp(sub, "line") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_draw_line();
+    } else if (ntlibc_strcmp(sub, "blit") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_blit();
+    } else if (ntlibc_strcmp(sub, "alpha") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_alpha_blend();
+    } else if (ntlibc_strcmp(sub, "fullscreen") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_blit_fullscreen();
+    } else if (ntlibc_strcmp(sub, "cpu") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_cpu_fill_rect();
+        dave2d_bench_cpu_fill_fullscreen();
+    } else if (ntlibc_strcmp(sub, "compare") == 0) {
+        dave2d_dwt_init();
+        dave2d_bench_summary();
+    } else {
+        char buf[DAVE2D_PRINT_BUF_SIZE];
+        snprintf(buf, sizeof(buf), "  Error: Unknown benchmark '%s'.\r\n", sub);
+        print_to_console(buf);
+        print_to_console("  Available: fill, line, blit, alpha, fullscreen, cpu, compare\r\n");
+        print_to_console("  (no argument runs all benchmarks)\r\n");
+    }
+#else
+    (void)argc;
+    (void)argv;
+    print_to_console("  Error: LV_USE_DRAW_DAVE2D is disabled.\r\n");
+#endif
+}
 
 /**********************************************************************************************************************
  Exported global functions
@@ -1579,16 +2303,18 @@ bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index)
 }
 
 /* ============================================================
- *  NT-Shell Command (S-004-1, S-004-2)
+ *  NT-Shell Command (S-004-1, S-004-2, S-004-4)
  * ============================================================ */
 
 /**
  * NT-Shell "dave2d" command handler
  *
- * @details Provides Dave2D diagnostic, integration, and test sub-commands:
+ * @details Provides Dave2D diagnostic, integration, test, and benchmark
+ *          sub-commands:
  *   dave2d status          - Show Dave2D initialization state, HW/driver info
  *   dave2d integration     - Show LVGL-Dave2D integration status (S-004-3)
  *   dave2d test <pattern>  - Draw test patterns using Dave2D wrappers (S-004-2)
+ *   dave2d bench [test]    - Run performance benchmarks (S-004-4)
  */
 int usrcmd_dave2d(int argc, char **argv)
 {
@@ -1597,6 +2323,7 @@ int usrcmd_dave2d(int argc, char **argv)
         print_to_console("  status       - Show Dave2D initialization state and hardware info\r\n");
         print_to_console("  integration  - Show LVGL-Dave2D integration status\r\n");
         print_to_console("  test         - Draw test patterns using Dave2D wrappers\r\n");
+        print_to_console("  bench        - Run performance benchmarks (Dave2D vs CPU)\r\n");
         return CMD_ERR_USAGE;
     }
 
@@ -1615,6 +2342,11 @@ int usrcmd_dave2d(int argc, char **argv)
         return CMD_OK;
     }
 
+    if (ntlibc_strcmp(argv[1], "bench") == 0) {
+        dave2d_cmd_bench(argc, argv);
+        return CMD_OK;
+    }
+
     /* Unknown sub-command */
     {
         char buf[DAVE2D_PRINT_BUF_SIZE];
@@ -1626,6 +2358,7 @@ int usrcmd_dave2d(int argc, char **argv)
     print_to_console("  status       - Show Dave2D initialization state and hardware info\r\n");
     print_to_console("  integration  - Show LVGL-Dave2D integration status\r\n");
     print_to_console("  test         - Draw test patterns using Dave2D wrappers\r\n");
+    print_to_console("  bench        - Run performance benchmarks (Dave2D vs CPU)\r\n");
 
     return CMD_ERR_INVALID_ARG;
 }
