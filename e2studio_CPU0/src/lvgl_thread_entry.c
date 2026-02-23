@@ -10,8 +10,7 @@
  *   1. lv_init() - Initialize the LVGL library (also initializes Dave2D via
  *      lv_draw_dave2d_init() when LV_USE_DRAW_DAVE2D=1)
  *   2. dave2d_port_init() - Verify Dave2D initialization by LVGL (S-004-1)
- *   3. Log Dave2D-LVGL integration status (S-004-3)
- *   4. glcdc_port_init() - Initialize GLCDC display subsystem:
+ *   3. glcdc_port_init() - Initialize GLCDC display subsystem:
  *      a. LCD hardware reset (DISP_RESET pin)
  *      b. RM_LVGL_PORT_Open() -> R_GLCDC_Open() + R_GLCDC_Start()
  *      c. Register backlight enable callback (after first frame flush)
@@ -48,7 +47,6 @@
 
 #include "lvgl_thread.h"
 #include "lvgl.h"
-#include "jlink_console.h"
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
 
@@ -100,29 +98,6 @@ void lvgl_thread_entry(void *pvParameters)
      * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
      */
     dave2d_port_init();
-
-    /*
-     * Step 3: Log Dave2D-LVGL integration status (S-004-3)
-     *
-     * Print a summary of the Dave2D-LVGL integration to the debug console.
-     * This includes:
-     *   - Draw unit registration (ID=4, name="DAVE2D")
-     *   - GPU-accelerated operations (fill, border, line, arc, image, label, triangle)
-     *   - CPU fallback operations (layer, shadow, mask, gradient)
-     *   - Render buffer and thread status
-     *
-     * This helps verify at boot time that the GPU is properly connected
-     * to the LVGL rendering pipeline.
-     *
-     * The same information is available via NT-Shell "dave2d integration".
-     *
-     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
-     */
-    if (dave2d_port_is_available()) {
-        print_to_console("[LVGL] Dave2D GPU acceleration: Enabled\r\n");
-    } else {
-        print_to_console("[LVGL] Dave2D GPU acceleration: NOT available\r\n");
-    }
 
     /*
      * Step 4: Initialize GLCDC display subsystem
