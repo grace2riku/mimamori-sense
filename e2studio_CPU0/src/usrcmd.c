@@ -63,6 +63,7 @@
 #include "port/sdram_port.h"
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
+#include "port/mipi_port.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -119,6 +120,7 @@ static int usrcmd_mw(int argc, char **argv);
  *
  */
 static const cmd_table_t cmdlist[] = {
+    NTSHELL_CMD("camera",  "Camera MIPI: camera phy|timing|init",              usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
     NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
