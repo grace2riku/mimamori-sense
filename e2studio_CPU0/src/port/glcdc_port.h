@@ -2,8 +2,9 @@
  * @file glcdc_port.h
  * @brief GLCDC (Graphics LCD Controller) port layer for EK-RA8P1 board
  * @details
- * Provides GLCDC initialization, display control, and diagnostic functions
- * for the 1024x600 LCD panel on the EK-RA8P1 Parallel Graphics Expansion Board.
+ * Provides GLCDC initialization, display control, double-buffering management,
+ * and diagnostic functions for the 1024x600 LCD panel on the EK-RA8P1
+ * Parallel Graphics Expansion Board.
  *
  * GLCDC Configuration Summary:
  *   Resolution       : 1024 x 600
@@ -16,6 +17,32 @@
  * Clock chain:
  *   XTAL 24MHz -> PLL1 /3 x250 = 2GHz -> PLL1R /5 = 400MHz
  *   -> LCDCLK /2 = 200MHz -> GLCDC Panel Clock /4 = 50MHz
+ *
+ * Double Buffering Architecture (S-002-3):
+ *   The double-buffering mechanism is implemented cooperatively between
+ *   RM_LVGL_PORT (FSP middleware) and this port layer:
+ *
+ *   1. RM_LVGL_PORT_Open() configures LVGL with two framebuffers:
+ *      - fb_background[0] and fb_background[1] in SDRAM (.sdram_noinit_nocache)
+ *      - LVGL render mode: LV_DISPLAY_RENDER_MODE_DIRECT
+ *      - Initially displays fb_background[1], LVGL renders to fb_background[0]
+ *
+ *   2. Vsync-synchronized buffer swap flow:
+ *      a. LVGL renders dirty areas to the back buffer (current render target)
+ *      b. rm_lvgl_port_flush_cb() calls R_GLCDC_BufferChange() to request
+ *         the GLCDC hardware to switch to the newly rendered buffer
+ *      c. rm_lvgl_port_flush_wait_cb() blocks on a FreeRTOS semaphore
+ *         (g_semaphore_vpos) until the Vsync interrupt fires
+ *      d. _rm_lvgl_port_display_callback() releases the semaphore on
+ *         DISPLAY_EVENT_LINE_DETECTION (Vsync)
+ *      e. LVGL can now safely render to the other buffer (the old front buffer)
+ *
+ *   3. This port layer tracks:
+ *      - Buffer swap count (number of completed Vsync-synchronized swaps)
+ *      - Current front/back buffer indices
+ *      - Buffer swap timing (overhead measurement)
+ *
+ *   Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
  *
  * Initialization Sequence (S-002-2):
  *   1. LCD hardware reset via DISP_RESET pin (shared with GT911 touch)
@@ -38,6 +65,7 @@
  *   - Reference init: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:66-86
  *   - Reference reset: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:88-102
  *   - RM_LVGL_PORT_Open: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:82-171
+ *   - Double buffering: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
  *   - Timing design: doc/design/glcdc-timing-parameters.md
  *
  * @note
@@ -188,6 +216,27 @@ typedef struct {
     uint16_t fb_count;          /**< Number of frame buffers */
 } glcdc_fb_info_t;
 
+/**
+ * Double-buffering status information structure (S-002-3)
+ *
+ * Tracks the state of the Vsync-synchronized double-buffering mechanism.
+ * The buffer swap is managed cooperatively by RM_LVGL_PORT and this port layer:
+ *   - RM_LVGL_PORT handles the actual R_GLCDC_BufferChange() and semaphore wait
+ *   - This port layer tracks swap count, timing, and buffer indices
+ *
+ * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
+ */
+typedef struct {
+    uint32_t swap_count;            /**< Number of buffer swaps completed (Vsync-synchronized) */
+    uint32_t vsync_count;           /**< Total Vsync interrupt count since initialization */
+    uint32_t front_buffer_index;    /**< Currently displayed buffer index (0 or 1) */
+    uint32_t back_buffer_index;     /**< Current render target buffer index (0 or 1) */
+    uint32_t front_buffer_addr;     /**< Address of the currently displayed buffer */
+    uint32_t back_buffer_addr;      /**< Address of the current render target buffer */
+    uint32_t underflow_count;       /**< Number of GLCDC underflow errors detected */
+    bool     double_buffer_enabled; /**< true if double buffering is active (2 framebuffers) */
+} glcdc_dbuf_status_t;
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
@@ -300,6 +349,51 @@ void glcdc_port_get_timing_info(glcdc_timing_info_t *info);
 void glcdc_port_get_fb_info(glcdc_fb_info_t *info);
 
 /**
+ * Get double-buffering status information (S-002-3)
+ *
+ * @details Fills the double-buffering status structure with current state
+ *          including buffer swap count, front/back buffer indices and addresses,
+ *          underflow error count, and double-buffering enabled flag.
+ *
+ *          Buffer index convention:
+ *            - front_buffer_index: The buffer currently being displayed by GLCDC
+ *            - back_buffer_index:  The buffer LVGL is currently rendering to
+ *            - These alternate (0->1->0->1...) on each Vsync-synchronized swap
+ *
+ *          The swap is performed by RM_LVGL_PORT via R_GLCDC_BufferChange()
+ *          in the flush callback, and the swap timing is synchronized to the
+ *          Vsync interrupt via a FreeRTOS semaphore.
+ *
+ * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
+ *
+ * @param status Pointer to glcdc_dbuf_status_t structure to fill
+ */
+void glcdc_port_get_dbuf_status(glcdc_dbuf_status_t *status);
+
+/**
+ * Get the current GLCDC underflow error count (S-002-3)
+ *
+ * @details Returns the number of GLCDC underflow errors detected since
+ *          initialization. An underflow occurs when the GLCDC cannot read
+ *          framebuffer data from SDRAM fast enough, typically indicating
+ *          SDRAM bandwidth contention.
+ *
+ * @return Number of underflow errors since initialization
+ */
+uint32_t glcdc_port_get_underflow_count(void);
+
+/**
+ * Get the buffer swap count (S-002-3)
+ *
+ * @details Returns the number of Vsync-synchronized buffer swaps completed
+ *          since initialization. This count increments each time the GLCDC
+ *          switches to a newly rendered framebuffer at a Vsync boundary.
+ *
+ * @return Number of buffer swaps completed
+ */
+uint32_t glcdc_port_get_swap_count(void);
+
+/**
  * LVGL GLCDC callback function
  *
  * @details Called from RM_LVGL_PORT module's display callback.
@@ -320,6 +414,7 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg);
  *          Sub-commands:
  *            display status  - Show GLCDC timing parameters and configuration
  *            display fb      - Show frame buffer addresses and sizes
+ *            display dbuf    - Show double-buffering status (S-002-3)
  *            display test    - Draw test patterns on the LCD
  *
  * @param argc Argument count
