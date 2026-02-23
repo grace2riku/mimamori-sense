@@ -297,6 +297,11 @@ void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing);
  *   camera capture   - Capture 1 frame, show buffer address (S-003-3)
  *   camera info      - Show camera module and pipeline info (S-003-3)
  *   camera reset     - Reset VIN capture statistics (S-003-3)
+ *   camera test capture         - Single frame capture with validation (S-003-4)
+ *   camera test capture display - Single frame capture and LCD display (S-003-4)
+ *   camera test fps [ms]        - FPS measurement (S-003-4)
+ *   camera test stream [ms]     - Continuous capture + LCD display (S-003-4)
+ *   camera test validate        - Validate last captured frame data (S-003-4)
  *
  * @param argc Argument count
  * @param argv Argument vector
