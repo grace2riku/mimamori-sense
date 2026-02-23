@@ -318,6 +318,24 @@ void glcdc_port_draw_colorbar(uint8_t *p_fb);
 void glcdc_port_draw_gradient(uint8_t *p_fb);
 
 /**
+ * Draw a checkerboard test pattern to a frame buffer
+ *
+ * @details Fills the specified framebuffer with a checkerboard pattern
+ *          alternating between white and black squares. The pattern uses
+ *          a configurable block size (default: 32x32 pixels) for visibility,
+ *          and a 1-pixel variant for verifying pixel-level rendering accuracy.
+ *
+ *          This pattern is useful for verifying:
+ *            - Correct pixel addressing (no off-by-one errors)
+ *            - GLCDC stride/alignment correctness
+ *            - Display timing (misalignment causes visible diagonal distortion)
+ *
+ * @param p_fb       Pointer to the frame buffer (RGB565 format)
+ * @param block_size Size of each checker square in pixels (e.g., 1, 8, 32)
+ */
+void glcdc_port_draw_checker(uint8_t *p_fb, uint32_t block_size);
+
+/**
  * Fill a frame buffer with a solid color
  *
  * @details Fills the entire framebuffer with the specified RGB565 color value.
@@ -326,6 +344,16 @@ void glcdc_port_draw_gradient(uint8_t *p_fb);
  * @param color565 RGB565 color value
  */
 void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565);
+
+/**
+ * Control the LCD backlight
+ *
+ * @details Enables or disables the LCD backlight via the DISP_BLEN pin.
+ *          This allows screen ON/OFF control from NT-Shell commands.
+ *
+ * @param enable  true to turn on the backlight, false to turn off
+ */
+void glcdc_port_backlight_control(bool enable);
 
 /**
  * Get GLCDC timing information
@@ -412,10 +440,11 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg);
  *
  * @details Registered as the "display" command in usrcmd.c.
  *          Sub-commands:
- *            display status  - Show GLCDC timing parameters and configuration
- *            display fb      - Show frame buffer addresses and sizes
- *            display dbuf    - Show double-buffering status (S-002-3)
- *            display test    - Draw test patterns on the LCD
+ *            display status    - Show GLCDC timing parameters and configuration
+ *            display fb        - Show frame buffer addresses and sizes
+ *            display dbuf      - Show double-buffering status (S-002-3)
+ *            display test      - Draw test patterns on the LCD (S-002-4)
+ *            display backlight - Control LCD backlight on/off (S-002-4)
  *
  * @param argc Argument count
  * @param argv Argument vector
