@@ -41,6 +41,7 @@
 #include "mipi_port.h"
 #include "csi2_port.h"
 #include "vin_port.h"
+#include "camera_test.h"
 #include "bsp_api.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
@@ -499,6 +500,12 @@ static void mipi_cmd_print_help(void)
     print_to_console("  capture  - Capture 1 frame, show buffer address (S-003-3)\r\n");
     print_to_console("  info     - Show camera module and pipeline info (S-003-3)\r\n");
     print_to_console("  reset    - Reset VIN capture statistics (S-003-3)\r\n");
+    print_to_console("  test     - Integration test commands (S-003-4)\r\n");
+    print_to_console("    test capture         - Single frame capture with validation\r\n");
+    print_to_console("    test capture display  - Capture and display on LCD\r\n");
+    print_to_console("    test fps [ms]        - FPS measurement (default: 3000 ms)\r\n");
+    print_to_console("    test stream [ms]     - Continuous capture + LCD (default: 10000 ms)\r\n");
+    print_to_console("    test validate        - Validate last captured frame data\r\n");
 }
 
 /**
@@ -741,6 +748,11 @@ static void mipi_cmd_vin_reset(void)
  *   camera capture   - Capture 1 frame, show buffer address (S-003-3)
  *   camera info      - Show camera module and pipeline info (S-003-3)
  *   camera reset     - Reset VIN capture statistics (S-003-3)
+ *   camera test capture         - Single frame capture with validation (S-003-4)
+ *   camera test capture display - Single frame capture and LCD display (S-003-4)
+ *   camera test fps [ms]        - FPS measurement (S-003-4)
+ *   camera test stream [ms]     - Continuous capture + LCD display (S-003-4)
+ *   camera test validate        - Validate last captured frame data (S-003-4)
  *
  * @param argc Argument count
  * @param argv Argument vector
@@ -835,6 +847,12 @@ int usrcmd_camera(int argc, char **argv)
 
     if (ntlibc_strcmp(argv[1], "reset") == 0) {
         mipi_cmd_vin_reset();
+        return CMD_OK;
+    }
+
+    /* S-003-4: Integration test sub-commands */
+    if (ntlibc_strcmp(argv[1], "test") == 0) {
+        camera_test_cmd(argc, argv);
         return CMD_OK;
     }
 
