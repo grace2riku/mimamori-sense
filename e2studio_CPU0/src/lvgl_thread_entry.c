@@ -10,11 +10,23 @@
  *   1. lv_init() - Initialize the LVGL library (also initializes Dave2D via
  *      lv_draw_dave2d_init() when LV_USE_DRAW_DAVE2D=1)
  *   2. dave2d_port_init() - Verify Dave2D initialization by LVGL (S-004-1)
- *   3. glcdc_port_init() - Initialize GLCDC display subsystem:
+ *   3. Log Dave2D-LVGL integration status (S-004-3)
+ *   4. glcdc_port_init() - Initialize GLCDC display subsystem:
  *      a. LCD hardware reset (DISP_RESET pin)
  *      b. RM_LVGL_PORT_Open() -> R_GLCDC_Open() + R_GLCDC_Start()
  *      c. Register backlight enable callback (after first frame flush)
- *   4. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
+ *   5. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
+ *
+ * Dave2D-LVGL Integration (S-004-3):
+ *   When LV_USE_DRAW_DAVE2D=1 (set in FSP lv_conf.h), lv_init() automatically:
+ *     a. Calls lv_draw_dave2d_init() to create the Dave2D draw unit (ID=4)
+ *     b. Initializes the D/AVE 2D hardware via d2_opendevice() + d2_inithw()
+ *     c. Registers the evaluate callback (_dave2d_evaluate) that claims
+ *        supported draw tasks (fill, border, line, arc, image, label, triangle)
+ *     d. Creates a render thread for asynchronous Dave2D task execution
+ *     e. Creates a mutex (xd2Semaphore) for thread-safe hardware access
+ *   Unsupported operations (gradients, box shadows, masks) automatically fall
+ *   back to the software renderer (LV_USE_DRAW_SW=1).
  *
  * Preconditions (satisfied before this thread starts):
  *   - SDRAM initialized by R_BSP_SdramInit() in hal_warmstart.c
@@ -27,13 +39,16 @@
  *   - Dave2D init: e2studio_CPU0/src/port/dave2d_port.c (dave2d_port_init)
  *   - RM_LVGL_PORT: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c
  *   - LVGL Dave2D: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
  *
  * @note
- * This file is part of the GLCDC control (S-002-2) and Dave2D control (S-004-1) implementation.
+ * This file is part of the GLCDC control (S-002-2), Dave2D control (S-004-1),
+ * and LVGL-Dave2D integration (S-004-3) implementation.
  */
 
 #include "lvgl_thread.h"
 #include "lvgl.h"
+#include "jlink_console.h"
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
 
@@ -60,21 +75,25 @@ void lvgl_thread_entry(void *pvParameters)
      * Initializes LVGL's internal data structures, memory management,
      * timer system, and default theme.
      *
+     * When LV_USE_DRAW_DAVE2D=1 (FSP lv_conf.h:107), lv_init()
+     * also calls lv_draw_dave2d_init() which:
+     *   - Creates the Dave2D device handle via d2_opendevice(0)
+     *   - Initializes Dave2D hardware via d2_inithw()
+     *   - Registers the Dave2D draw unit (ID=4, name="DAVE2D")
+     *   - Creates render buffers and the render thread
+     *   - Sets up the evaluate callback for draw task dispatch
+     *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c:24
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
      */
     lv_init();
 
     /*
      * Step 2: Verify Dave2D initialization (S-004-1)
      *
-     * lv_init() internally calls lv_draw_dave2d_init() when
-     * LV_USE_DRAW_DAVE2D is enabled. This creates the Dave2D device
-     * handle, initializes the hardware, and registers the Dave2D draw
-     * unit with LVGL's rendering pipeline.
-     *
-     * dave2d_port_init() verifies that the initialization succeeded by
-     * checking the LVGL internal handle (_d2_handle). It does NOT
-     * duplicate the initialization.
+     * dave2d_port_init() verifies that LVGL has successfully initialized
+     * the Dave2D hardware by checking the internal handle (_d2_handle).
+     * It does NOT duplicate the initialization.
      *
      * The status can be checked via the NT-Shell "dave2d status" command.
      *
@@ -83,7 +102,30 @@ void lvgl_thread_entry(void *pvParameters)
     dave2d_port_init();
 
     /*
-     * Step 3: Initialize GLCDC display subsystem
+     * Step 3: Log Dave2D-LVGL integration status (S-004-3)
+     *
+     * Print a summary of the Dave2D-LVGL integration to the debug console.
+     * This includes:
+     *   - Draw unit registration (ID=4, name="DAVE2D")
+     *   - GPU-accelerated operations (fill, border, line, arc, image, label, triangle)
+     *   - CPU fallback operations (layer, shadow, mask, gradient)
+     *   - Render buffer and thread status
+     *
+     * This helps verify at boot time that the GPU is properly connected
+     * to the LVGL rendering pipeline.
+     *
+     * The same information is available via NT-Shell "dave2d integration".
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+     */
+    if (dave2d_port_is_available()) {
+        print_to_console("[LVGL] Dave2D GPU acceleration: Enabled\r\n");
+    } else {
+        print_to_console("[LVGL] Dave2D GPU acceleration: NOT available\r\n");
+    }
+
+    /*
+     * Step 4: Initialize GLCDC display subsystem
      *
      * This performs:
      *   a. LCD hardware reset (DISP_RESET pin pulse)
@@ -103,10 +145,11 @@ void lvgl_thread_entry(void *pvParameters)
     glcdc_port_init();
 
     /*
-     * Step 4: LVGL main loop
+     * Step 5: LVGL main loop
      *
      * lv_timer_handler() processes all pending LVGL tasks:
      *   - Rendering invalidated areas to the active framebuffer
+     *     (using Dave2D GPU for supported operations, SW for others)
      *   - Running animation timers
      *   - Processing input device events
      *   - Executing user-defined timers

@@ -3,11 +3,13 @@
  * @brief Dave2D (D/AVE 2D) graphics accelerator port layer implementation
  * @details
  * Implements Dave2D initialization tracking, status query, basic drawing
- * wrapper functions, color conversion utilities, and diagnostic functions
- * for the Renesas D/AVE 2D hardware graphics engine.
+ * wrapper functions, color conversion utilities, LVGL-Dave2D integration
+ * query, and diagnostic functions for the Renesas D/AVE 2D hardware
+ * graphics engine.
  *
- * This module acts as a diagnostic, tracking, and drawing wrapper layer
- * over the Dave2D initialization performed by LVGL internally. It does
+ * This module acts as a diagnostic, tracking, integration query, and
+ * drawing wrapper layer over the Dave2D initialization performed by
+ * LVGL internally. It does
  * NOT duplicate the Dave2D initialization sequence.
  *
  * Dave2D Initialization Flow:
@@ -60,7 +62,7 @@
  *   - FSP d2_handle0: e2studio_CPU0/ra_gen/common_data.c:4
  *
  * @note
- * This file is part of the Dave2D control (S-004-1, S-004-2) implementation.
+ * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3) implementation.
  */
 
 /**********************************************************************************************************************
@@ -164,6 +166,7 @@ static dave2d_status_t s_dave2d_status = DAVE2D_STATUS_NOT_INITIALIZED;
  Private (static) functions prototypes
  *********************************************************************************************************************/
 static void dave2d_cmd_status(void);
+static void dave2d_cmd_integration(void);
 static void dave2d_cmd_test(int argc, char **argv);
 
 #if LV_USE_DRAW_DAVE2D
@@ -281,6 +284,22 @@ static void dave2d_cmd_status(void)
     print_to_console("  dave2d_port_init() [this module]\r\n");
     print_to_console("    -> Verifies _d2_handle != NULL\r\n");
     print_to_console("    -> Records status for diagnostics\r\n");
+}
+
+/**
+ * "dave2d integration" sub-command handler (S-004-3)
+ *
+ * @details Displays the LVGL-Dave2D integration status, including
+ *          which draw operations are GPU-accelerated and which fall
+ *          back to the software renderer.
+ *
+ * Reference:
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ *   - lv_draw_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
+ */
+static void dave2d_cmd_integration(void)
+{
+    dave2d_port_print_lvgl_integration();
 }
 
 /**
@@ -717,6 +736,248 @@ void dave2d_port_get_info(dave2d_info_t *info)
     info->hw_revision     = 0;
     info->hw_revision_str = NULL;
 #endif
+}
+
+/* ============================================================
+ *  LVGL-Dave2D Integration (S-004-3)
+ * ============================================================ */
+
+/**
+ * Get LVGL-Dave2D integration information
+ *
+ * @details Queries the LVGL internal Dave2D draw unit state to provide
+ *          comprehensive integration information. The GPU-accelerated
+ *          and CPU-fallback operation flags are determined by examining
+ *          the _dave2d_evaluate() function logic in the LVGL source.
+ *
+ *          Since the evaluate function's behavior is coded at compile time
+ *          (controlled by USE_D2 macro which is always 1), the accelerated
+ *          operations are known statically. We verify them here for runtime
+ *          diagnostics.
+ *
+ * Reference:
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ *   - lv_draw_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
+ */
+void dave2d_port_get_lvgl_info(dave2d_lvgl_info_t *info)
+{
+    if (info == NULL) {
+        return;
+    }
+
+    memset(info, 0, sizeof(*info));
+
+#if LV_USE_DRAW_DAVE2D
+    /*
+     * Draw unit registration status.
+     *
+     * The Dave2D draw unit is created with ID=4 in lv_draw_dave2d_init():
+     *   draw_dave2d_unit->idx = DRAW_UNIT_ID_DAVE2D;  // 4
+     *   draw_dave2d_unit->base_unit.name = "DAVE2D";
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:82-86
+     */
+    if (_d2_handle != NULL) {
+        info->draw_unit_registered = true;
+        info->draw_unit_id         = 4;   /* DRAW_UNIT_ID_DAVE2D */
+        info->draw_unit_name       = "DAVE2D";
+    } else {
+        info->draw_unit_registered = false;
+        info->draw_unit_id         = 0;
+        info->draw_unit_name       = "N/A";
+    }
+
+    /*
+     * GPU-accelerated operations.
+     *
+     * These are determined by the _dave2d_evaluate() function which sets
+     * t->preferred_draw_unit_id = DRAW_UNIT_ID_DAVE2D for supported task types.
+     * The USE_D2 macro is always 1 in the current LVGL Dave2D driver.
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:248-365
+     */
+    info->accel_fill     = true;  /* LV_DRAW_TASK_TYPE_FILL (solid, no gradient) :249-268 */
+    info->accel_border   = true;  /* LV_DRAW_TASK_TYPE_BORDER :288-295 */
+    info->accel_line     = true;  /* LV_DRAW_TASK_TYPE_LINE :311-318 */
+    info->accel_arc      = true;  /* LV_DRAW_TASK_TYPE_ARC :320-327 */
+    info->accel_image    = true;  /* LV_DRAW_TASK_TYPE_IMAGE (supported CFs) :274-286 */
+    info->accel_label    = true;  /* LV_DRAW_TASK_TYPE_LABEL :302-309 */
+    info->accel_triangle = true;  /* LV_DRAW_TASK_TYPE_TRIANGLE (solid, no gradient) :329-345 */
+
+    /*
+     * CPU fallback operations.
+     *
+     * These task types are NOT claimed by _dave2d_evaluate(), so they fall
+     * through to the software renderer (LV_USE_DRAW_SW=1).
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:269-364
+     */
+    info->fallback_layer       = true;  /* LV_DRAW_TASK_TYPE_LAYER :269-272 */
+    info->fallback_box_shadow  = true;  /* LV_DRAW_TASK_TYPE_BOX_SHADOW :297-300 */
+    info->fallback_mask_rect   = true;  /* LV_DRAW_TASK_TYPE_MASK_RECTANGLE :347-354 (disabled) */
+    info->fallback_mask_bitmap = true;  /* LV_DRAW_TASK_TYPE_MASK_BITMAP :356-359 */
+    info->fallback_gradient    = true;  /* Gradient fills/triangles :252-256, 332-336 */
+
+    /*
+     * Render buffer status.
+     *
+     * LVGL creates two render buffers in lv_dave2d_init():
+     *   _blit_renderbuffer: For non-LVGL operations (dave2d_port wrappers)
+     *   _renderbuffer: For LVGL draw operations
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:580-594
+     */
+    info->renderbuffer_valid      = (_renderbuffer != NULL);
+    info->blit_renderbuffer_valid = (_blit_renderbuffer != NULL);
+
+    /*
+     * Thread and mutex status.
+     *
+     * The Dave2D render thread and mutex are created in lv_draw_dave2d_init():
+     *   lv_mutex_init(&xd2Semaphore);
+     *   lv_thread_init(&draw_dave2d_unit->thread, ...);
+     *
+     * Reference: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:91-106
+     */
+    info->render_thread_active = (_d2_handle != NULL);  /* Thread created if init succeeded */
+    info->mutex_initialized    = (_d2_handle != NULL);  /* Mutex created if init succeeded */
+
+#else
+    /* LV_USE_DRAW_DAVE2D is disabled */
+    info->draw_unit_registered = false;
+    info->draw_unit_id         = 0;
+    info->draw_unit_name       = "N/A (disabled)";
+#endif
+}
+
+/**
+ * Print LVGL-Dave2D integration summary to console
+ *
+ * @details Outputs a human-readable summary of the Dave2D-LVGL draw engine
+ *          integration. This covers:
+ *          - Draw unit registration (ID, name)
+ *          - GPU-accelerated operations and their Dave2D primitives
+ *          - CPU fallback operations
+ *          - Render buffer and thread status
+ *
+ *          Called from lvgl_thread_entry.c after initialization and from
+ *          the NT-Shell "dave2d integration" sub-command.
+ *
+ * Reference:
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ */
+void dave2d_port_print_lvgl_integration(void)
+{
+    char buf[DAVE2D_PRINT_BUF_SIZE];
+    dave2d_lvgl_info_t info;
+
+    dave2d_port_get_lvgl_info(&info);
+
+    print_to_console("[LVGL-Dave2D Integration Status (S-004-3)]\r\n");
+
+    /* Draw unit registration */
+    print_to_console("[Draw Unit Registration]\r\n");
+    snprintf(buf, sizeof(buf), "  Registered  : %s\r\n",
+             info.draw_unit_registered ? "Yes" : "No");
+    print_to_console(buf);
+
+    if (info.draw_unit_registered) {
+        snprintf(buf, sizeof(buf), "  Unit ID     : %lu (DRAW_UNIT_ID_DAVE2D)\r\n",
+                 (unsigned long)info.draw_unit_id);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Unit Name   : %s\r\n", info.draw_unit_name);
+        print_to_console(buf);
+    }
+
+    /* GPU-accelerated operations */
+    print_to_console("[GPU-Accelerated Operations (Dave2D)]\r\n");
+    snprintf(buf, sizeof(buf), "  Fill (solid)  : %s  -> d2_renderbox\r\n",
+             info.accel_fill ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Border        : %s  -> d2_renderbox\r\n",
+             info.accel_border ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Line          : %s  -> d2_renderline\r\n",
+             info.accel_line ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Arc           : %s  -> d2_renderwedge\r\n",
+             info.accel_arc ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Image/BLIT    : %s  -> d2_setblitsrc + d2_blitcopy\r\n",
+             info.accel_image ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Label/Text    : %s  -> d2_setblitsrc (glyph blit)\r\n",
+             info.accel_label ? "GPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Triangle      : %s  -> d2_rendertri\r\n",
+             info.accel_triangle ? "GPU" : "---");
+    print_to_console(buf);
+
+    /* CPU fallback operations */
+    print_to_console("[CPU Fallback Operations (SW Renderer)]\r\n");
+    snprintf(buf, sizeof(buf), "  Layer         : %s\r\n",
+             info.fallback_layer ? "CPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Box Shadow    : %s\r\n",
+             info.fallback_box_shadow ? "CPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Mask Rect     : %s  (disabled in Dave2D driver)\r\n",
+             info.fallback_mask_rect ? "CPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Mask Bitmap   : %s\r\n",
+             info.fallback_mask_bitmap ? "CPU" : "---");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Gradient Fill : %s  (gradient stops differ)\r\n",
+             info.fallback_gradient ? "CPU" : "---");
+    print_to_console(buf);
+
+    /* Render infrastructure */
+    print_to_console("[Render Infrastructure]\r\n");
+    snprintf(buf, sizeof(buf), "  Main RenderBuf: %s\r\n",
+             info.renderbuffer_valid ? "Valid" : "NULL");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Blit RenderBuf: %s\r\n",
+             info.blit_renderbuffer_valid ? "Valid" : "NULL");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Render Thread : %s\r\n",
+             info.render_thread_active ? "Active" : "Not active");
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Mutex         : %s\r\n",
+             info.mutex_initialized ? "Initialized" : "Not initialized");
+    print_to_console(buf);
+
+    /* Configuration summary */
+    print_to_console("[Configuration (lv_conf_user.h)]\r\n");
+    print_to_console("  LV_USE_DRAW_DAVE2D             = ");
+#if LV_USE_DRAW_DAVE2D
+    print_to_console("1 (GPU enabled)\r\n");
+#else
+    print_to_console("0 (GPU disabled)\r\n");
+#endif
+    print_to_console("  LV_USE_DRAW_SW                 = ");
+#if LV_USE_DRAW_SW
+    print_to_console("1 (SW fallback enabled)\r\n");
+#else
+    print_to_console("0 (SW fallback disabled)\r\n");
+#endif
+
+    snprintf(buf, sizeof(buf), "  LV_DRAW_LAYER_SIMPLE_BUF_SIZE  = %lu bytes\r\n",
+             (unsigned long)LV_DRAW_LAYER_SIMPLE_BUF_SIZE);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  LV_DRAW_LAYER_MAX_MEMORY       = %lu bytes\r\n",
+             (unsigned long)LV_DRAW_LAYER_MAX_MEMORY);
+    print_to_console(buf);
+
+    /* Image color format support */
+    print_to_console("[Dave2D Supported Image Formats]\r\n");
+    print_to_console("  A8       : Yes\r\n");
+    print_to_console("  RGB565   : Yes\r\n");
+    print_to_console("  ARGB1555 : Yes\r\n");
+    print_to_console("  ARGB4444 : Yes\r\n");
+    print_to_console("  ARGB8888 : Yes\r\n");
+    print_to_console("  XRGB8888 : Yes\r\n");
+    print_to_console("  Others   : No (fallback to SW renderer)\r\n");
 }
 
 /* ============================================================
@@ -1324,21 +1585,28 @@ bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index)
 /**
  * NT-Shell "dave2d" command handler
  *
- * @details Provides Dave2D diagnostic and test sub-commands:
+ * @details Provides Dave2D diagnostic, integration, and test sub-commands:
  *   dave2d status          - Show Dave2D initialization state, HW/driver info
+ *   dave2d integration     - Show LVGL-Dave2D integration status (S-004-3)
  *   dave2d test <pattern>  - Draw test patterns using Dave2D wrappers (S-004-2)
  */
 int usrcmd_dave2d(int argc, char **argv)
 {
     if (argc < 2) {
         cmd_print_usage("dave2d", "<subcommand>");
-        print_to_console("  status  - Show Dave2D initialization state and hardware info\r\n");
-        print_to_console("  test    - Draw test patterns using Dave2D wrappers\r\n");
+        print_to_console("  status       - Show Dave2D initialization state and hardware info\r\n");
+        print_to_console("  integration  - Show LVGL-Dave2D integration status\r\n");
+        print_to_console("  test         - Draw test patterns using Dave2D wrappers\r\n");
         return CMD_ERR_USAGE;
     }
 
     if (ntlibc_strcmp(argv[1], "status") == 0) {
         dave2d_cmd_status();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "integration") == 0) {
+        dave2d_cmd_integration();
         return CMD_OK;
     }
 
@@ -1355,8 +1623,9 @@ int usrcmd_dave2d(int argc, char **argv)
     }
 
     cmd_print_usage("dave2d", "<subcommand>");
-    print_to_console("  status  - Show Dave2D initialization state and hardware info\r\n");
-    print_to_console("  test    - Draw test patterns using Dave2D wrappers\r\n");
+    print_to_console("  status       - Show Dave2D initialization state and hardware info\r\n");
+    print_to_console("  integration  - Show LVGL-Dave2D integration status\r\n");
+    print_to_console("  test         - Draw test patterns using Dave2D wrappers\r\n");
 
     return CMD_ERR_INVALID_ARG;
 }

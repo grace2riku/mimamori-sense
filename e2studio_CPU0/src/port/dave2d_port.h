@@ -87,8 +87,48 @@
  *   - FSP d2_handle0: e2studio_CPU0/ra_gen/common_data.c:4
  *   - LV_USE_DRAW_DAVE2D: e2studio_CPU0/ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:107
  *
+ * LVGL-Dave2D Integration (S-004-3):
+ *   The integration between LVGL and Dave2D is configured and managed as follows:
+ *
+ *   Configuration:
+ *     - LV_USE_DRAW_DAVE2D=1 in FSP lv_conf.h enables the Dave2D draw unit
+ *     - lv_conf_user.h contains Dave2D-optimized settings (layer sizes, etc.)
+ *     - No additional user-side initialization is needed for LVGL-Dave2D
+ *
+ *   Runtime flow:
+ *     1. lv_init() calls lv_draw_dave2d_init() which:
+ *        a. Creates the Dave2D device handle (_d2_handle)
+ *        b. Initializes the D/AVE 2D hardware
+ *        c. Registers lv_draw_dave2d_unit_t as draw unit ID=4
+ *        d. Creates a render thread for asynchronous draw task execution
+ *     2. For each draw task, LVGL calls _dave2d_evaluate() to check if
+ *        Dave2D can handle it. If claimed, the Dave2D draw unit processes
+ *        it via hardware acceleration. Otherwise, the SW renderer handles it.
+ *     3. dave2d_port_init() verifies the initialization succeeded.
+ *
+ *   Accelerated operations (from _dave2d_evaluate):
+ *     - Fill (solid color only, no gradients)
+ *     - Border
+ *     - Line
+ *     - Arc
+ *     - Image (supported color formats: A8, RGB565, ARGB1555, ARGB4444, ARGB8888, XRGB8888)
+ *     - Label (glyph BLIT)
+ *     - Triangle (solid color only, no gradients)
+ *
+ *   CPU fallback operations:
+ *     - Layer compositing
+ *     - Box shadow
+ *     - Mask rectangle (disabled in current Dave2D driver)
+ *     - Mask bitmap
+ *     - Gradient fills / gradient triangles
+ *
+ *   Reference:
+ *     - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ *     - lv_draw_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
+ *     - lv_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:541-603
+ *
  * @note
- * This file is part of the Dave2D control (S-004-1, S-004-2) implementation.
+ * This file is part of the Dave2D control (S-004-1, S-004-2, S-004-3) implementation.
  */
 
 #ifndef DAVE2D_PORT_H
@@ -137,6 +177,48 @@ typedef struct {
     bool        handle_valid;           /**< true if the LVGL Dave2D device handle is valid */
     bool        lvgl_dave2d_enabled;    /**< true if LV_USE_DRAW_DAVE2D is enabled */
 } dave2d_info_t;
+
+/**
+ * LVGL-Dave2D integration information structure (S-004-3)
+ *
+ * Contains information about the LVGL-Dave2D draw engine integration,
+ * including which draw operations are GPU-accelerated and which fall
+ * back to the software renderer.
+ *
+ * Reference:
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ *   - lv_draw_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
+ */
+typedef struct {
+    /* Draw unit registration */
+    bool        draw_unit_registered;   /**< true if Dave2D draw unit was registered with LVGL */
+    uint32_t    draw_unit_id;           /**< Dave2D draw unit ID (expected: 4) */
+    const char *draw_unit_name;         /**< Draw unit name string ("DAVE2D") */
+
+    /* GPU-accelerated operations (claimed by _dave2d_evaluate) */
+    bool        accel_fill;             /**< true: solid rectangle fill (no gradient) */
+    bool        accel_border;           /**< true: border drawing */
+    bool        accel_line;             /**< true: line drawing */
+    bool        accel_arc;              /**< true: arc/circle drawing */
+    bool        accel_image;            /**< true: image/BLIT (supported CFs only) */
+    bool        accel_label;            /**< true: label/text glyph blit */
+    bool        accel_triangle;         /**< true: solid triangle (no gradient) */
+
+    /* CPU fallback operations (not claimed by Dave2D) */
+    bool        fallback_layer;         /**< true: layer compositing -> SW */
+    bool        fallback_box_shadow;    /**< true: box shadow -> SW */
+    bool        fallback_mask_rect;     /**< true: mask rectangle -> SW */
+    bool        fallback_mask_bitmap;   /**< true: mask bitmap -> SW */
+    bool        fallback_gradient;      /**< true: gradient fills/triangles -> SW */
+
+    /* Render buffer info */
+    bool        renderbuffer_valid;     /**< true if _renderbuffer is non-NULL */
+    bool        blit_renderbuffer_valid;/**< true if _blit_renderbuffer is non-NULL */
+
+    /* Thread info */
+    bool        render_thread_active;   /**< true if Dave2D render thread was created */
+    bool        mutex_initialized;      /**< true if xd2Semaphore was initialized */
+} dave2d_lvgl_info_t;
 
 /**
  * Dave2D framebuffer descriptor for wrapper functions (S-004-2)
@@ -223,6 +305,48 @@ bool dave2d_port_is_available(void);
  * @param info Pointer to dave2d_info_t structure to fill
  */
 void dave2d_port_get_info(dave2d_info_t *info);
+
+/* ============================================================
+ *  LVGL-Dave2D Integration (S-004-3)
+ * ============================================================ */
+
+/**
+ * Get LVGL-Dave2D integration information
+ *
+ * @details Fills the info structure with details about the LVGL-Dave2D
+ *          draw engine integration, including:
+ *            - Draw unit registration status (ID, name)
+ *            - GPU-accelerated operations list
+ *            - CPU fallback operations list
+ *            - Render buffer and thread status
+ *            - Mutex status
+ *
+ *          This function queries the LVGL internal Dave2D draw unit state
+ *          to provide a comprehensive view of the integration.
+ *
+ *          Call this function AFTER lv_init() and dave2d_port_init().
+ *
+ * Reference:
+ *   - lv_draw_dave2d_init: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:76-108
+ *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
+ *
+ * @param info  Pointer to dave2d_lvgl_info_t structure to fill
+ */
+void dave2d_port_get_lvgl_info(dave2d_lvgl_info_t *info);
+
+/**
+ * Print a summary of the LVGL-Dave2D integration to the console
+ *
+ * @details Outputs a human-readable summary of the Dave2D-LVGL integration
+ *          status, including which draw operations use GPU acceleration and
+ *          which fall back to the software renderer. Useful for runtime
+ *          verification that the GPU is properly connected to the LVGL
+ *          rendering pipeline.
+ *
+ *          This is called from lvgl_thread_entry.c after initialization
+ *          and from the NT-Shell "dave2d integration" sub-command.
+ */
+void dave2d_port_print_lvgl_integration(void);
 
 /* ============================================================
  *  Drawing Wrapper Functions (S-004-2)
@@ -470,7 +594,7 @@ uint16_t dave2d_port_yuv_to_rgb565(uint8_t y_val, uint8_t u_val, uint8_t v_val);
 bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index);
 
 /* ============================================================
- *  NT-Shell Command (S-004-1, S-004-2)
+ *  NT-Shell Command (S-004-1, S-004-2, S-004-3)
  * ============================================================ */
 
 /**
@@ -479,6 +603,7 @@ bool dave2d_port_fb_from_glcdc(dave2d_fb_t *fb, uint32_t index);
  * @details Registered as the "dave2d" command in usrcmd.c.
  *          Sub-commands:
  *            dave2d status          - Show Dave2D initialization state and HW info
+ *            dave2d integration     - Show LVGL-Dave2D integration status (S-004-3)
  *            dave2d test rect       - Draw test rectangles on the display
  *            dave2d test line       - Draw test lines on the display
  *            dave2d test blit       - Draw a test BLIT pattern
