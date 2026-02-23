@@ -11,7 +11,8 @@
  *   - Status tracking (initialization state, Vsync count)
  *   - Vsync-synchronized double-buffering control (S-002-3)
  *   - LVGL GLCDC callback (Vsync counting, buffer swap tracking, underflow detection)
- *   - Test pattern drawing (color bars, gradient, solid fill)
+ *   - Test pattern drawing (color bars, gradient, checkerboard, solid fill)
+ *   - Backlight control (display ON/OFF)
  *   - Timing parameter query (resolution, porches, sync widths)
  *   - Clock configuration query (LCDCLK, pixel clock, frame rate)
  *   - Frame buffer information query (addresses, sizes, format)
@@ -113,6 +114,12 @@
 /** Number of color bars in the test pattern */
 #define GLCDC_TEST_COLORBAR_COUNT   (8)
 
+/** Checkerboard block size: large blocks for general display verification (32x32 pixels) */
+#define GLCDC_CHECKER_BLOCK_SIZE_LARGE  (32)
+
+/** Checkerboard block size: 1-pixel blocks for pixel-level accuracy test */
+#define GLCDC_CHECKER_BLOCK_SIZE_PIXEL  (1)
+
 /**********************************************************************************************************************
  Private (static) variables
  *********************************************************************************************************************/
@@ -162,6 +169,7 @@ static void glcdc_cmd_status(void);
 static void glcdc_cmd_fb(void);
 static void glcdc_cmd_dbuf(void);
 static void glcdc_cmd_test(int argc, char **argv);
+static void glcdc_cmd_backlight(int argc, char **argv);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -520,20 +528,29 @@ static void glcdc_cmd_dbuf(void)
 }
 
 /**
- * "display test" sub-command handler
+ * "display test" sub-command handler (S-002-4)
  *
  * @details Draws test patterns on the LCD to verify display output.
  *          Supports the following sub-sub-commands:
- *            display test colorbar  - Vertical color bars (8 colors)
- *            display test gradient  - Horizontal gradients
- *            display test red       - Solid red fill
- *            display test green     - Solid green fill
- *            display test blue      - Solid blue fill
- *            display test white     - Solid white fill
- *            display test black     - Solid black fill
+ *            display test colorbar    - Vertical color bars (8 colors)
+ *            display test gradient    - Horizontal gradients
+ *            display test checker     - Checkerboard (32x32 pixel blocks)
+ *            display test checker1    - Checkerboard (1-pixel blocks)
+ *            display test red         - Solid red fill
+ *            display test green       - Solid green fill
+ *            display test blue        - Solid blue fill
+ *            display test white       - Solid white fill
+ *            display test black       - Solid black fill
  *
- *          Test patterns are drawn directly to fb_background[0].
- *          The GLCDC hardware displays the buffer in real time.
+ *          Test patterns are drawn to BOTH fb_background[0] and fb_background[1]
+ *          to ensure correct display after double-buffer swap. This verifies
+ *          the S-002-4 acceptance criterion: "test pattern correctly displayed
+ *          after double-buffer switching".
+ *
+ *          Note: In normal LVGL operation, LVGL manages framebuffer access.
+ *          This test bypasses LVGL and writes directly to the GLCDC framebuffers.
+ *          After testing, LVGL rendering should be restarted or the system
+ *          should be reset to restore normal display operation.
  *
  * @param argc  Argument count (from the original command)
  * @param argv  Argument vector
@@ -549,19 +566,25 @@ static void glcdc_cmd_test(int argc, char **argv)
 
 #if GLCDC_CFG_LAYER_1_ENABLE
     /*
-     * Draw test patterns directly to fb_background[0].
+     * Draw test patterns to both framebuffers.
      *
-     * Note: In normal LVGL operation, LVGL manages framebuffer access.
-     * This test bypasses LVGL and writes directly to the GLCDC framebuffer.
-     * After testing, LVGL rendering should be restarted or the system
-     * should be reset to restore normal display operation.
+     * Writing the same pattern to both fb_background[0] and fb_background[1]
+     * ensures the test pattern remains visible regardless of which buffer
+     * GLCDC is currently displaying (front buffer) and which buffer LVGL
+     * would render to next (back buffer). This verifies the double-buffer
+     * swap does not corrupt the display.
+     *
+     * Reference: e2studio_CPU0/ra_gen/common_data.c:7 (fb_background[2])
      */
-    uint8_t *p_fb = &fb_background[0][0];
+    uint8_t *p_fb0 = &fb_background[0][0];
+    uint8_t *p_fb1 = &fb_background[1][0];
 
     if (argc < 3) {
         print_to_console("Usage: display test <pattern>\r\n");
         print_to_console("  colorbar  - Vertical color bars (R,G,B,Y,C,M,W,K)\r\n");
-        print_to_console("  gradient  - Horizontal gradients\r\n");
+        print_to_console("  gradient  - Horizontal gradients (grayscale + R-to-B)\r\n");
+        print_to_console("  checker   - Checkerboard (32x32 pixel blocks)\r\n");
+        print_to_console("  checker1  - Checkerboard (1-pixel blocks, pixel-level test)\r\n");
         print_to_console("  red       - Solid red fill\r\n");
         print_to_console("  green     - Solid green fill\r\n");
         print_to_console("  blue      - Solid blue fill\r\n");
@@ -573,43 +596,94 @@ static void glcdc_cmd_test(int argc, char **argv)
     const char *pattern = argv[2];
 
     if (ntlibc_strcmp(pattern, "colorbar") == 0) {
-        print_to_console("  Drawing color bar test pattern...\r\n");
-        glcdc_port_draw_colorbar(p_fb);
-        print_to_console("  Done.\r\n");
+        print_to_console("  Drawing color bar test pattern (both buffers)...\r\n");
+        glcdc_port_draw_colorbar(p_fb0);
+        glcdc_port_draw_colorbar(p_fb1);
+        print_to_console("  Done. 8 vertical bars: R,G,B,Y,C,M,W,K\r\n");
     } else if (ntlibc_strcmp(pattern, "gradient") == 0) {
-        print_to_console("  Drawing gradient test pattern...\r\n");
-        glcdc_port_draw_gradient(p_fb);
-        print_to_console("  Done.\r\n");
+        print_to_console("  Drawing gradient test pattern (both buffers)...\r\n");
+        glcdc_port_draw_gradient(p_fb0);
+        glcdc_port_draw_gradient(p_fb1);
+        print_to_console("  Done. Top: grayscale, Bottom: red-to-blue\r\n");
+    } else if (ntlibc_strcmp(pattern, "checker") == 0) {
+        print_to_console("  Drawing checkerboard pattern 32x32 (both buffers)...\r\n");
+        glcdc_port_draw_checker(p_fb0, GLCDC_CHECKER_BLOCK_SIZE_LARGE);
+        glcdc_port_draw_checker(p_fb1, GLCDC_CHECKER_BLOCK_SIZE_LARGE);
+        print_to_console("  Done. 32x32 pixel blocks, white/black.\r\n");
+    } else if (ntlibc_strcmp(pattern, "checker1") == 0) {
+        print_to_console("  Drawing checkerboard pattern 1x1 (both buffers)...\r\n");
+        glcdc_port_draw_checker(p_fb0, GLCDC_CHECKER_BLOCK_SIZE_PIXEL);
+        glcdc_port_draw_checker(p_fb1, GLCDC_CHECKER_BLOCK_SIZE_PIXEL);
+        print_to_console("  Done. 1x1 pixel blocks (pixel-level accuracy test).\r\n");
     } else if (ntlibc_strcmp(pattern, "red") == 0) {
-        print_to_console("  Filling with red...\r\n");
-        glcdc_port_fill_color(p_fb, RGB565_RED);
+        print_to_console("  Filling with red (both buffers)...\r\n");
+        glcdc_port_fill_color(p_fb0, RGB565_RED);
+        glcdc_port_fill_color(p_fb1, RGB565_RED);
         print_to_console("  Done.\r\n");
     } else if (ntlibc_strcmp(pattern, "green") == 0) {
-        print_to_console("  Filling with green...\r\n");
-        glcdc_port_fill_color(p_fb, RGB565_GREEN);
+        print_to_console("  Filling with green (both buffers)...\r\n");
+        glcdc_port_fill_color(p_fb0, RGB565_GREEN);
+        glcdc_port_fill_color(p_fb1, RGB565_GREEN);
         print_to_console("  Done.\r\n");
     } else if (ntlibc_strcmp(pattern, "blue") == 0) {
-        print_to_console("  Filling with blue...\r\n");
-        glcdc_port_fill_color(p_fb, RGB565_BLUE);
+        print_to_console("  Filling with blue (both buffers)...\r\n");
+        glcdc_port_fill_color(p_fb0, RGB565_BLUE);
+        glcdc_port_fill_color(p_fb1, RGB565_BLUE);
         print_to_console("  Done.\r\n");
     } else if (ntlibc_strcmp(pattern, "white") == 0) {
-        print_to_console("  Filling with white...\r\n");
-        glcdc_port_fill_color(p_fb, RGB565_WHITE);
+        print_to_console("  Filling with white (both buffers)...\r\n");
+        glcdc_port_fill_color(p_fb0, RGB565_WHITE);
+        glcdc_port_fill_color(p_fb1, RGB565_WHITE);
         print_to_console("  Done.\r\n");
     } else if (ntlibc_strcmp(pattern, "black") == 0) {
-        print_to_console("  Filling with black...\r\n");
-        glcdc_port_fill_color(p_fb, RGB565_BLACK);
+        print_to_console("  Filling with black (both buffers)...\r\n");
+        glcdc_port_fill_color(p_fb0, RGB565_BLACK);
+        glcdc_port_fill_color(p_fb1, RGB565_BLACK);
         print_to_console("  Done.\r\n");
     } else {
         snprintf(buf, sizeof(buf), "  Error: Unknown pattern '%s'.\r\n", pattern);
         print_to_console(buf);
-        print_to_console("  Available: colorbar, gradient, red, green, blue, white, black\r\n");
+        print_to_console("  Available: colorbar, gradient, checker, checker1,\r\n");
+        print_to_console("            red, green, blue, white, black\r\n");
     }
 #else
     FSP_PARAMETER_NOT_USED(argc);
     FSP_PARAMETER_NOT_USED(argv);
     print_to_console("  Error: GLCDC Layer 1 is not enabled.\r\n");
 #endif
+}
+
+/**
+ * "display backlight" sub-command handler (S-002-4)
+ *
+ * @details Controls the LCD backlight via the DISP_BLEN pin.
+ *          Supports:
+ *            display backlight on   - Enable backlight
+ *            display backlight off  - Disable backlight
+ *
+ * @param argc  Argument count (from the original command)
+ * @param argv  Argument vector
+ */
+static void glcdc_cmd_backlight(int argc, char **argv)
+{
+    if (argc < 3) {
+        print_to_console("Usage: display backlight <on|off>\r\n");
+        print_to_console("  on   - Enable LCD backlight\r\n");
+        print_to_console("  off  - Disable LCD backlight\r\n");
+        return;
+    }
+
+    if (ntlibc_strcmp(argv[2], "on") == 0) {
+        glcdc_port_backlight_control(true);
+        print_to_console("  Backlight: ON\r\n");
+    } else if (ntlibc_strcmp(argv[2], "off") == 0) {
+        glcdc_port_backlight_control(false);
+        print_to_console("  Backlight: OFF\r\n");
+    } else {
+        char buf[GLCDC_PRINT_BUF_SIZE];
+        snprintf(buf, sizeof(buf), "  Error: Unknown option '%s'. Use on or off.\r\n", argv[2]);
+        print_to_console(buf);
+    }
 }
 
 /**********************************************************************************************************************
@@ -873,6 +947,48 @@ void glcdc_port_draw_gradient(uint8_t *p_fb)
 }
 
 /**
+ * Draw a checkerboard test pattern to a frame buffer (S-002-4)
+ *
+ * @details Fills the framebuffer with a checkerboard pattern of alternating
+ *          white and black squares. The block_size parameter controls the
+ *          size of each square.
+ *
+ *          Common block sizes:
+ *            - 32: Large blocks (32x32 pixels), good for overall display
+ *                  verification and timing correctness check
+ *            - 1:  1-pixel alternating pattern, useful for verifying
+ *                  pixel-level rendering accuracy, stride alignment,
+ *                  and detecting off-by-one addressing errors
+ *
+ *          If the display timing or stride configuration is incorrect,
+ *          the checkerboard pattern will show visible diagonal distortion
+ *          or shifted columns, making it an effective diagnostic tool.
+ */
+void glcdc_port_draw_checker(uint8_t *p_fb, uint32_t block_size)
+{
+    /* Guard against zero block size to avoid division by zero */
+    if (block_size == 0) {
+        block_size = 1;
+    }
+
+    for (uint32_t y = 0; y < GLCDC_DISPLAY_VSIZE; y++) {
+        uint16_t *p_line = (uint16_t *)(p_fb + y * DISPLAY_BUFFER_STRIDE_BYTES_INPUT0);
+        uint32_t row_phase = (y / block_size) & 1U;
+
+        for (uint32_t x = 0; x < GLCDC_DISPLAY_HSIZE; x++) {
+            uint32_t col_phase = (x / block_size) & 1U;
+
+            /*
+             * XOR of row and column phase:
+             *   (0,0) -> white, (0,1) -> black, (1,0) -> black, (1,1) -> white
+             * This produces the classic checkerboard pattern.
+             */
+            p_line[x] = (row_phase ^ col_phase) ? RGB565_BLACK : RGB565_WHITE;
+        }
+    }
+}
+
+/**
  * Fill a frame buffer with a solid color
  */
 void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565)
@@ -884,6 +1000,22 @@ void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565)
             p_line[x] = color565;
         }
     }
+}
+
+/**
+ * Control the LCD backlight (S-002-4)
+ *
+ * @details Drives the DISP_BLEN (P514) pin to enable or disable the
+ *          LCD backlight. This allows display ON/OFF control from
+ *          NT-Shell commands without resetting the GLCDC.
+ *
+ * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:49
+ *            R_IOPORT_PinWrite(&g_ioport_ctrl, LCD_BLEN, BSP_IO_LEVEL_HIGH);
+ */
+void glcdc_port_backlight_control(bool enable)
+{
+    bsp_io_level_t level = enable ? BSP_IO_LEVEL_HIGH : BSP_IO_LEVEL_LOW;
+    R_IOPORT_PinWrite(&g_ioport_ctrl, GLCDC_PIN_BACKLIGHT, level);
 }
 
 /**
@@ -1042,10 +1174,11 @@ uint32_t glcdc_port_get_swap_count(void)
  * NT-Shell "display" command handler
  *
  * @details Provides GLCDC display diagnostic sub-commands:
- *   display status - Show GLCDC initialization state, timing, clock, output config
- *   display fb     - Show frame buffer addresses, sizes, and format
- *   display dbuf   - Show double-buffering status (S-002-3)
- *   display test   - Draw test patterns on the LCD (S-002-4)
+ *   display status    - Show GLCDC initialization state, timing, clock, output config
+ *   display fb        - Show frame buffer addresses, sizes, and format
+ *   display dbuf      - Show double-buffering status (S-002-3)
+ *   display test      - Draw test patterns on the LCD (S-002-4)
+ *   display backlight - Control LCD backlight on/off (S-002-4)
  *
  * Reference: doc/design/glcdc-timing-parameters.md
  */
@@ -1053,10 +1186,11 @@ int usrcmd_display(int argc, char **argv)
 {
     if (argc < 2) {
         cmd_print_usage("display", "<subcommand>");
-        print_to_console("  status  - Show GLCDC timing parameters and configuration\r\n");
-        print_to_console("  fb      - Show frame buffer addresses and sizes\r\n");
-        print_to_console("  dbuf    - Show double-buffering status (Vsync sync)\r\n");
-        print_to_console("  test    - Draw test patterns on the LCD\r\n");
+        print_to_console("  status    - Show GLCDC timing parameters and configuration\r\n");
+        print_to_console("  fb        - Show frame buffer addresses and sizes\r\n");
+        print_to_console("  dbuf      - Show double-buffering status (Vsync sync)\r\n");
+        print_to_console("  test      - Draw test patterns on the LCD\r\n");
+        print_to_console("  backlight - Control LCD backlight on/off\r\n");
         return CMD_ERR_USAGE;
     }
 
@@ -1080,6 +1214,11 @@ int usrcmd_display(int argc, char **argv)
         return CMD_OK;
     }
 
+    if (ntlibc_strcmp(argv[1], "backlight") == 0) {
+        glcdc_cmd_backlight(argc, argv);
+        return CMD_OK;
+    }
+
     /* Unknown sub-command */
     {
         char buf[GLCDC_PRINT_BUF_SIZE];
@@ -1088,10 +1227,11 @@ int usrcmd_display(int argc, char **argv)
     }
 
     cmd_print_usage("display", "<subcommand>");
-    print_to_console("  status  - Show GLCDC timing parameters and configuration\r\n");
-    print_to_console("  fb      - Show frame buffer addresses and sizes\r\n");
-    print_to_console("  dbuf    - Show double-buffering status (Vsync sync)\r\n");
-    print_to_console("  test    - Draw test patterns on the LCD\r\n");
+    print_to_console("  status    - Show GLCDC timing parameters and configuration\r\n");
+    print_to_console("  fb        - Show frame buffer addresses and sizes\r\n");
+    print_to_console("  dbuf      - Show double-buffering status (Vsync sync)\r\n");
+    print_to_console("  test      - Draw test patterns on the LCD\r\n");
+    print_to_console("  backlight - Control LCD backlight on/off\r\n");
 
     return CMD_ERR_INVALID_ARG;
 }
