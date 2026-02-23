@@ -280,12 +280,17 @@ void mipi_phy_port_get_info(mipi_phy_info_t *info);
 void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing);
 
 /**
- * NT-Shell "camera" command handler (S-003-1 / S-003-4)
+ * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-4)
  *
  * @details Provides camera/MIPI diagnostic sub-commands:
- *   camera phy     - Show MIPI PHY initialization state and configuration
- *   camera timing  - Show D-PHY timing parameters
- *   camera init    - Initialize MIPI PHY (manual trigger)
+ *   camera phy       - Show MIPI PHY initialization state and configuration (S-003-1)
+ *   camera timing    - Show D-PHY timing parameters (S-003-1)
+ *   camera init      - Initialize MIPI PHY (S-003-1)
+ *   camera csi       - Show CSI-2 receiver status and error counters (S-003-2)
+ *   camera csi reset - Reset CSI-2 error/frame counters (S-003-2)
+ *   camera csi init  - Initialize CSI-2 receiver (S-003-2)
+ *   camera csi start - Start CSI-2 reception (S-003-2)
+ *   camera csi stop  - Stop CSI-2 reception (S-003-2)
  *
  * @param argc Argument count
  * @param argv Argument vector
