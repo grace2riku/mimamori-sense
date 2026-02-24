@@ -14,6 +14,29 @@ void lvgl_thread_create(void);
 static void lvgl_thread_func(void *pvParameters);
 void rtos_startup_err_callback(void *p_instance, void *p_data);
 void rtos_startup_common_init(void);
+/* I2C Communication Device */
+rm_comms_i2c_instance_ctrl_t g_comms_i2c_device0_ctrl;
+
+/* Lower level driver configuration */
+const i2c_master_cfg_t g_comms_i2c_device0_lower_level_cfg = { .slave = 0x38,
+		.addr_mode = I2C_MASTER_ADDR_MODE_7BIT, .p_callback =
+				rm_comms_i2c_callback, };
+
+const rm_comms_cfg_t g_comms_i2c_device0_cfg = {
+		.semaphore_timeout = 0xFFFFFFFF, .p_lower_level_cfg =
+				(void*) &g_comms_i2c_device0_lower_level_cfg, .p_extend =
+				(void*) &g_comms_i2c_bus0_extended_cfg, .p_callback =
+				comms_i2c_callback,
+#if defined(NULL)
+    .p_context          = NULL,
+#else
+		.p_context = (void*) &NULL,
+#endif
+		};
+
+const rm_comms_instance_t g_comms_i2c_device0 = { .p_ctrl =
+		&g_comms_i2c_device0_ctrl, .p_cfg = &g_comms_i2c_device0_cfg, .p_api =
+		&g_comms_on_comms_i2c, };
 extern uint32_t g_fsp_common_thread_count;
 
 const rm_freertos_port_parameters_t lvgl_thread_parameters = { .p_context =

@@ -381,6 +381,18 @@
       <description>FreeRTOS - Memory Management - Heap 4</description>
       <originalPack>Amazon.FreeRTOS-Kernel.11.1.0+fsp.6.3.0.pack</originalPack>
     </component>
+    <component apiversion="" class="HAL Drivers" condition="" group="all" subgroup="r_icu" variant="" vendor="Renesas" version="6.3.0">
+      <description>External Interrupt</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="HAL Drivers" condition="" group="all" subgroup="r_iic_master" variant="" vendor="Renesas" version="6.3.0">
+      <description>I2C Master Interface</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
+    <component apiversion="" class="Middleware" condition="" group="all" subgroup="rm_comms_i2c" variant="" vendor="Renesas" version="6.3.0">
+      <description>I2C Communications Implementation</description>
+      <originalPack>Renesas.RA.6.3.0.pack</originalPack>
+    </component>
   </raComponentSelection>
   <raElcConfiguration/>
   <raIcuConfiguration/>
@@ -606,6 +618,54 @@
       <property id="module.driver.drw.int_ipl" value="board.icu.common.irq.priority2"/>
     </module>
     <module id="module.driver.tes.dave2d.722801721"/>
+    <module id="module.driver.comms_i2c_on_comms_i2c_device.1775047522">
+      <property id="module.driver.comms_i2c_device.name" value="g_comms_i2c_device0"/>
+      <property id="module.driver.comms_i2c_device.semaphore_timeout" value="0xFFFFFFFF"/>
+      <property id="module.driver.comms_i2c_device.slave_address" value="0x38"/>
+      <property id="module.driver.comms_i2c_device.address_mode" value="module.driver.comms_i2c_device.address_mode.address_mode_7bit"/>
+      <property id="module.driver.comms_i2c_device.p_callback" value="comms_i2c_callback"/>
+    </module>
+    <module id="module.driver.comms_i2c_on_comms_i2c_bus.1739565637">
+      <property id="module.driver.comms_i2c_bus.name" value="g_comms_i2c_bus0"/>
+      <property id="module.driver.comms_i2c_bus.bus_timeout" value="0xFFFFFFFF"/>
+      <property id="module.driver.comms_i2c_bus.blocking_semaphore" value="module.driver.comms_i2c_bus.blocking_semaphore.use"/>
+      <property id="module.driver.comms_i2c_bus.bus_recursive_mutex" value="module.driver.comms_i2c_bus.bus_recursive_mutex.use"/>
+      <property id="module.driver.comms_i2c_bus.channel" value="1"/>
+      <property id="module.driver.comms_i2c_bus.rate" value="module.driver.comms_i2c_bus.rate.rate_fast"/>
+    </module>
+    <module id="module.driver.i2c_on_iic_master.1626773449">
+      <property id="module.driver.i2c_master.name" value="g_i2c_master0"/>
+      <property id="module.driver.i2c_master.channel" value="0"/>
+      <property id="module.driver.i2c_master.rate" value="module.driver.i2c_master.rate.rate_standard"/>
+      <property id="module.driver.i2c_master.rate_value" value="0"/>
+      <property id="module.driver.i2c_master.rise_time_ns" value="120"/>
+      <property id="module.driver.i2c_master.fall_time_ns" value="120"/>
+      <property id="module.driver.i2c_master.duty" value="50"/>
+      <property id="module.driver.i2c_master.slave" value="0x38"/>
+      <property id="module.driver.i2c_master.addr_mode" value="module.driver.i2c_master.addr_mode.addr_mode_7bit"/>
+      <property id="module.driver.i2c_master.timeout_mode" value="module.driver.i2c_master.timeout_mode.short_mode"/>
+      <property id="module.driver.i2c_master.timeout_scl_low" value="module.driver.i2c_master.timeout_scl_low.enabled"/>
+      <property id="module.driver.i2c_master.p_callback" value="NULL"/>
+      <property id="module.driver.i2c_master.ipl" value="board.icu.common.irq.priority12"/>
+    </module>
+    <module id="module.driver.external_irq_on_icu.734444614">
+      <property id="module.driver.external_irq.name" value="g_external_irq0"/>
+      <property id="module.driver.external_irq.channel" value="19"/>
+      <property id="module.driver.external_irq.trigger" value="module.driver.external_irq.trigger.trig_falling"/>
+      <property id="module.driver.external_irq.filter_enable" value="module.driver.external_irq.filter_enable.true"/>
+      <property id="module.driver.external_irq.filter_source" value="module.driver.external_irq.filter_source.pclk"/>
+      <property id="module.driver.external_irq.clock_source_div" value="module.driver.external_irq.clock_source_div.clock_source_div_by_1"/>
+      <property id="module.driver.external_irq.p_callback" value="touch_irq_callback"/>
+      <property id="module.driver.external_irq.ipl" value="board.icu.common.irq.priority12"/>
+    </module>
+    <object id="rtos.awsfreertos.object.flags.1718590169">
+      <property id="rtos.awsfreertos.object.flags.symbol" value="g_i2c_event_group"/>
+      <property id="rtos.awsfreertos.object.flags.allocation" value="rtos.awsfreertos.object.flags.allocation.static"/>
+    </object>
+    <object id="rtos.awsfreertos.object.binary_semaphore.1458856752">
+      <property id="rtos.awsfreertos.object.binary_semaphore.symbol" value="g_irq_binary_semaphore"/>
+      <property id="rtos.awsfreertos.object.binary_semaphore.allocation" value="rtos.awsfreertos.object.binary_semaphore.allocation.static"/>
+    </object>
     <context id="_hal.0">
       <stack module="module.driver.ioport_on_ioport.0"/>
       <stack module="module.middleware.rm_freertos_port.0"/>
@@ -646,12 +706,26 @@
           </stack>
         </stack>
       </stack>
+      <stack module="module.driver.comms_i2c_on_comms_i2c_device.1775047522">
+        <stack module="module.driver.comms_i2c_on_comms_i2c_bus.1739565637" requires="module.driver.comms_i2c_device.requires.comms_i2c_bus">
+          <stack module="module.driver.i2c_on_iic_master.1626773449" requires="module.driver.comms_i2c_bus.requires.i2c"/>
+        </stack>
+      </stack>
+      <stack module="module.driver.external_irq_on_icu.734444614"/>
     </context>
     <config id="config.driver.sci_b_uart">
       <property id="config.driver.sci_b_uart.param_checking_enable" value="config.driver.sci_b_uart.param_checking_enable.bsp"/>
       <property id="config.driver.sci_b_uart.fifo_support" value="config.driver.sci_b_uart.fifo_support.disabled"/>
       <property id="config.driver.sci_b_uart.dtc_support" value="config.driver.sci_b_uart.dtc_support.disabled"/>
       <property id="config.driver.sci_b_uart.flow_control" value="config.driver.sci_b_uart.flow_control.disabled"/>
+    </config>
+    <config id="config.driver.comms_i2c">
+      <property id="config.driver.comms_i2c.param_checking_enable" value="config.driver.comms_i2c.param_checking_enable.bsp"/>
+    </config>
+    <config id="config.driver.iic_master">
+      <property id="config.driver.iic_master.param_checking_enable" value="config.driver.iic_master.param_checking_enable.bsp"/>
+      <property id="config.driver.iic_master.dtc_enable" value="config.driver.iic_master.dtc_enable.disabled"/>
+      <property id="config.driver.iic_master.addr_mode_10_bit_enable" value="config.driver.iic_master.addr_mode_10_bit_enable.disabled"/>
     </config>
     <config id="config.driver.glcdc">
       <property id="config.driver.glcdc.param_checking_enable" value="config.driver.glcdc.param_checking_enable.bsp"/>
@@ -724,6 +798,9 @@
       <property id="config.lvgl.lvgl.lv_use_font_manager" value="config.lvgl.lvgl.lv_use_font_manager.disable"/>
       <property id="config.lvgl.lvgl.lv_font_manager_name_max_len" value="32"/>
     </config>
+    <config id="config.driver.icu">
+      <property id="config.driver.icu.param_checking_enable" value="config.driver.icu.param_checking_enable.bsp"/>
+    </config>
     <config id="config.middleware.rm_lvgl_port">
       <property id="config.middleware.rm_lvgl_port.param_checking_enable" value="config.middleware.rm_lvgl_port.param_checking_enable.bsp"/>
       <property id="config.middleware.rm_lvgl_port.provide_tick_callback" value="config.middleware.rm_lvgl_port.provide_tick_callback.enabled"/>
@@ -786,7 +863,7 @@
       <property id="config.awsfreertos.thread.include_xtaskgetidletaskhandle" value="config.awsfreertos.thread.include_xtaskgetidletaskhandle.disabled"/>
       <property id="config.awsfreertos.thread.include_etaskgetstate" value="config.awsfreertos.thread.include_etaskgetstate.disabled"/>
       <property id="config.awsfreertos.thread.include_xeventgroupsetbitfromisr" value="config.awsfreertos.thread.include_xeventgroupsetbitfromisr.enabled"/>
-      <property id="config.awsfreertos.thread.include_xtimerpendfunctioncall" value="config.awsfreertos.thread.include_xtimerpendfunctioncall.disabled"/>
+      <property id="config.awsfreertos.thread.include_xtimerpendfunctioncall" value="config.awsfreertos.thread.include_xtimerpendfunctioncall.enabled"/>
       <property id="config.awsfreertos.thread.include_xtaskabortdelay" value="config.awsfreertos.thread.include_xtaskabortdelay.disabled"/>
       <property id="config.awsfreertos.thread.include_xtaskgethandle" value="config.awsfreertos.thread.include_xtaskgethandle.disabled"/>
       <property id="config.awsfreertos.thread.include_xtaskresumefromisr" value="config.awsfreertos.thread.include_xtaskresumefromisr.enabled"/>

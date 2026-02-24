@@ -64,6 +64,7 @@
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
 #include "port/mipi_port.h"
+#include "port/lv_port_indev.h"
 
 #include "lvgl.h"
 
@@ -135,6 +136,7 @@ static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
     NTSHELL_CMD("reset",   "Reset the system",                          usrcmd_reset),
     NTSHELL_CMD("sdram",   "SDRAM control: sdram status|check|map|test", usrcmd_sdram),
+    NTSHELL_CMD("touch",   "Touch panel: touch status|info|read|mon",   usrcmd_touch),
     NTSHELL_CMD("version", "Show firmware version",                     usrcmd_version),
 };
 

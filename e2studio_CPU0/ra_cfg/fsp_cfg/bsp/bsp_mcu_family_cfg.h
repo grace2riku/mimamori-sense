@@ -98,7 +98,7 @@
 #define BSP_TZ_CFG_PSARB (\
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 4) /* I3C */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 7) /* IIC2 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 8) /* IIC1 */ | \
+            (((1 > 0) ? 0U : 1U) << 8) /* IIC1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 9) /* IIC0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 11) /* USBFS */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 12) /* USBHS */ | \
@@ -279,7 +279,7 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 16U) /* External IRQ16 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 17U) /* External IRQ17 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 18U) /* External IRQ18 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 19U) /* External IRQ19 */ | \
+            (((1 > 0) ? 0U : 1U) << 19U) /* External IRQ19 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 20U) /* External IRQ20 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 21U) /* External IRQ21 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 22U) /* External IRQ22 */ | \

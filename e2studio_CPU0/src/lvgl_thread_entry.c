@@ -14,6 +14,10 @@
  *      a. LCD hardware reset (DISP_RESET pin)
  *      b. RM_LVGL_PORT_Open() -> R_GLCDC_Open() + R_GLCDC_Start()
  *      c. Register backlight enable callback (after first frame flush)
+ *   4. lv_port_indev_init() - Initialize touch panel input device (F-001-5):
+ *      a. Create LVGL pointer-type input device
+ *      b. Open I2C bus/device for GT911 touch controller
+ *      c. Enable external IRQ (channel 19) for touch events
  *   5. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
  *
  * Dave2D-LVGL Integration (S-004-3):
@@ -36,19 +40,21 @@
  *   - Reference project: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c
  *   - GLCDC init: e2studio_CPU0/src/port/glcdc_port.c (glcdc_port_init)
  *   - Dave2D init: e2studio_CPU0/src/port/dave2d_port.c (dave2d_port_init)
+ *   - Touch init: e2studio_CPU0/src/port/lv_port_indev.c (lv_port_indev_init)
  *   - RM_LVGL_PORT: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c
  *   - LVGL Dave2D: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c
  *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
  *
  * @note
  * This file is part of the GLCDC control (S-002-2), Dave2D control (S-004-1),
- * and LVGL-Dave2D integration (S-004-3) implementation.
+ * LVGL-Dave2D integration (S-004-3), and touch panel control (F-001-5) implementation.
  */
 
 #include "lvgl_thread.h"
 #include "lvgl.h"
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
+#include "port/lv_port_indev.h"
 
 /**
  * LVGL thread entry function
@@ -120,7 +126,27 @@ void lvgl_thread_entry(void *pvParameters)
     glcdc_port_init();
 
     /*
-     * Step 5: LVGL main loop
+     * Step 5: Initialize touch panel input device (F-001-5)
+     *
+     * This initializes the GT911/FT5X06-compatible touch controller:
+     *   a. Creates LVGL pointer-type input device
+     *   b. Opens I2C bus and communication device (slave addr 0x38)
+     *   c. Creates FreeRTOS semaphore/mutex for I2C synchronization
+     *   d. Opens and enables external IRQ (channel 19) for touch events
+     *
+     * Must be called after glcdc_port_init() because the LCD reset pin
+     * is shared with the touch controller.
+     *
+     * Note: This requires FSP configuration for I2C and External IRQ
+     * (Issue #3). Until the FSP modules are added, this call will
+     * cause a build error.
+     *
+     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c:27
+     */
+    lv_port_indev_init();
+
+    /*
+     * Step 6: LVGL main loop
      *
      * lv_timer_handler() processes all pending LVGL tasks:
      *   - Rendering invalidated areas to the active framebuffer
