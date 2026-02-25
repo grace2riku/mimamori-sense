@@ -18,7 +18,11 @@
  *      a. Create LVGL pointer-type input device
  *      b. Open I2C bus/device for GT911 touch controller
  *      c. Enable external IRQ (channel 19) for touch events
- *   5. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
+ *   5. ui_main_screen_create() - Create and load the main screen (F-001-7):
+ *      a. Status bar (40px) with status label, datetime, settings button
+ *      b. Camera image area (1024x560) with RGB565 SDRAM buffer
+ *      c. Color bar test pattern drawn as initial content
+ *   6. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
  *
  * Dave2D-LVGL Integration (S-004-3):
  *   When LV_USE_DRAW_DAVE2D=1 (set in FSP lv_conf.h), lv_init() automatically:
@@ -41,13 +45,15 @@
  *   - GLCDC init: e2studio_CPU0/src/port/glcdc_port.c (glcdc_port_init)
  *   - Dave2D init: e2studio_CPU0/src/port/dave2d_port.c (dave2d_port_init)
  *   - Touch init: e2studio_CPU0/src/port/lv_port_indev.c (lv_port_indev_init)
+ *   - Main screen: e2studio_CPU0/src/ui/ui_main_screen.c (ui_main_screen_create)
  *   - RM_LVGL_PORT: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c
  *   - LVGL Dave2D: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c
  *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
  *
  * @note
  * This file is part of the GLCDC control (S-002-2), Dave2D control (S-004-1),
- * LVGL-Dave2D integration (S-004-3), and touch panel control (F-001-5) implementation.
+ * LVGL-Dave2D integration (S-004-3), touch panel control (F-001-5),
+ * and main screen UI (F-001-7) implementation.
  */
 
 #include "lvgl_thread.h"
@@ -55,6 +61,7 @@
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
 #include "port/lv_port_indev.h"
+#include "ui/ui_main_screen.h"
 
 /**
  * LVGL thread entry function
@@ -146,12 +153,20 @@ void lvgl_thread_entry(void *pvParameters)
     lv_port_indev_init();
 
     /*
-     * Step 6: UI initialization (initial screen display)
+     * Step 6: UI initialization (initial screen display) (F-001-7)
      *
-     * TODO: F-001-7で実装予定
-     * ここに初期画面の作成・表示処理を追加する。
-     * 現時点ではLVGLデフォルト背景が表示される。
+     * Creates and loads the main screen with:
+     *   - Status bar (40px) at top: status label, datetime, settings button
+     *   - Camera image area (1024x560) below: RGB565 buffer in SDRAM
+     *   - Color bar test pattern displayed in camera area (until F-002
+     *     provides actual camera frames)
+     *
+     * The screen is loaded as the active screen via lv_screen_load()
+     * inside ui_main_screen_create().
+     *
+     * Reference: e2studio_CPU0/src/ui/ui_main_screen.c
      */
+    ui_main_screen_create();
 
     /*
      * Step 7: LVGL main loop

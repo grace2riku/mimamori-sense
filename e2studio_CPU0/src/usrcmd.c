@@ -65,6 +65,7 @@
 #include "port/dave2d_port.h"
 #include "port/mipi_port.h"
 #include "port/lv_port_indev.h"
+#include "ui/ui_main_screen.h"
 
 #include "lvgl.h"
 
@@ -130,7 +131,7 @@ static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
     NTSHELL_CMD("led",     "LED control: led list | led <id> <on|off|toggle|blink>", usrcmd_led),
-    NTSHELL_CMD("lvgl",    "LVGL control: lvgl status|mem|screen|conf", usrcmd_lvgl),
+    NTSHELL_CMD("lvgl",    "LVGL control: lvgl status|mem|screen|conf|testpat", usrcmd_lvgl),
     NTSHELL_CMD("md",      "Dump memory: md <addr> [length]",          usrcmd_md),
     NTSHELL_CMD("mr",      "Read memory: mr <addr> [size(1|2|4)]",     usrcmd_mr),
     NTSHELL_CMD("mw",      "Write memory: mw <addr> <val> [size] [count]", usrcmd_mw),
@@ -368,10 +369,11 @@ static int usrcmd_lvgl(int argc, char **argv)
 
     if (argc < 2) {
         cmd_print_usage("lvgl", "<subcommand>");
-        print_to_console("  status - LVGL initialization state and version\r\n");
-        print_to_console("  mem    - LVGL heap memory usage\r\n");
-        print_to_console("  screen - Current screen information\r\n");
-        print_to_console("  conf   - Key lv_conf_user.h settings\r\n");
+        print_to_console("  status  - LVGL initialization state and version\r\n");
+        print_to_console("  mem     - LVGL heap memory usage\r\n");
+        print_to_console("  screen  - Current screen information\r\n");
+        print_to_console("  conf    - Key lv_conf_user.h settings\r\n");
+        print_to_console("  testpat - Redraw camera area test pattern\r\n");
         return CMD_ERR_USAGE;
     }
 
@@ -532,6 +534,39 @@ static int usrcmd_lvgl(int argc, char **argv)
                     print_to_console(buf);
                 }
             }
+
+            /* Main screen (F-001-7) details */
+            print_to_console("\r\n  [Main Screen (F-001-7)]\r\n");
+            if (ui_main_screen_is_created()) {
+                print_to_console("  Created       : Yes\r\n");
+
+                const char *status_text = ui_main_screen_get_status_text();
+                if (status_text != NULL) {
+                    snprintf(buf, sizeof(buf), "  Status text   : \"%s\"\r\n", status_text);
+                    print_to_console(buf);
+                }
+
+                uint8_t *cam_buf = ui_main_screen_get_camera_buffer();
+                if (cam_buf != NULL) {
+                    snprintf(buf, sizeof(buf), "  Camera buffer : %p (SDRAM)\r\n", (void *)cam_buf);
+                    print_to_console(buf);
+                    snprintf(buf, sizeof(buf), "  Camera size   : %dx%d (RGB565, %lu bytes)\r\n",
+                             UI_CAMERA_WIDTH, UI_CAMERA_HEIGHT,
+                             (unsigned long)UI_CAMERA_BUF_SIZE);
+                    print_to_console(buf);
+                }
+
+                lv_obj_t *cam_img = ui_main_screen_get_camera_image();
+                if (cam_img != NULL) {
+                    int32_t iw = lv_obj_get_width(cam_img);
+                    int32_t ih = lv_obj_get_height(cam_img);
+                    snprintf(buf, sizeof(buf), "  Camera widget : %p (%ldx%ld)\r\n",
+                             (void *)cam_img, (long)iw, (long)ih);
+                    print_to_console(buf);
+                }
+            } else {
+                print_to_console("  Created       : No\r\n");
+            }
         }
         lv_unlock();
 
@@ -615,10 +650,30 @@ static int usrcmd_lvgl(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* --- "lvgl testpat" sub-command --- */
+    if (ntlibc_strcmp(argv[1], "testpat") == 0) {
+        if (!ui_main_screen_is_created()) {
+            print_to_console("Error: Main screen not created yet.\r\n");
+            return CMD_ERR_EXECUTE;
+        }
+
+        print_to_console("Drawing test pattern to camera area...\r\n");
+
+        lv_lock();
+        {
+            ui_main_screen_draw_test_pattern();
+            ui_main_screen_invalidate_camera();
+        }
+        lv_unlock();
+
+        print_to_console("Done. Color bars should be visible in camera area.\r\n");
+        return CMD_OK;
+    }
+
     /* --- Unknown sub-command --- */
     snprintf(buf, sizeof(buf), "Error: Unknown sub-command '%s'.\r\n", argv[1]);
     print_to_console(buf);
-    cmd_print_usage("lvgl", "status|mem|screen|conf");
+    cmd_print_usage("lvgl", "status|mem|screen|conf|testpat");
     return CMD_ERR_INVALID_ARG;
 }
 
