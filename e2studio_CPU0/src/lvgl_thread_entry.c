@@ -146,7 +146,15 @@ void lvgl_thread_entry(void *pvParameters)
     lv_port_indev_init();
 
     /*
-     * Step 6: LVGL main loop
+     * Step 6: UI initialization (initial screen display)
+     *
+     * TODO: F-001-7で実装予定
+     * ここに初期画面の作成・表示処理を追加する。
+     * 現時点ではLVGLデフォルト背景が表示される。
+     */
+
+    /*
+     * Step 7: LVGL main loop
      *
      * lv_timer_handler() processes all pending LVGL tasks:
      *   - Rendering invalidated areas to the active framebuffer
