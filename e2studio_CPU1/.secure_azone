@@ -310,6 +310,13 @@
             <slot name="IRQ9.CPU0" secure="true"/>
             <slot name="IRQ10.CPU0" secure="true"/>
             <slot name="IRQ11.CPU0" secure="true"/>
+            <slot name="IRQ12.CPU0" secure="true"/>
+            <slot name="IRQ13.CPU0" secure="true"/>
+            <slot name="IRQ14.CPU0" secure="true"/>
+            <slot name="IRQ15.CPU0" secure="true"/>
+            <slot name="IRQ16.CPU0" secure="true"/>
+            <slot name="IRQ17.CPU0" secure="true"/>
+            <slot name="IRQ18.CPU0" secure="true"/>
         </peripheral>
     </partition>
     <zones>
@@ -525,6 +532,13 @@
             <assign peripheral="ICU.IRQ9"/>
             <assign peripheral="ICU.IRQ10"/>
             <assign peripheral="ICU.IRQ11"/>
+            <assign peripheral="ICU.IRQ12"/>
+            <assign peripheral="ICU.IRQ13"/>
+            <assign peripheral="ICU.IRQ14"/>
+            <assign peripheral="ICU.IRQ15"/>
+            <assign peripheral="ICU.IRQ16"/>
+            <assign peripheral="ICU.IRQ17"/>
+            <assign peripheral="ICU.IRQ18"/>
         </zone>
     </zones>
 </azone>

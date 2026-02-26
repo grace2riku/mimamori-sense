@@ -7,6 +7,10 @@
 #include "event_groups.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
+#include "r_mipi_csi.h"
+#include "r_mipi_csi_api.h"
+#include "r_vin.h"
+#include "r_capture_api.h"
 #include "r_icu.h"
 #include "r_external_irq_api.h"
 #include "r_iic_master.h"
@@ -22,6 +26,48 @@
 #include "r_ioport.h"
 #include "bsp_pin_cfg.h"
 FSP_HEADER
+/* MIPI PHY on MIPI PHY Instance. */
+
+extern const mipi_phy_instance_t g_mipi_phy0;
+
+/* Access the MIPI PHY instance using these structures when calling API functions directly (::p_api is not used). */
+extern mipi_phy_ctrl_t g_mipi_phy0_ctrl;
+extern const mipi_phy_cfg_t g_mipi_phy0_cfg;
+/* MIPI CSI on MIPI CSI Instance. */
+extern const mipi_csi_instance_t g_mipi_csi0;
+
+/* Access the MIPI CSI instance using these structures when calling API functions directly (::p_api is not used). */
+extern mipi_csi_instance_ctrl_t g_mipi_csi0_ctrl;
+extern const mipi_csi_cfg_t g_mipi_csi0_cfg;
+
+#ifndef mipi_csi0_callback
+void mipi_csi0_callback(mipi_csi_callback_args_t *p_args);
+#endif
+/* MIPI VIN on MIPI VIN Instance. */
+extern const capture_instance_t g_vin0;
+
+/* Access the MIPI VIN instance using these structures when calling API functions directly (::p_api is not used). */
+extern vin_instance_ctrl_t g_vin0_ctrl;
+extern const capture_cfg_t g_vin0_cfg;
+
+#ifndef vin0_callback
+void vin0_callback(capture_callback_args_t *p_args);
+#endif
+
+#ifndef VIN_CFG_IMAGE_STRIDE
+#define VIN_CFG_IMAGE_STRIDE (768)
+#endif
+
+#ifndef VIN_CFG_BYTES_PER_LINE
+#define VIN_CFG_BYTES_PER_LINE (1536)
+#endif
+
+#define VIN_BYTES_PER_FRAME (VIN_CFG_BYTES_PER_LINE * 450)
+
+extern uint8_t vin_image_buffer_1[VIN_BYTES_PER_FRAME];
+extern uint8_t vin_image_buffer_2[VIN_BYTES_PER_FRAME];
+extern uint8_t vin_image_buffer_3[VIN_BYTES_PER_FRAME];
+
 /** External IRQ on ICU Instance. */
 extern const external_irq_instance_t g_external_irq0;
 
