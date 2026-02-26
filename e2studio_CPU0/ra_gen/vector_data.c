@@ -16,6 +16,13 @@
             [9] = iic_master_tei_isr, /* IIC1 TEI (Transmit end) */
             [10] = iic_master_eri_isr, /* IIC1 ERI (Transfer error) */
             [11] = r_icu_isr, /* ICU IRQ19 (External pin interrupt 19) */
+            [12] = vin_status_isr, /* VIN IRQ (Interrupt Request) */
+            [13] = vin_error_isr, /* VIN ERR (Interrupt Request for SYNC Error) */
+            [14] = mipi_csi_rx_isr, /* MIPICSI RX (Receive interrupt) */
+            [15] = mipi_csi_dl_isr, /* MIPICSI DL (Data Lane interrupt) */
+            [16] = mipi_csi_vc_isr, /* MIPICSI VC (Virtual Channel interrupt) */
+            [17] = mipi_csi_pm_isr, /* MIPICSI PM (Power Management interrupt) */
+            [18] = mipi_csi_gst_isr, /* MIPICSI GST (Generic Short Packet interrupt) */
         };
         #if BSP_FEATURE_ICU_HAS_IELSR
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_NUM_ENTRIES] =
@@ -32,6 +39,13 @@
             [9] = BSP_PRV_VECT_ENUM(EVENT_IIC1_TEI,GROUP1), /* IIC1 TEI (Transmit end) */
             [10] = BSP_PRV_VECT_ENUM(EVENT_IIC1_ERI,GROUP2), /* IIC1 ERI (Transfer error) */
             [11] = BSP_PRV_VECT_ENUM(EVENT_ICU_IRQ19,GROUP3), /* ICU IRQ19 (External pin interrupt 19) */
+            [12] = BSP_PRV_VECT_ENUM(EVENT_VIN_IRQ,GROUP4), /* VIN IRQ (Interrupt Request) */
+            [13] = BSP_PRV_VECT_ENUM(EVENT_VIN_ERR,GROUP5), /* VIN ERR (Interrupt Request for SYNC Error) */
+            [14] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_RX,GROUP6), /* MIPICSI RX (Receive interrupt) */
+            [15] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_DL,GROUP7), /* MIPICSI DL (Data Lane interrupt) */
+            [16] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_VC,GROUP0), /* MIPICSI VC (Virtual Channel interrupt) */
+            [17] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_PM,GROUP1), /* MIPICSI PM (Power Management interrupt) */
+            [18] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_GST,GROUP2), /* MIPICSI GST (Generic Short Packet interrupt) */
         };
         #endif
         #endif
