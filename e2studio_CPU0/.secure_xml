@@ -115,7 +115,7 @@
     <node id="board.clock.canfdclk.source" option="board.clock.canfdclk.source.pll2r"/>
     <node id="board.clock.canfdclk.div" option="board.clock.canfdclk.div.6"/>
     <node id="board.clock.canfdclk.display" option="board.clock.canfdclk.display.value"/>
-    <node id="board.clock.gptclk.source" option="board.clock.gptclk.source.pll2p"/>
+    <node id="board.clock.gptclk.source" option="board.clock.gptclk.source.pll2r"/>
     <node id="board.clock.gptclk.div" option="board.clock.gptclk.div.2"/>
     <node id="board.clock.gptclk.display" option="board.clock.gptclk.display.value"/>
     <node id="board.clock.gtclk.source" option="board.clock.gtclk.source.gptclk"/>
@@ -195,7 +195,7 @@
       <configSetting altId="glcdc.lcd_tcon1.p805" configurationId="glcdc.lcd_tcon1" peripheral="GLCDC"/>
       <configSetting altId="glcdc.lcd_tcon2.p807" configurationId="glcdc.lcd_tcon2" peripheral="GLCDC"/>
       <configSetting altId="glcdc.lcd_tcon3.p513" configurationId="glcdc.lcd_tcon3" peripheral="GLCDC"/>
-      <configSetting altId="gpt12.gtioc12a.p501" configurationId="gpt12.gtioc12a" peripheral="GPT12"/>
+      <configSetting altId="gpt12.gtioc12a.p501" configurationId="gpt12.gtioc12a" isUsedByDriver="true" peripheral="GPT12"/>
       <configSetting altId="i3c0.i3c_scl0.p400" configurationId="i3c0.i3c_scl0" peripheral="I3C0"/>
       <configSetting altId="i3c0.i3c_sda0.p401" configurationId="i3c0.i3c_sda0" peripheral="I3C0"/>
       <configSetting altId="iic1.scl1.p512" configurationId="iic1.scl1" isUsedByDriver="true" peripheral="IIC1"/>

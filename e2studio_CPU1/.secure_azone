@@ -293,6 +293,7 @@
             <slot name="PD07.CPU0" secure="true"/>
         </peripheral>
         <peripheral name="IIC1.CPU0" group="IIC" security="s"/>
+        <peripheral name="GPT12.CPU0" group="GPT" security="s"/>
         <peripheral name="GLCDC.CPU0" security="s"/>
         <peripheral name="ICU_EXT_IRQ.CPU0">
             <slot name="ICU_EXT_IRQ19.CPU0" secure="true"/>
@@ -518,6 +519,7 @@
             <assign group="PORT" peripheral="PORTD.PD05"/>
             <assign group="PORT" peripheral="PORTD.PD07"/>
             <assign group="IIC" peripheral="IIC1"/>
+            <assign group="GPT" peripheral="GPT12"/>
             <assign peripheral="GLCDC"/>
             <assign peripheral="ICU_EXT_IRQ.ICU_EXT_IRQ19"/>
             <assign peripheral="ICU.IRQ0"/>
