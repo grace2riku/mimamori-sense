@@ -1046,11 +1046,11 @@
       <configSetting altId="p510.gpio_speed.gpio_speed_h" configurationId="p510.gpio_drivecapacity"/>
       <configSetting altId="p510.gpio_mode.gpio_mode_peripheral" configurationId="p510.gpio_mode"/>
       <configSetting altId="p511.iic1.sda1" configurationId="p511"/>
-      <configSetting altId="p511.gpio_speed.gpio_speed_m" configurationId="p511.gpio_drivecapacity"/>
+      <configSetting altId="p511.gpio_speed.gpio_speed_h" configurationId="p511.gpio_drivecapacity"/>
       <configSetting altId="p511.gpio_mode.gpio_mode_peripheral" configurationId="p511.gpio_mode"/>
       <configSetting altId="p511.gpio_otype.gpio_otype_n_ch_od" configurationId="p511.gpio_otype"/>
       <configSetting altId="p512.iic1.scl1" configurationId="p512"/>
-      <configSetting altId="p512.gpio_speed.gpio_speed_m" configurationId="p512.gpio_drivecapacity"/>
+      <configSetting altId="p512.gpio_speed.gpio_speed_h" configurationId="p512.gpio_drivecapacity"/>
       <configSetting altId="p512.gpio_mode.gpio_mode_peripheral" configurationId="p512.gpio_mode"/>
       <configSetting altId="p512.gpio_otype.gpio_otype_n_ch_od" configurationId="p512.gpio_otype"/>
       <configSetting altId="p513.glcdc.lcd_tcon3" configurationId="p513"/>
