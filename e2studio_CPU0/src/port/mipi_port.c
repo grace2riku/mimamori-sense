@@ -46,6 +46,8 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
+#include "ov5640.h"
+#include "ov5640_cfg.h"
 
 /*
  * FSP MIPI PHY header include
@@ -104,6 +106,7 @@ static uint32_t s_pclka_hz = 0;
 static void mipi_cmd_phy(void);
 static void mipi_cmd_timing(void);
 static void mipi_cmd_init(void);
+static void mipi_cmd_sensor(int argc, char **argv);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -500,6 +503,12 @@ static void mipi_cmd_print_help(void)
     print_to_console("  capture  - Capture 1 frame, show buffer address (S-003-3)\r\n");
     print_to_console("  info     - Show camera module and pipeline info (S-003-3)\r\n");
     print_to_console("  reset    - Reset VIN capture statistics (S-003-3)\r\n");
+    print_to_console("  sensor       - Show OV5640 sensor driver status (F-002-4)\r\n");
+    print_to_console("  sensor init  - Initialize OV5640 sensor (F-002-4)\r\n");
+    print_to_console("  sensor id    - Read and verify OV5640 chip ID (F-002-4)\r\n");
+    print_to_console("  sensor reg <addr>        - Read OV5640 register (F-002-4)\r\n");
+    print_to_console("  sensor reg <addr> <val>  - Write OV5640 register (F-002-4)\r\n");
+    print_to_console("  sensor stream on|off     - Control MIPI stream (F-002-4)\r\n");
     print_to_console("  test     - Integration test commands (S-003-4)\r\n");
     print_to_console("    test capture         - Single frame capture with validation\r\n");
     print_to_console("    test capture display  - Capture and display on LCD\r\n");
@@ -781,6 +790,12 @@ int usrcmd_camera(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* F-002-4: OV5640 sensor sub-commands */
+    if (ntlibc_strcmp(argv[1], "sensor") == 0) {
+        mipi_cmd_sensor(argc, argv);
+        return CMD_OK;
+    }
+
     /* S-003-2: CSI-2 sub-commands */
     if (ntlibc_strcmp(argv[1], "csi") == 0) {
         if (argc < 3) {
@@ -866,4 +881,153 @@ int usrcmd_camera(int argc, char **argv)
     mipi_cmd_print_help();
 
     return CMD_ERR_INVALID_ARG;
+}
+
+/**********************************************************************************************************************
+ * Function Name: mipi_cmd_sensor
+ * Description  : "camera sensor" sub-command handler for OV5640 diagnostics
+ *              : Provides sensor status display, initialization, chip ID verification,
+ *              : register read/write, and stream control via NT-Shell.
+ * Arguments    : argc - argument count (from usrcmd_camera)
+ *              : argv - argument vector
+ * Return Value : None
+ *********************************************************************************************************************/
+static void mipi_cmd_sensor(int argc, char **argv)
+{
+    char buf[MIPI_PRINT_BUF_SIZE];
+
+    /* "camera sensor" with no further args: show status */
+    if (argc < 3) {
+        const ov5640_status_t *st = ov5640_get_status();
+        print_to_console("=== OV5640 Sensor Driver Status ===\r\n");
+
+        snprintf(buf, sizeof(buf), "  Initialized    : %s\r\n", st->initialized ? "Yes" : "No");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Streaming      : %s\r\n", st->streaming ? "Yes" : "No");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Chip ID verified: %s\r\n", st->chip_id_verified ? "Yes" : "No");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Chip ID        : 0x%04X\r\n", st->chip_id);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Init errors    : %lu\r\n", (unsigned long)st->init_error_count);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  I2C addr       : 0x%02X (7-bit)\r\n", OV5640_I2C_ADDR);
+        print_to_console(buf);
+
+        return;
+    }
+
+    /* "camera sensor init" - Full sensor initialization */
+    if (ntlibc_strcmp(argv[2], "init") == 0) {
+        print_to_console("  Initializing OV5640 sensor...\r\n");
+
+        fsp_err_t err = ov5640_init();
+
+        if (FSP_SUCCESS == err) {
+            const ov5640_status_t *st = ov5640_get_status();
+            snprintf(buf, sizeof(buf), "  OV5640 initialized successfully. Chip ID: 0x%04X\r\n", st->chip_id);
+            print_to_console(buf);
+
+            snprintf(buf, sizeof(buf), "  Init errors: %lu\r\n", (unsigned long)st->init_error_count);
+            print_to_console(buf);
+        } else {
+            const ov5640_status_t *st = ov5640_get_status();
+            snprintf(buf, sizeof(buf), "  Error: OV5640 init failed. Chip ID read: 0x%04X\r\n", st->chip_id);
+            print_to_console(buf);
+        }
+        return;
+    }
+
+    /* "camera sensor id" - Read and verify chip ID */
+    if (ntlibc_strcmp(argv[2], "id") == 0) {
+        print_to_console("  Reading OV5640 chip ID...\r\n");
+
+        /* Ensure I2C is open */
+        if (0 == g_i2c_master_camera_ctrl.open) {
+            R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+        }
+
+        uint8_t id_h = ov5640_read_reg(OV5640_REG_CHIP_ID_H);
+        uint8_t id_l = ov5640_read_reg(OV5640_REG_CHIP_ID_L);
+        uint16_t chip_id = (uint16_t)((uint16_t)id_h << 8) | (uint16_t)id_l;
+
+        snprintf(buf, sizeof(buf), "  Chip ID: 0x%04X (high=0x%02X, low=0x%02X)\r\n", chip_id, id_h, id_l);
+        print_to_console(buf);
+
+        fsp_err_t err = ov5640_verify_chip_id();
+        if (FSP_SUCCESS == err) {
+            print_to_console("  Chip ID verification: PASS\r\n");
+        } else {
+            print_to_console("  Chip ID verification: FAIL (expected 0x56xx where xx=40/41/4C)\r\n");
+        }
+        return;
+    }
+
+    /* "camera sensor reg <addr> [val]" - Register read/write */
+    if (ntlibc_strcmp(argv[2], "reg") == 0) {
+        if (argc < 4) {
+            print_to_console("  Usage: camera sensor reg <addr> [value]\r\n");
+            print_to_console("    Read:  camera sensor reg 0x300A\r\n");
+            print_to_console("    Write: camera sensor reg 0x300A 0x56\r\n");
+            return;
+        }
+
+        /* Ensure I2C is open */
+        if (0 == g_i2c_master_camera_ctrl.open) {
+            R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+        }
+
+        cmd_parse_result_t addr_result = cmd_parse_uint32(argv[3]);
+        uint32_t addr = addr_result.value;
+
+        if (argc >= 5) {
+            /* Write register */
+            cmd_parse_result_t val_result = cmd_parse_uint32(argv[4]);
+            uint32_t val = val_result.value;
+            fsp_err_t err = ov5640_write_reg((uint16_t)addr, (uint8_t)val);
+            if (FSP_SUCCESS == err) {
+                uint8_t readback = ov5640_read_reg((uint16_t)addr);
+                snprintf(buf, sizeof(buf), "  Write: reg[0x%04X] = 0x%02X (readback: 0x%02X)\r\n",
+                         (unsigned)addr, (unsigned)val, readback);
+            } else {
+                snprintf(buf, sizeof(buf), "  Error: Write to reg[0x%04X] failed (err=%d)\r\n",
+                         (unsigned)addr, (int)err);
+            }
+        } else {
+            /* Read register */
+            uint8_t val = ov5640_read_reg((uint16_t)addr);
+            snprintf(buf, sizeof(buf), "  Read: reg[0x%04X] = 0x%02X\r\n", (unsigned)addr, val);
+        }
+        print_to_console(buf);
+        return;
+    }
+
+    /* "camera sensor stream on|off" - Stream control */
+    if (ntlibc_strcmp(argv[2], "stream") == 0) {
+        if (argc < 4) {
+            print_to_console("  Usage: camera sensor stream on|off\r\n");
+            return;
+        }
+
+        if (ntlibc_strcmp(argv[3], "on") == 0) {
+            ov5640_stream_on();
+            print_to_console("  OV5640 stream ON\r\n");
+        } else if (ntlibc_strcmp(argv[3], "off") == 0) {
+            ov5640_stream_off();
+            print_to_console("  OV5640 stream OFF\r\n");
+        } else {
+            print_to_console("  Usage: camera sensor stream on|off\r\n");
+        }
+        return;
+    }
+
+    /* Unknown sensor sub-command */
+    snprintf(buf, sizeof(buf), "  Error: Unknown sensor sub-command '%s'.\r\n", argv[2]);
+    print_to_console(buf);
+    print_to_console("  Available: sensor [init|id|reg|stream]\r\n");
 }
