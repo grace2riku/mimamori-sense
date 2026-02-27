@@ -164,7 +164,7 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 9) /* ULPT0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 15) /* GPT COMMON */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 18) /* GPT13 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 19) /* GPT12 */ | \
+            (((1 > 0) ? 0U : 1U) << 19) /* GPT12 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 20) /* GPT11 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 21) /* GPT10 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 27) /* GPT4 */ | \
