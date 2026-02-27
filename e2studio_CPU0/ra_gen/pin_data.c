@@ -235,12 +235,12 @@ const ioport_pin_cfg_t g_bsp_pin_cfg_data[] = {
 		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
 		| (uint32_t) IOPORT_PERIPHERAL_BUS) },
 
-{ .pin = BSP_IO_PORT_05_PIN_11, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_MID
+{ .pin = BSP_IO_PORT_05_PIN_11, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_HIGH
 		| (uint32_t) IOPORT_CFG_NMOS_ENABLE
 		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
 		| (uint32_t) IOPORT_PERIPHERAL_IIC) },
 
-{ .pin = BSP_IO_PORT_05_PIN_12, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_MID
+{ .pin = BSP_IO_PORT_05_PIN_12, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_HIGH
 		| (uint32_t) IOPORT_CFG_NMOS_ENABLE
 		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
 		| (uint32_t) IOPORT_PERIPHERAL_IIC) },
