@@ -63,7 +63,7 @@
  * this flag should be set to 1 by the build system or defined before this include.
  */
 #ifndef VIN_PORT_FSP_AVAILABLE
-#define VIN_PORT_FSP_AVAILABLE      (0)
+#define VIN_PORT_FSP_AVAILABLE      (1)
 #endif
 
 #if VIN_PORT_FSP_AVAILABLE

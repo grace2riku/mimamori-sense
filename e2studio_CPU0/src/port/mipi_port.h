@@ -291,6 +291,7 @@ void mipi_phy_port_get_timing_info(mipi_phy_timing_info_t *timing);
  *   camera csi init  - Initialize CSI-2 receiver (S-003-2)
  *   camera csi start - Start CSI-2 reception (S-003-2)
  *   camera csi stop  - Stop CSI-2 reception (S-003-2)
+ *   camera thread    - Show camera thread init status (F-002-5)
  *   camera status    - Show VIN capture status and statistics (S-003-3)
  *   camera start     - Start VIN capture (S-003-3)
  *   camera stop      - Stop VIN capture (S-003-3)
