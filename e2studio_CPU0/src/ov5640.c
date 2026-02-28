@@ -79,6 +79,7 @@ static ov5640_status_t s_ov5640_status = {
     .chip_id_verified  = false,
     .chip_id           = 0x0000,
     .init_error_count  = 0,
+    .sw_reset_check    = 0xFF,
 };
 
 /**
@@ -537,6 +538,20 @@ fsp_err_t ov5640_init(void)
     ov5640_write_reg(0x3103, 0x11);     /* SCCB system control */
     ov5640_write_reg(0x3008, 0x82);     /* Software reset */
     delay_ms(5);
+
+    /*
+     * XCLK presence check: 0x3008 bit 7 is a self-clearing software reset bit.
+     * The self-clearing requires the internal state machine to run, which is
+     * clocked by XCLK. If XCLK is NOT reaching the OV5640:
+     *   - SCCB writes succeed (clocked by SCL from master)
+     *   - But bit 7 cannot self-clear (no internal clock to process the reset)
+     *   - 0x3008 reads back as 0x82 (bit 7 stuck)
+     * If XCLK IS reaching the OV5640:
+     *   - Internal state machine processes the reset
+     *   - Bit 7 self-clears within ~1ms
+     *   - 0x3008 reads back as 0x02 (normal mode)
+     */
+    s_ov5640_status.sw_reset_check = ov5640_read_reg(0x3008);
     ov5640_write_reg(0x3008, 0x42);     /* Software power down */
     ov5640_write_reg(0x3103, 0x03);     /* SCCB system control */
 
@@ -1069,6 +1084,16 @@ static void ov5640_init_aec_registers(void)
  * Function Name: ov5640_init_timing_registers
  * Description  : Configure final timing, resolution, and exposure settings
  *              : Uses VIN configuration image size from FSP (OV5640_DEFAULT_IMAGE_WIDTH/HEIGHT)
+ *              : Computes sensor crop window (0x3800-0x3807) and total frame size
+ *              : (HTS: 0x380c-0x380d, VTS: 0x380e-0x380f) from the target output
+ *              : resolution, matching the reference project's dynamic calculation.
+ *
+ * @details The HTS and VTS registers define the horizontal/vertical total size
+ *          of the sensor scan area. Without proper HTS/VTS values, the OV5640
+ *          cannot produce valid frame timing and will not output Frame Start/End
+ *          short packets on the MIPI CSI-2 bus, causing VIN to never receive
+ *          a frame complete interrupt.
+ *
  * Reference    : reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:817-893
  *********************************************************************************************************************/
 static void ov5640_init_timing_registers(void)
@@ -1092,25 +1117,95 @@ static void ov5640_init_timing_registers(void)
     ov5640_write_reg(0x3821, 0x01);     /* ISP mirror off, binning enable */
 #endif
 
-    /* X and Y increment (sub-sampling) */
+    /* X and Y increment (sub-sampling: odd pixels only -> 2:1 downsample) */
     ov5640_write_reg(0x3814, 0x31);     /* X inc */
     ov5640_write_reg(0x3815, 0x31);     /* Y inc */
 
     /*
-     * Sensor window settings for the target resolution
-     * Using simplified fixed settings based on reference defaults.
-     * Reference: camera_thread_entry.c:833-872
+     * Sensor crop window and HTS/VTS calculation
      *
-     * For VGA-like output with 2:1 sub-sampling, the crop window
-     * is set near full resolution and the output is scaled down.
+     * The reference project dynamically computes the sensor crop window
+     * and total frame size from the target output resolution. This is
+     * critical for proper MIPI frame timing.
+     *
+     * Sensor maximum scan area (with 2:1 sub-sampling):
+     *   sensor_max_x = 2642 pixels
+     *   sensor_max_y = 1952 lines
+     *
+     * The crop window is computed to maintain the aspect ratio of the
+     * target output while maximizing the sensor scan area.
+     *
+     * Reference: camera_thread_entry.c:833-872
      */
-    ov5640_write_reg(0x3803, 0x04);     /* VS start */
+    {
+        /* Sensor maximum scan area dimensions */
+        const float sensor_max_x = 2642.0f;
+        const float sensor_max_y = 1952.0f;
+        const float default_ratio = sensor_max_x / sensor_max_y;
+        float x_y_ratio = (float)image_width / (float)image_height;
 
-    /* Output image size */
-    ov5640_write_reg(0x3808, (uint8_t)(image_width >> 8));      /* DVPHO high */
-    ov5640_write_reg(0x3809, (uint8_t)(image_width & 0xFF));    /* DVPHO low */
-    ov5640_write_reg(0x380a, (uint8_t)(image_height >> 8));     /* DVPVO high */
-    ov5640_write_reg(0x380b, (uint8_t)(image_height & 0xFF));   /* DVPVO low */
+        /*
+         * CROP_SENSOR_Y and CROP_SENSOR_X define the additional crop margin.
+         * These values are from the reference project:
+         *   CROP_SENSOR_Y = 190
+         *   CROP_SENSOR_X = default_ratio * CROP_SENSOR_Y
+         *
+         * Reference: camera_thread_entry.c:843-844
+         */
+#define CROP_SENSOR_Y (190)
+#define CROP_SENSOR_X (default_ratio * (float)CROP_SENSOR_Y)
+
+        uint16_t sensor_cropped_x = (uint16_t)((sensor_max_y - CROP_SENSOR_X)
+                                                 * (x_y_ratio / default_ratio));
+        uint16_t sensor_cropped_y = (uint16_t)((sensor_max_x - (float)CROP_SENSOR_Y)
+                                                 / x_y_ratio);
+
+        uint16_t cropped_pixels_x = (uint16_t)sensor_max_x - sensor_cropped_x;
+        uint16_t cropped_pixels_y = (uint16_t)sensor_max_y - sensor_cropped_y;
+        uint16_t sensor_x_start = cropped_pixels_x / 2;
+        uint16_t sensor_x_end   = (uint16_t)(sensor_max_x - (cropped_pixels_x / 2) - 1);
+        uint16_t sensor_y_start = 4 + (cropped_pixels_y / 2);
+        uint16_t sensor_y_end   = (uint16_t)(sensor_max_y - (cropped_pixels_y / 2) - 1);
+
+        /*
+         * Horizontal Total Size (HTS) and Vertical Total Size (VTS)
+         *
+         * These define the total scan area per line and per frame.
+         * The subtraction values (93 and 714) are empirical constants from
+         * the reference project to optimize FPS.
+         *
+         * Reference: camera_thread_entry.c:869-872
+         */
+        uint16_t hts = (uint16_t)(sensor_cropped_x - 93);
+        uint16_t vts = (uint16_t)(sensor_cropped_y - 714);
+
+        /* Sensor window start/end (0x3800-0x3807) */
+        ov5640_write_reg(0x3800, (uint8_t)(sensor_x_start >> 8));   /* HS high */
+        ov5640_write_reg(0x3801, (uint8_t)(sensor_x_start));        /* HS low  */
+        ov5640_write_reg(0x3802, (uint8_t)(sensor_y_start >> 8));   /* VS high */
+        ov5640_write_reg(0x3803, (uint8_t)(sensor_y_start));        /* VS low  */
+        ov5640_write_reg(0x3804, (uint8_t)(sensor_x_end >> 8));     /* HW high */
+        ov5640_write_reg(0x3805, (uint8_t)(sensor_x_end));          /* HW low  */
+        ov5640_write_reg(0x3806, (uint8_t)(sensor_y_end >> 8));     /* VW high */
+        ov5640_write_reg(0x3807, (uint8_t)(sensor_y_end));          /* VW low  */
+
+        /* Output image size (DVPHO/DVPVO) */
+        ov5640_write_reg(0x3808, (uint8_t)(image_width >> 8));      /* DVPHO high */
+        ov5640_write_reg(0x3809, (uint8_t)(image_width & 0xFF));    /* DVPHO low  */
+        ov5640_write_reg(0x380a, (uint8_t)(image_height >> 8));     /* DVPVO high */
+        ov5640_write_reg(0x380b, (uint8_t)(image_height & 0xFF));   /* DVPVO low  */
+
+        /* HTS - Horizontal Total Size (pixels per line including blanking) */
+        ov5640_write_reg(0x380c, (uint8_t)(hts >> 8));              /* HTS high */
+        ov5640_write_reg(0x380d, (uint8_t)(hts & 0xFF));            /* HTS low  */
+
+        /* VTS - Vertical Total Size (lines per frame including blanking) */
+        ov5640_write_reg(0x380e, (uint8_t)(vts >> 8));              /* VTS high */
+        ov5640_write_reg(0x380f, (uint8_t)(vts & 0xFF));            /* VTS low  */
+
+#undef CROP_SENSOR_Y
+#undef CROP_SENSOR_X
+    }
 
     /* V offset */
     ov5640_write_reg(0x3813, 0x06);

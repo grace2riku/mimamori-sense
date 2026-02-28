@@ -56,6 +56,8 @@
 #include "event_groups.h"
 #include "timers.h"
 
+#include "camera_thread_api.h"
+
 /*
  * FSP-generated headers for I2C and External IRQ
  *
@@ -421,11 +423,39 @@ void lv_port_indev_init(void)
 #endif
 
     /*
-     * Step 2: Open the I2C bus driver
+     * Step 2: Wait for camera thread to release IIC1 bus
+     *
+     * CRITICAL: Both the camera (g_i2c_master_camera_ctrl) and the touch panel
+     * (g_i2c_master0_ctrl) use IIC channel 1. If both R_IIC_MASTER_Open() are
+     * called on the same channel with different control structures, the second
+     * open overwrites the IIC1 IRQ context via R_BSP_IrqCfgEnable(), causing
+     * the first caller's I2C completion callbacks to never fire.
+     *
+     * This was the root cause of Issue #93: the OV5640 MIPI configuration
+     * registers were not written correctly because i2c_camera_callback() was
+     * no longer receiving IIC1 interrupts after g_i2c_master0 was opened.
+     * Without proper MIPI register config, OV5640 data lanes never activated.
+     *
+     * Solution: Wait until the camera thread has completed all its I2C
+     * operations and closed g_i2c_master_camera_ctrl, releasing IIC1.
+     * Then it is safe to open g_i2c_master0 on IIC1 for touch panel use.
+     *
+     * Reference: Issue #93 root cause - IIC1 channel conflict
+     * Reference: e2studio_CPU0/ra/fsp/src/r_iic_master/r_iic_master.c:784-787
+     */
+    while (!camera_thread_i2c_done())
+    {
+        vTaskDelay(10);
+    }
+
+    /*
+     * Step 2b: Open the I2C bus driver
      *
      * Access the underlying I2C master driver through the RM_COMMS_I2C
      * configuration's extended configuration. The I2C master must be
      * opened before the communication device can be used.
+     *
+     * Now safe to open because camera has released IIC1.
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:115-119
      */

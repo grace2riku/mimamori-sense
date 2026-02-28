@@ -4,6 +4,10 @@
 
 const ioport_pin_cfg_t g_bsp_pin_cfg_data[] = {
 
+{ .pin = BSP_IO_PORT_05_PIN_01, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_HIGH
+		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
+		| (uint32_t) IOPORT_PERIPHERAL_GPT1) },
+
 { .pin = BSP_IO_PORT_05_PIN_02, .pin_cfg = ((uint32_t) IOPORT_CFG_DRIVE_MID
 		| (uint32_t) IOPORT_CFG_PERIPHERAL_PIN
 		| (uint32_t) IOPORT_PERIPHERAL_PDM) }, };

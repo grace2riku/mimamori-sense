@@ -55,6 +55,7 @@ typedef struct {
     bool     chip_id_verified;  /* true after chip ID verification passes */
     uint16_t chip_id;           /* Actual chip ID read from sensor */
     uint32_t init_error_count;  /* Number of register write errors during init */
+    uint8_t  sw_reset_check;    /* 0x3008 readback after sw_reset: 0x02=XCLK OK, 0x82=no XCLK */
 } ov5640_status_t;
 
 /**********************************************************************************************************************
