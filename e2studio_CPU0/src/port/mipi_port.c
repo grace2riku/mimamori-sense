@@ -48,6 +48,7 @@
 #include "ntlibc.h"
 #include "ov5640.h"
 #include "ov5640_cfg.h"
+#include "camera_thread_api.h"
 
 /*
  * FSP MIPI PHY header include
@@ -75,7 +76,7 @@
  * this flag should be set to 1 by the build system or defined before this include.
  */
 #ifndef MIPI_PORT_FSP_AVAILABLE
-#define MIPI_PORT_FSP_AVAILABLE     (0)
+#define MIPI_PORT_FSP_AVAILABLE     (1)
 #endif
 
 #if MIPI_PORT_FSP_AVAILABLE
@@ -107,6 +108,7 @@ static void mipi_cmd_phy(void);
 static void mipi_cmd_timing(void);
 static void mipi_cmd_init(void);
 static void mipi_cmd_sensor(int argc, char **argv);
+static void mipi_cmd_thread(void);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -503,6 +505,7 @@ static void mipi_cmd_print_help(void)
     print_to_console("  capture  - Capture 1 frame, show buffer address (S-003-3)\r\n");
     print_to_console("  info     - Show camera module and pipeline info (S-003-3)\r\n");
     print_to_console("  reset    - Reset VIN capture statistics (S-003-3)\r\n");
+    print_to_console("  thread   - Show camera thread init status (F-002-5)\r\n");
     print_to_console("  sensor       - Show OV5640 sensor driver status (F-002-4)\r\n");
     print_to_console("  sensor init  - Initialize OV5640 sensor (F-002-4)\r\n");
     print_to_console("  sensor id    - Read and verify OV5640 chip ID (F-002-4)\r\n");
@@ -796,6 +799,12 @@ int usrcmd_camera(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* F-002-5: Camera thread status sub-command */
+    if (ntlibc_strcmp(argv[1], "thread") == 0) {
+        mipi_cmd_thread();
+        return CMD_OK;
+    }
+
     /* S-003-2: CSI-2 sub-commands */
     if (ntlibc_strcmp(argv[1], "csi") == 0) {
         if (argc < 3) {
@@ -1030,4 +1039,83 @@ static void mipi_cmd_sensor(int argc, char **argv)
     snprintf(buf, sizeof(buf), "  Error: Unknown sensor sub-command '%s'.\r\n", argv[2]);
     print_to_console(buf);
     print_to_console("  Available: sensor [init|id|reg|stream]\r\n");
+}
+
+/**********************************************************************************************************************
+ * Function Name: mipi_cmd_thread
+ * Description  : "camera thread" sub-command handler (F-002-5)
+ *
+ * @details Displays camera thread initialization state, OV5640 sensor status,
+ *          and VIN capture statistics in a combined summary view.
+ *          Queries thread state via camera_thread_api.h functions and
+ *          aggregates status from the OV5640 driver and VIN port layer.
+ *********************************************************************************************************************/
+static void mipi_cmd_thread(void)
+{
+    char buf[MIPI_PRINT_BUF_SIZE];
+
+    print_to_console("[Camera Thread Status (F-002-5)]\r\n");
+
+    /* Thread init state */
+    bool initialized = camera_thread_is_initialized();
+    bool has_error = camera_thread_has_error();
+
+    const char *state_str;
+    if (has_error) {
+        state_str = "ERROR (init failed)";
+    } else if (initialized) {
+        state_str = "Running (capture active)";
+    } else {
+        state_str = "Initializing...";
+    }
+
+    snprintf(buf, sizeof(buf), "  Thread state : %s\r\n", state_str);
+    print_to_console(buf);
+
+    /* OV5640 sensor status summary */
+    const ov5640_status_t *sensor_st = ov5640_get_status();
+    snprintf(buf, sizeof(buf), "  OV5640       : %s (Chip ID: 0x%04X)\r\n",
+             sensor_st->initialized ? "Initialized" : "Not initialized",
+             sensor_st->chip_id);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Streaming    : %s\r\n",
+             sensor_st->streaming ? "Yes" : "No");
+    print_to_console(buf);
+
+    /*
+     * VIN capture status summary
+     *
+     * camera_thread_entry.c calls R_VIN_Open / R_VIN_CaptureStart directly
+     * (not through vin_port_init), so vin_port's internal s_vin_status is
+     * not updated. Derive VIN status from camera thread state and the
+     * actual FSP open flag (g_vin0_ctrl.open) instead.
+     */
+    vin_port_info_t vin_info;
+    vin_port_get_info(&vin_info);
+
+    const char *vin_status_str;
+    if (initialized) {
+        vin_status_str = "Capturing";
+    } else if (has_error) {
+        vin_status_str = vin_info.vin_open ? "Opened (error)" : "ERROR";
+    } else if (vin_info.vin_open) {
+        vin_status_str = "Opened (not yet capturing)";
+    } else {
+        vin_status_str = "Not initialized";
+    }
+
+    snprintf(buf, sizeof(buf), "  VIN status   : %s\r\n", vin_status_str);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Frames       : %lu complete, %lu errors\r\n",
+             (unsigned long)vin_info.stats.frame_complete,
+             (unsigned long)vin_info.stats.error_event);
+    print_to_console(buf);
+
+    if (vin_info.stats.fifo_overflow > 0) {
+        snprintf(buf, sizeof(buf), "  FIFO overflow: %lu\r\n",
+                 (unsigned long)vin_info.stats.fifo_overflow);
+        print_to_console(buf);
+    }
 }

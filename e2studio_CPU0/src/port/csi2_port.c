@@ -59,7 +59,7 @@
  * this flag should be set to 1 by the build system or defined before this include.
  */
 #ifndef CSI2_PORT_FSP_AVAILABLE
-#define CSI2_PORT_FSP_AVAILABLE     (0)
+#define CSI2_PORT_FSP_AVAILABLE     (1)
 #endif
 
 #if CSI2_PORT_FSP_AVAILABLE

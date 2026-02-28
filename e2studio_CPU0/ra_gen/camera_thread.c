@@ -4,9 +4,9 @@
 #if 1
 static StaticTask_t camera_thread_memory;
 #if defined(__ARMCC_VERSION)           /* AC6 compiler */
-                static uint8_t camera_thread_stack[10240] BSP_PLACE_IN_SECTION(BSP_UNINIT_SECTION_PREFIX ".stack.thread") BSP_ALIGN_VARIABLE(BSP_STACK_ALIGNMENT);
+                static uint8_t camera_thread_stack[4096] BSP_PLACE_IN_SECTION(BSP_UNINIT_SECTION_PREFIX ".stack.thread") BSP_ALIGN_VARIABLE(BSP_STACK_ALIGNMENT);
                 #else
-static uint8_t camera_thread_stack[10240] BSP_PLACE_IN_SECTION(BSP_UNINIT_SECTION_PREFIX ".stack.camera_thread") BSP_ALIGN_VARIABLE(BSP_STACK_ALIGNMENT);
+static uint8_t camera_thread_stack[4096] BSP_PLACE_IN_SECTION(BSP_UNINIT_SECTION_PREFIX ".stack.camera_thread") BSP_ALIGN_VARIABLE(BSP_STACK_ALIGNMENT);
 #endif
 #endif
 TaskHandle_t camera_thread;
@@ -30,9 +30,9 @@ void camera_thread_create(void) {
 #else
                     BaseType_t camera_thread_create_err = xTaskCreate(
                     #endif
-			camera_thread_func, (const char*) "Camera Thread", 10240 / 4, // In words, not bytes
+			camera_thread_func, (const char*) "Camera Thread", 4096 / 4, // In words, not bytes
 			(void*) &camera_thread_parameters, //pvParameters
-			3,
+			4,
 #if 1
 			(StackType_t*) &camera_thread_stack,
 			(StaticTask_t*) &camera_thread_memory
