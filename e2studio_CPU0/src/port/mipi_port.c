@@ -88,8 +88,8 @@
  Macro definitions
  *********************************************************************************************************************/
 
-/** Console output buffer size */
-#define MIPI_PRINT_BUF_SIZE         (128)
+/** Console output buffer size (increased for HW register diagnostic output) */
+#define MIPI_PRINT_BUF_SIZE         (160)
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -109,6 +109,7 @@ static void mipi_cmd_timing(void);
 static void mipi_cmd_init(void);
 static void mipi_cmd_sensor(int argc, char **argv);
 static void mipi_cmd_thread(void);
+static void mipi_cmd_diag(void);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -512,6 +513,7 @@ static void mipi_cmd_print_help(void)
     print_to_console("  sensor reg <addr>        - Read OV5640 register (F-002-4)\r\n");
     print_to_console("  sensor reg <addr> <val>  - Write OV5640 register (F-002-4)\r\n");
     print_to_console("  sensor stream on|off     - Control MIPI stream (F-002-4)\r\n");
+    print_to_console("  diag     - MIPI data path diagnostics: OV5640 regs + FSP state (F-002-6)\r\n");
     print_to_console("  test     - Integration test commands (S-003-4)\r\n");
     print_to_console("    test capture         - Single frame capture with validation\r\n");
     print_to_console("    test capture display  - Capture and display on LCD\r\n");
@@ -742,6 +744,834 @@ static void mipi_cmd_vin_reset(void)
     print_to_console("  VIN capture statistics reset.\r\n");
 }
 
+/**********************************************************************************************************************
+ * Function Name: mipi_cmd_diag
+ * Description  : "camera diag" sub-command handler (F-002-6)
+ *
+ * @details Reads key OV5640 registers related to MIPI output configuration
+ *          and frame timing, then displays them alongside the FSP VIN/CSI/PHY
+ *          state for diagnosing MIPI CSI-2 data path issues.
+ *
+ *          Key diagnostic checks:
+ *            1. OV5640 system control state (streaming/power-down)
+ *            2. OV5640 PLL clock registers (actual vs expected)
+ *            3. OV5640 MIPI lane/format configuration
+ *            4. OV5640 frame timing (HTS/VTS, output resolution)
+ *            5. OV5640 MIPI control and virtual channel settings
+ *            6. FSP pipeline state (PHY open, CSI open, VIN open)
+ *            7. VIN callback and CSI callback activity summary
+ *
+ * Reference: reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:252-266
+ *            reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:817-893
+ *********************************************************************************************************************/
+static void mipi_cmd_diag(void)
+{
+    char buf[MIPI_PRINT_BUF_SIZE];
+
+    print_to_console("[MIPI CSI-2 Data Path Diagnostics (F-002-6)]\r\n");
+
+    /*
+     * Temporarily open camera I2C to read OV5640 registers.
+     *
+     * IMPORTANT: After camera init, g_i2c_master_camera_ctrl is closed to
+     * release IIC1 for the touch panel (Issue #93 fix). For diagnostics,
+     * we temporarily re-open it, read registers, then close it again to
+     * avoid the IRQ context conflict with g_i2c_master0 (touch panel).
+     *
+     * While the camera I2C is open for diag, the touch panel's I2C
+     * callbacks will be disrupted. This is acceptable for a diagnostic
+     * command which is not performance-critical.
+     */
+    bool diag_i2c_opened = false;
+    if (0 == g_i2c_master_camera_ctrl.open)
+    {
+        fsp_err_t i2c_err = R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+        if (FSP_SUCCESS == i2c_err)
+        {
+            diag_i2c_opened = true;
+        }
+        else
+        {
+            print_to_console("  WARNING: Could not open camera I2C for register reads.\r\n");
+        }
+    }
+
+    /* ---- OV5640 System State ---- */
+    print_to_console("[OV5640 System State]\r\n");
+    {
+        uint8_t reg_3008 = ov5640_read_reg(0x3008);   /* System control */
+        uint8_t reg_4202 = ov5640_read_reg(0x4202);   /* Stream control */
+
+        snprintf(buf, sizeof(buf), "  reg[0x3008] = 0x%02X  (sys ctrl: %s)\r\n",
+                 reg_3008,
+                 (reg_3008 & 0x40) ? "POWER-DOWN" : ((reg_3008 & 0x80) ? "RESET" : "RUNNING"));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x4202] = 0x%02X  (stream: %s)\r\n",
+                 reg_4202,
+                 (reg_4202 == 0x00) ? "ON" : "OFF");
+        print_to_console(buf);
+    }
+
+    /* ---- OV5640 PLL Configuration ---- */
+    print_to_console("[OV5640 PLL Registers]\r\n");
+    {
+        uint8_t reg_3034 = ov5640_read_reg(0x3034);   /* PLL ctrl0: MIPI bit mode */
+        uint8_t reg_3035 = ov5640_read_reg(0x3035);   /* PLL ctrl1: sys/MIPI div */
+        uint8_t reg_3036 = ov5640_read_reg(0x3036);   /* PLL ctrl2: multiplier */
+        uint8_t reg_3037 = ov5640_read_reg(0x3037);   /* PLL ctrl3: root/pre div */
+        uint8_t reg_3108 = ov5640_read_reg(0x3108);   /* System root divider */
+
+        snprintf(buf, sizeof(buf), "  reg[0x3034] = 0x%02X  (MIPI bit mode: %u)\r\n",
+                 reg_3034, (unsigned)(reg_3034 & 0x0F));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x3035] = 0x%02X  (sys_div=%u, mipi_div=%u)\r\n",
+                 reg_3035, (unsigned)((reg_3035 >> 4) & 0x0F), (unsigned)(reg_3035 & 0x0F));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x3036] = 0x%02X  (PLL mul=%u)\r\n",
+                 reg_3036, (unsigned)reg_3036);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x3037] = 0x%02X  (root_div=%s, pre_div=%u)\r\n",
+                 reg_3037,
+                 (reg_3037 & 0x10) ? "/2" : "bypass",
+                 (unsigned)(reg_3037 & 0x0F));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x3108] = 0x%02X  (pclk/sclk2x/sclk root div)\r\n",
+                 reg_3108);
+        print_to_console(buf);
+    }
+
+    /* ---- OV5640 MIPI Configuration ---- */
+    print_to_console("[OV5640 MIPI Configuration]\r\n");
+    {
+        uint8_t reg_300e = ov5640_read_reg(0x300e);   /* MIPI control 00 */
+        uint8_t reg_4800 = ov5640_read_reg(0x4800);   /* MIPI CTRL 00 */
+        uint8_t reg_4814 = ov5640_read_reg(0x4814);   /* Virtual channel */
+        uint8_t reg_4837 = ov5640_read_reg(0x4837);   /* MIPI global timing */
+
+        snprintf(buf, sizeof(buf), "  reg[0x300e] = 0x%02X  (MIPI %s, %s lane)\r\n",
+                 reg_300e,
+                 (reg_300e & 0x40) ? "enable" : "DISABLE",
+                 (reg_300e & 0x20) ? "1" : "2");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x4800] = 0x%02X  (clk: %s, gate: %s)\r\n",
+                 reg_4800,
+                 (reg_4800 & 0x20) ? "non-continuous" : "continuous",
+                 (reg_4800 & 0x01) ? "on" : "off");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x4814] = 0x%02X  (VC=%u)\r\n",
+                 reg_4814, (unsigned)((reg_4814 >> 6) & 0x03));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x4837] = 0x%02X  (MIPI global timing)\r\n",
+                 reg_4837);
+        print_to_console(buf);
+    }
+
+    /* ---- OV5640 Frame Timing ---- */
+    print_to_console("[OV5640 Frame Timing]\r\n");
+    {
+        /* Output resolution (DVPHO/DVPVO) */
+        uint16_t dvpho = ((uint16_t)ov5640_read_reg(0x3808) << 8) |
+                           (uint16_t)ov5640_read_reg(0x3809);
+        uint16_t dvpvo = ((uint16_t)ov5640_read_reg(0x380a) << 8) |
+                           (uint16_t)ov5640_read_reg(0x380b);
+
+        snprintf(buf, sizeof(buf), "  Output size : %u x %u (DVPHO x DVPVO)\r\n",
+                 (unsigned)dvpho, (unsigned)dvpvo);
+        print_to_console(buf);
+
+        /* HTS and VTS (Horizontal/Vertical Total Size) */
+        uint16_t hts = ((uint16_t)ov5640_read_reg(0x380c) << 8) |
+                        (uint16_t)ov5640_read_reg(0x380d);
+        uint16_t vts = ((uint16_t)ov5640_read_reg(0x380e) << 8) |
+                        (uint16_t)ov5640_read_reg(0x380f);
+
+        snprintf(buf, sizeof(buf), "  HTS         : %u  (Horizontal Total Size)\r\n",
+                 (unsigned)hts);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  VTS         : %u  (Vertical Total Size)\r\n",
+                 (unsigned)vts);
+        print_to_console(buf);
+
+        if (hts == 0 || vts == 0)
+        {
+            print_to_console("  *** WARNING: HTS/VTS = 0 means no valid frame timing! ***\r\n");
+        }
+
+        /* Sensor window (crop area) */
+        uint16_t x_start = ((uint16_t)ov5640_read_reg(0x3800) << 8) |
+                             (uint16_t)ov5640_read_reg(0x3801);
+        uint16_t y_start = ((uint16_t)ov5640_read_reg(0x3802) << 8) |
+                             (uint16_t)ov5640_read_reg(0x3803);
+        uint16_t x_end   = ((uint16_t)ov5640_read_reg(0x3804) << 8) |
+                             (uint16_t)ov5640_read_reg(0x3805);
+        uint16_t y_end   = ((uint16_t)ov5640_read_reg(0x3806) << 8) |
+                             (uint16_t)ov5640_read_reg(0x3807);
+
+        snprintf(buf, sizeof(buf), "  Crop window : (%u,%u)-(%u,%u)\r\n",
+                 (unsigned)x_start, (unsigned)y_start,
+                 (unsigned)x_end, (unsigned)y_end);
+        print_to_console(buf);
+
+        /* X/Y increment (sub-sampling) */
+        uint8_t x_inc = ov5640_read_reg(0x3814);
+        uint8_t y_inc = ov5640_read_reg(0x3815);
+
+        snprintf(buf, sizeof(buf), "  X/Y inc     : 0x%02X / 0x%02X\r\n",
+                 x_inc, y_inc);
+        print_to_console(buf);
+    }
+
+    /* ---- OV5640 ISP/Output Format ---- */
+    print_to_console("[OV5640 Output Format]\r\n");
+    {
+        uint8_t reg_4300 = ov5640_read_reg(0x4300);   /* Format control */
+        uint8_t reg_501f = ov5640_read_reg(0x501f);   /* ISP format select */
+        uint8_t reg_5001 = ov5640_read_reg(0x5001);   /* ISP control */
+
+        snprintf(buf, sizeof(buf), "  reg[0x4300] = 0x%02X  (format ctrl)\r\n", reg_4300);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x501f] = 0x%02X  (ISP format: %s)\r\n",
+                 reg_501f,
+                 (reg_501f == 0x00) ? "YUV422" : ((reg_501f == 0x01) ? "RGB" : "RAW"));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  reg[0x5001] = 0x%02X  (SDE=%u, scale=%u, AWB=%u)\r\n",
+                 reg_5001,
+                 (unsigned)((reg_5001 >> 7) & 1),
+                 (unsigned)((reg_5001 >> 5) & 1),
+                 (unsigned)(reg_5001 & 1));
+        print_to_console(buf);
+    }
+
+    /* ---- MIPI_IF_EN (P108) Pin State ---- */
+    print_to_console("[MIPI_IF_EN (P108)]\r\n");
+    {
+        /*
+         * Read P108 pin level. This pin controls the Camera Expansion Board's
+         * MIPI data path. Must be LOW for MIPI data to reach the receiver.
+         */
+        uint32_t pin_level = R_BSP_PinRead(BSP_IO_PORT_01_PIN_08);
+
+        snprintf(buf, sizeof(buf), "  P108 level  : %s (%s)\r\n",
+                 (pin_level == 0) ? "LOW" : "HIGH",
+                 (pin_level == 0) ? "MIPI enabled" : "MIPI DISABLED");
+        print_to_console(buf);
+
+        if (pin_level != 0)
+        {
+            print_to_console("  *** WARNING: MIPI_IF_EN is HIGH - no MIPI data can reach CSI-2! ***\r\n");
+        }
+    }
+
+    /* ---- FSP Pipeline State ---- */
+    print_to_console("[FSP Pipeline State]\r\n");
+    {
+        mipi_phy_info_t phy_info;
+        mipi_phy_port_get_info(&phy_info);
+
+        csi2_info_t csi_info;
+        csi2_port_get_info(&csi_info);
+
+        vin_port_info_t vin_info;
+        vin_port_get_info(&vin_info);
+
+        snprintf(buf, sizeof(buf), "  MIPI PHY    : %s\r\n",
+                 phy_info.phy_open ? "Open" : "CLOSED");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  MIPI CSI-2  : %s\r\n",
+                 csi_info.csi_open ? "Open" : "CLOSED");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  VIN         : %s\r\n",
+                 vin_info.vin_open ? "Open" : "CLOSED");
+        print_to_console(buf);
+
+        /* Callback activity summary */
+        snprintf(buf, sizeof(buf), "  VIN callbacks     : %lu (frames: %lu, errors: %lu)\r\n",
+                 (unsigned long)vin_info.stats.callback_count,
+                 (unsigned long)vin_info.stats.frame_complete,
+                 (unsigned long)vin_info.stats.error_event);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  CSI-2 callbacks   : %lu (FS: %lu, FE: %lu)\r\n",
+                 (unsigned long)csi_info.callback_count,
+                 (unsigned long)csi_info.frames.frame_start,
+                 (unsigned long)csi_info.frames.frame_end);
+        print_to_console(buf);
+
+        /* CSI-2 error summary (only if errors exist) */
+        uint32_t total_csi_errors =
+            csi_info.errors.ecc_corrected + csi_info.errors.ecc_uncorrected +
+            csi_info.errors.crc_error + csi_info.errors.sot_error +
+            csi_info.errors.sot_sync_error + csi_info.errors.id_error +
+            csi_info.errors.word_count_error + csi_info.errors.frame_sync_error;
+
+        if (total_csi_errors > 0)
+        {
+            snprintf(buf, sizeof(buf), "  CSI-2 errors      : %lu total\r\n",
+                     (unsigned long)total_csi_errors);
+            print_to_console(buf);
+        }
+        else
+        {
+            print_to_console("  CSI-2 errors      : 0\r\n");
+        }
+
+        /* VIN hardware state */
+        uint32_t hw_state;
+        if (vin_port_get_hw_status(&hw_state))
+        {
+            const char *state_str;
+            switch (hw_state) {
+                case 0:  state_str = "IDLE";        break;
+                case 1:  state_str = "IN_PROGRESS"; break;
+                case 2:  state_str = "BUSY";        break;
+                default: state_str = "UNKNOWN";     break;
+            }
+            snprintf(buf, sizeof(buf), "  VIN HW state      : %s\r\n", state_str);
+            print_to_console(buf);
+        }
+    }
+
+    /* ---- MIPI D-PHY / CSI-2 / VIN Hardware Registers ---- */
+    /*
+     * Direct hardware register reads for low-level debugging.
+     * These registers are read from the CMSIS-style peripheral pointers
+     * (R_MIPI_PHY, R_MIPI_CSI, R_VIN) defined in R7KA8P1KF_core0.h.
+     *
+     * Base addresses:
+     *   R_MIPI_PHY: 0x40346C00
+     *   R_MIPI_CSI: 0x40347000
+     *   R_VIN:      0x40347400
+     */
+    print_to_console("[MIPI D-PHY Hardware Registers]\r\n");
+    {
+        /* DPHYREFCR (offset 0x00): Reference clock frequency */
+        uint32_t dphyrefcr = R_MIPI_PHY->DPHYREFCR;
+        snprintf(buf, sizeof(buf), "  DPHYREFCR   = 0x%08lX  (RFREQ=%lu -> %lu MHz ref clk)\r\n",
+                 (unsigned long)dphyrefcr,
+                 (unsigned long)(dphyrefcr & 0xFF),
+                 (unsigned long)((dphyrefcr & 0xFF) + 1));
+        print_to_console(buf);
+
+        /* DPHYPLFCR (offset 0x04): PLL frequency control */
+        uint32_t dphyplfcr = R_MIPI_PHY->DPHYPLFCR;
+        snprintf(buf, sizeof(buf), "  DPHYPLFCR   = 0x%08lX  (IDIV=%lu, NFMUL=%lu, PMUL=%lu, NMUL=%lu)\r\n",
+                 (unsigned long)dphyplfcr,
+                 (unsigned long)(dphyplfcr & 0x3),
+                 (unsigned long)((dphyplfcr >> 8) & 0x3),
+                 (unsigned long)((dphyplfcr >> 12) & 0x3),
+                 (unsigned long)((dphyplfcr >> 16) & 0x1FF));
+        print_to_console(buf);
+
+        /* DPHYPLOCR (offset 0x08): PLL operation control */
+        uint32_t dphyplocr = R_MIPI_PHY->DPHYPLOCR;
+        snprintf(buf, sizeof(buf), "  DPHYPLOCR   = 0x%08lX  (PLLSTP=%lu: %s)\r\n",
+                 (unsigned long)dphyplocr,
+                 (unsigned long)(dphyplocr & 0x1),
+                 (dphyplocr & 0x1) ? "PLL STOPPED" : "PLL running");
+        print_to_console(buf);
+
+        /* DPHYESCCR (offset 0x0C): Escape mode clock control */
+        uint32_t dphyesccr = R_MIPI_PHY->DPHYESCCR;
+        snprintf(buf, sizeof(buf), "  DPHYESCCR   = 0x%08lX  (ESCDIV=%lu)\r\n",
+                 (unsigned long)dphyesccr,
+                 (unsigned long)(dphyesccr & 0x1F));
+        print_to_console(buf);
+
+        /* DPHYPWRCR (offset 0x10): Power supplying control */
+        uint32_t dphypwrcr = R_MIPI_PHY->DPHYPWRCR;
+        snprintf(buf, sizeof(buf), "  DPHYPWRCR   = 0x%08lX  (PWRSEN=%lu: LDO %s)\r\n",
+                 (unsigned long)dphypwrcr,
+                 (unsigned long)(dphypwrcr & 0x1),
+                 (dphypwrcr & 0x1) ? "enabled" : "DISABLED");
+        print_to_console(buf);
+
+        /* DPHYSFR (offset 0x1C): Status flag register - KEY DIAGNOSTIC */
+        uint32_t dphysfr = R_MIPI_PHY->DPHYSFR;
+        snprintf(buf, sizeof(buf), "  DPHYSFR     = 0x%08lX  (PWRSF=%lu: LDO %s, PLLSF=%lu: PLL %s)\r\n",
+                 (unsigned long)dphysfr,
+                 (unsigned long)(dphysfr & 0x1),
+                 (dphysfr & 0x1) ? "OK" : "NOT READY",
+                 (unsigned long)((dphysfr >> 8) & 0x1),
+                 ((dphysfr >> 8) & 0x1) ? "LOCKED" : "NOT LOCKED");
+        print_to_console(buf);
+
+        if (!(dphysfr & 0x1))
+        {
+            print_to_console("  *** CRITICAL: D-PHY LDO not powered on! ***\r\n");
+        }
+        if (!((dphysfr >> 8) & 0x1))
+        {
+            print_to_console("  *** NOTE: D-PHY PLL not locked (expected for CSI RX slave mode) ***\r\n");
+        }
+
+        /* DPHYOCR (offset 0x20): Operation control */
+        uint32_t dphyocr = R_MIPI_PHY->DPHYOCR;
+        snprintf(buf, sizeof(buf), "  DPHYOCR     = 0x%08lX  (DPHYEN=%lu: D-PHY %s)\r\n",
+                 (unsigned long)dphyocr,
+                 (unsigned long)(dphyocr & 0x1),
+                 (dphyocr & 0x1) ? "ENABLED" : "DISABLED");
+        print_to_console(buf);
+
+        if (!(dphyocr & 0x1))
+        {
+            print_to_console("  *** CRITICAL: D-PHY is disabled! ***\r\n");
+        }
+
+        /* DPHYMDC (offset 0x48): Mode control */
+        uint32_t dphymdc = R_MIPI_PHY->DPHYMDC;
+        snprintf(buf, sizeof(buf), "  DPHYMDC     = 0x%08lX  (MASTEREN=%lu: %s mode)\r\n",
+                 (unsigned long)dphymdc,
+                 (unsigned long)(dphymdc & 0x1),
+                 (dphymdc & 0x1) ? "DSI Master" : "CSI Slave");
+        print_to_console(buf);
+
+        if (dphymdc & 0x1)
+        {
+            print_to_console("  *** WARNING: D-PHY is in DSI Master mode, should be CSI Slave! ***\r\n");
+        }
+
+        /* Timing registers (summary) */
+        snprintf(buf, sizeof(buf), "  DPHYTIM1    = 0x%08lX  (T_INIT)\r\n",
+                 (unsigned long)R_MIPI_PHY->DPHYTIM1);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  DPHYTIM2    = 0x%08lX  (CLK_PREP=%lu, CLK_SETTLE=%lu, CLK_MISS=%lu)\r\n",
+                 (unsigned long)R_MIPI_PHY->DPHYTIM2,
+                 (unsigned long)(R_MIPI_PHY->DPHYTIM2 & 0xFF),
+                 (unsigned long)((R_MIPI_PHY->DPHYTIM2 >> 8) & 0xFF),
+                 (unsigned long)((R_MIPI_PHY->DPHYTIM2 >> 16) & 0xFF));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  DPHYTIM3    = 0x%08lX  (HS_PREP=%lu, HS_SETTLE=%lu)\r\n",
+                 (unsigned long)R_MIPI_PHY->DPHYTIM3,
+                 (unsigned long)(R_MIPI_PHY->DPHYTIM3 & 0xFF),
+                 (unsigned long)((R_MIPI_PHY->DPHYTIM3 >> 8) & 0xFF));
+        print_to_console(buf);
+    }
+
+    print_to_console("[MIPI CSI-2 Hardware Registers]\r\n");
+    {
+        /* MCG (offset 0x00): Module configuration (read-only) */
+        uint32_t mcg = R_MIPI_CSI->MCG;
+        snprintf(buf, sizeof(buf), "  MCG         = 0x%08lX  (VER=%lu, SDLN=%lu lanes, GSNM=%lu)\r\n",
+                 (unsigned long)mcg,
+                 (unsigned long)(mcg & 0xF),
+                 (unsigned long)((mcg >> 8) & 0xF),
+                 (unsigned long)((mcg >> 16) & 0xFF));
+        print_to_console(buf);
+
+        /* MCT0 (offset 0x10): Module control 0 */
+        uint32_t mct0 = R_MIPI_CSI->MCT0;
+        snprintf(buf, sizeof(buf), "  MCT0        = 0x%08lX  (VDLN=%lu lanes, ECCV13=%lu, LFSREN=%lu)\r\n",
+                 (unsigned long)mct0,
+                 (unsigned long)(mct0 & 0xF),
+                 (unsigned long)((mct0 >> 24) & 0x1),
+                 (unsigned long)((mct0 >> 25) & 0x1));
+        print_to_console(buf);
+
+        /* MCT2 (offset 0x18): Module control 2 */
+        uint32_t mct2 = R_MIPI_CSI->MCT2;
+        snprintf(buf, sizeof(buf), "  MCT2        = 0x%08lX  (FRRCLK=%lu, FRRSKW=%lu)\r\n",
+                 (unsigned long)mct2,
+                 (unsigned long)(mct2 & 0x1FF),
+                 (unsigned long)((mct2 >> 16) & 0x1FF));
+        print_to_console(buf);
+
+        /* MCT3 (offset 0x1C): Module control 3 - RX Enable - KEY DIAGNOSTIC */
+        uint32_t mct3 = R_MIPI_CSI->MCT3;
+        snprintf(buf, sizeof(buf), "  MCT3        = 0x%08lX  (RXEN=%lu: CSI-2 RX %s)\r\n",
+                 (unsigned long)mct3,
+                 (unsigned long)(mct3 & 0x1),
+                 (mct3 & 0x1) ? "ENABLED" : "DISABLED");
+        print_to_console(buf);
+
+        if (!(mct3 & 0x1))
+        {
+            print_to_console("  *** CRITICAL: CSI-2 reception is DISABLED! ***\r\n");
+        }
+
+        /* RTST (offset 0x2C): Reset status */
+        uint32_t rtst = R_MIPI_CSI->RTST;
+        snprintf(buf, sizeof(buf), "  RTST        = 0x%08lX  (VSRSTS=%lu: %s)\r\n",
+                 (unsigned long)rtst,
+                 (unsigned long)(rtst & 0x1),
+                 (rtst & 0x1) ? "RESET IN PROGRESS" : "normal");
+        print_to_console(buf);
+
+        /* MIST (offset 0x50): Module interrupt status - shows pending interrupts */
+        uint32_t mist = R_MIPI_CSI->MIST;
+        snprintf(buf, sizeof(buf), "  MIST        = 0x%08lX  (DL0=%lu, DL1=%lu, PM=%lu, GST=%lu, RX=%lu, VC0=%lu)\r\n",
+                 (unsigned long)mist,
+                 (unsigned long)(mist & 0x1),
+                 (unsigned long)((mist >> 1) & 0x1),
+                 (unsigned long)((mist >> 8) & 0x1),
+                 (unsigned long)((mist >> 9) & 0x1),
+                 (unsigned long)((mist >> 10) & 0x1),
+                 (unsigned long)((mist >> 16) & 0x1));
+        print_to_console(buf);
+
+        /* DTEL/DTEH (offset 0x60/0x64): Data type enable */
+        uint32_t dtel = R_MIPI_CSI->DTEL;
+        uint32_t dteh = R_MIPI_CSI->DTEH;
+        snprintf(buf, sizeof(buf), "  DTEL        = 0x%08lX  (data types 0x00-0x1F enable)\r\n",
+                 (unsigned long)dtel);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  DTEH        = 0x%08lX  (data types 0x20-0x3F enable)\r\n",
+                 (unsigned long)dteh);
+        print_to_console(buf);
+
+        /* RXST (offset 0x70): Receive status - KEY DIAGNOSTIC */
+        uint32_t rxst = R_MIPI_CSI->RXST;
+        snprintf(buf, sizeof(buf), "  RXST        = 0x%08lX  (FRM0=%lu, RACT=%lu, RACTDET=%lu)\r\n",
+                 (unsigned long)rxst,
+                 (unsigned long)(rxst & 0x1),
+                 (unsigned long)((rxst >> 16) & 0x1),
+                 (unsigned long)((rxst >> 17) & 0x1));
+        print_to_console(buf);
+
+        if ((rxst >> 17) & 0x1)
+        {
+            print_to_console("  ** RX activity detected on CSI-2 **\r\n");
+        }
+        else
+        {
+            print_to_console("  *** NO RX activity detected - no MIPI data arriving ***\r\n");
+        }
+
+        /* RXIE (offset 0x78): Receive interrupt enable */
+        uint32_t rxie = R_MIPI_CSI->RXIE;
+        snprintf(buf, sizeof(buf), "  RXIE        = 0x%08lX  (RACTDETE=%lu)\r\n",
+                 (unsigned long)rxie,
+                 (unsigned long)((rxie >> 17) & 0x1));
+        print_to_console(buf);
+
+        /* DLST0/DLST1 (offset 0x80/0x90): Data lane status - KEY DIAGNOSTIC */
+        uint32_t dlst0 = R_MIPI_CSI->DLST0;
+        uint32_t dlst1 = R_MIPI_CSI->DLST1;
+        snprintf(buf, sizeof(buf), "  DLST0       = 0x%08lX  (ESH=%lu, ESS=%lu, ECT=%lu, EES=%lu, ULP=%lu)\r\n",
+                 (unsigned long)dlst0,
+                 (unsigned long)(dlst0 & 0x1),
+                 (unsigned long)((dlst0 >> 1) & 0x1),
+                 (unsigned long)((dlst0 >> 2) & 0x1),
+                 (unsigned long)((dlst0 >> 3) & 0x1),
+                 (unsigned long)((dlst0 >> 24) & 0x1));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  DLST1       = 0x%08lX  (ESH=%lu, ESS=%lu, ECT=%lu, EES=%lu, ULP=%lu)\r\n",
+                 (unsigned long)dlst1,
+                 (unsigned long)(dlst1 & 0x1),
+                 (unsigned long)((dlst1 >> 1) & 0x1),
+                 (unsigned long)((dlst1 >> 2) & 0x1),
+                 (unsigned long)((dlst1 >> 3) & 0x1),
+                 (unsigned long)((dlst1 >> 24) & 0x1));
+        print_to_console(buf);
+
+        if ((dlst0 & 0x3) || (dlst1 & 0x3))
+        {
+            print_to_console("  ** Data lane SoT errors detected - check signal integrity **\r\n");
+        }
+
+        /* DLIE0/DLIE1 (offset 0x88/0x98): Data lane interrupt enable */
+        uint32_t dlie0 = R_MIPI_CSI->DLIE0;
+        uint32_t dlie1 = R_MIPI_CSI->DLIE1;
+        snprintf(buf, sizeof(buf), "  DLIE0       = 0x%08lX  (lane 0 int enable)\r\n",
+                 (unsigned long)dlie0);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  DLIE1       = 0x%08lX  (lane 1 int enable)\r\n",
+                 (unsigned long)dlie1);
+        print_to_console(buf);
+
+        /* VCST0 (offset 0x100): Virtual Channel 0 status - KEY DIAGNOSTIC */
+        uint32_t vcst0 = R_MIPI_CSI->VCST0;
+        snprintf(buf, sizeof(buf), "  VCST0       = 0x%08lX\r\n", (unsigned long)vcst0);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    Errors: MLF=%lu, ECD=%lu, CRC=%lu, IDE=%lu, WCE=%lu\r\n",
+                 (unsigned long)(vcst0 & 0x1),
+                 (unsigned long)((vcst0 >> 1) & 0x1),
+                 (unsigned long)((vcst0 >> 2) & 0x1),
+                 (unsigned long)((vcst0 >> 3) & 0x1),
+                 (unsigned long)((vcst0 >> 4) & 0x1));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    ECC: corrected=%lu, no_error=%lu\r\n",
+                 (unsigned long)((vcst0 >> 5) & 0x1),
+                 (unsigned long)((vcst0 >> 6) & 0x1));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    Frame: FRS=%lu, FRD=%lu, FSR=%lu, FER=%lu, LSR=%lu, LER=%lu\r\n",
+                 (unsigned long)((vcst0 >> 8) & 0x1),
+                 (unsigned long)((vcst0 >> 9) & 0x1),
+                 (unsigned long)((vcst0 >> 24) & 0x1),
+                 (unsigned long)((vcst0 >> 25) & 0x1),
+                 (unsigned long)((vcst0 >> 26) & 0x1),
+                 (unsigned long)((vcst0 >> 27) & 0x1));
+        print_to_console(buf);
+
+        if ((vcst0 >> 24) & 0x1)
+        {
+            print_to_console("  ** VC0 Frame Start received! **\r\n");
+        }
+
+        /* VCIE0 (offset 0x108): Virtual Channel 0 interrupt enable */
+        uint32_t vcie0 = R_MIPI_CSI->VCIE0;
+        snprintf(buf, sizeof(buf), "  VCIE0       = 0x%08lX  (VC0 int enable: FSR=%lu, FER=%lu)\r\n",
+                 (unsigned long)vcie0,
+                 (unsigned long)((vcie0 >> 24) & 0x1),
+                 (unsigned long)((vcie0 >> 25) & 0x1));
+        print_to_console(buf);
+
+        /* PMST (offset 0x200): Power Management status - KEY DIAGNOSTIC */
+        uint32_t pmst = R_MIPI_CSI->PMST;
+        snprintf(buf, sizeof(buf), "  PMST        = 0x%08lX\r\n", (unsigned long)pmst);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    Data lanes: stop_exit=%lu, stop_entry=%lu\r\n",
+                 (unsigned long)(pmst & 0x1),
+                 (unsigned long)((pmst >> 1) & 0x1));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    Clk  lane : stop_exit=%lu, stop_entry=%lu\r\n",
+                 (unsigned long)((pmst >> 2) & 0x1),
+                 (unsigned long)((pmst >> 3) & 0x1));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    ULPS: data_exit=%lu, data_entry=%lu, clk_exit=%lu, clk_entry=%lu\r\n",
+                 (unsigned long)((pmst >> 4) & 0x1),
+                 (unsigned long)((pmst >> 5) & 0x1),
+                 (unsigned long)((pmst >> 6) & 0x1),
+                 (unsigned long)((pmst >> 7) & 0x1));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "    CLSS=%lu (clk stop), CLUL=%lu (clk ULPS), DLSS=0x%lX (data stop), DLUL=0x%lX (data ULPS)\r\n",
+                 (unsigned long)((pmst >> 14) & 0x1),
+                 (unsigned long)((pmst >> 15) & 0x1),
+                 (unsigned long)((pmst >> 16) & 0x3),
+                 (unsigned long)((pmst >> 24) & 0x3));
+        print_to_console(buf);
+
+        /* PMIE (offset 0x208): Power Management interrupt enable */
+        uint32_t pmie = R_MIPI_CSI->PMIE;
+        snprintf(buf, sizeof(buf), "  PMIE        = 0x%08lX  (PM interrupt enable)\r\n",
+                 (unsigned long)pmie);
+        print_to_console(buf);
+    }
+
+    print_to_console("[VIN Hardware Registers]\r\n");
+    {
+        /* MC (offset 0x00): Main control - KEY DIAGNOSTIC */
+        uint32_t mc = R_VIN->MC;
+        snprintf(buf, sizeof(buf), "  VnMC        = 0x%08lX  (ME=%lu, BPS=%lu, INF=%lu, SCLE=%lu)\r\n",
+                 (unsigned long)mc,
+                 (unsigned long)(mc & 0x1),
+                 (unsigned long)((mc >> 1) & 0x1),
+                 (unsigned long)((mc >> 16) & 0x7),
+                 (unsigned long)((mc >> 26) & 0x1));
+        print_to_console(buf);
+
+        if (!(mc & 0x1))
+        {
+            print_to_console("  *** VIN Module Enable is OFF ***\r\n");
+        }
+
+        /* MS (offset 0x04): Module status - KEY DIAGNOSTIC */
+        uint32_t ms = R_VIN->MS;
+        snprintf(buf, sizeof(buf), "  VnMS        = 0x%08lX  (CA=%lu, AV=%lu, FS=%lu, FBS=%lu, MA=%lu, FMS=%lu)\r\n",
+                 (unsigned long)ms,
+                 (unsigned long)(ms & 0x1),
+                 (unsigned long)((ms >> 1) & 0x1),
+                 (unsigned long)((ms >> 2) & 0x1),
+                 (unsigned long)((ms >> 3) & 0x3),
+                 (unsigned long)((ms >> 16) & 0x1),
+                 (unsigned long)((ms >> 19) & 0x3));
+        print_to_console(buf);
+
+        /* FC (offset 0x08): Frame capture */
+        uint32_t fc = R_VIN->FC;
+        snprintf(buf, sizeof(buf), "  VnFC        = 0x%08lX  (CC=%lu: continuous capture %s)\r\n",
+                 (unsigned long)fc,
+                 (unsigned long)((fc >> 1) & 0x1),
+                 ((fc >> 1) & 0x1) ? "ENABLED" : "DISABLED");
+        print_to_console(buf);
+
+        /* IE (offset 0x40): Interrupt enable - KEY DIAGNOSTIC */
+        uint32_t ie = R_VIN->IE;
+        snprintf(buf, sizeof(buf), "  VnIE        = 0x%08lX  (FOE=%lu, EFE=%lu, FIE=%lu, FME=%lu, VRE=%lu, VFE=%lu)\r\n",
+                 (unsigned long)ie,
+                 (unsigned long)(ie & 0x1),
+                 (unsigned long)((ie >> 1) & 0x1),
+                 (unsigned long)((ie >> 4) & 0x1),
+                 (unsigned long)((ie >> 5) & 0x1),
+                 (unsigned long)((ie >> 16) & 0x1),
+                 (unsigned long)((ie >> 17) & 0x1));
+        print_to_console(buf);
+
+        if (!((ie >> 5) & 0x1))
+        {
+            print_to_console("  *** WARNING: FME (Frame Memory write complete) interrupt is DISABLED ***\r\n");
+        }
+
+        /* INTS (offset 0x44): Interrupt status */
+        uint32_t ints = R_VIN->INTS;
+        snprintf(buf, sizeof(buf), "  VnINTS      = 0x%08lX  (FOS=%lu, EFS=%lu, FIS=%lu, FMS=%lu, VRS=%lu, VFS=%lu)\r\n",
+                 (unsigned long)ints,
+                 (unsigned long)(ints & 0x1),
+                 (unsigned long)((ints >> 1) & 0x1),
+                 (unsigned long)((ints >> 4) & 0x1),
+                 (unsigned long)((ints >> 5) & 0x1),
+                 (unsigned long)((ints >> 16) & 0x1),
+                 (unsigned long)((ints >> 17) & 0x1));
+        print_to_console(buf);
+
+        /* CSI_IFMD (offset 0x20): CSI2 interface mode */
+        uint32_t csi_ifmd = R_VIN->CSI_IFMD;
+        snprintf(buf, sizeof(buf), "  VnCSI_IFMD  = 0x%08lX  (VC_SEL=%lu, DT=0x%02lX)\r\n",
+                 (unsigned long)csi_ifmd,
+                 (unsigned long)(csi_ifmd & 0xF),
+                 (unsigned long)((csi_ifmd >> 8) & 0x3F));
+        print_to_console(buf);
+
+        /* DMR (offset 0x58): Data mode register */
+        uint32_t dmr = R_VIN->DMR;
+        snprintf(buf, sizeof(buf), "  VnDMR       = 0x%08lX  (DTMD=%lu, BPSM=%lu, EXRGB=%lu)\r\n",
+                 (unsigned long)dmr,
+                 (unsigned long)(dmr & 0x3),
+                 (unsigned long)((dmr >> 4) & 0x1),
+                 (unsigned long)((dmr >> 8) & 0x1));
+        print_to_console(buf);
+
+        /* Pre-clip registers */
+        snprintf(buf, sizeof(buf), "  VnSLPRC     = 0x%08lX  (start line: %lu)\r\n",
+                 (unsigned long)R_VIN->SLPRC,
+                 (unsigned long)(R_VIN->SLPRC & 0xFFF));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  VnELPRC     = 0x%08lX  (end line: %lu)\r\n",
+                 (unsigned long)R_VIN->ELPRC,
+                 (unsigned long)(R_VIN->ELPRC & 0xFFF));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  VnSPPRC     = 0x%08lX  (start pixel: %lu)\r\n",
+                 (unsigned long)R_VIN->SPPRC,
+                 (unsigned long)(R_VIN->SPPRC & 0xFFF));
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  VnEPPRC     = 0x%08lX  (end pixel: %lu)\r\n",
+                 (unsigned long)R_VIN->EPPRC,
+                 (unsigned long)(R_VIN->EPPRC & 0xFFF));
+        print_to_console(buf);
+
+        /* IS (offset 0x2C): Image stride */
+        snprintf(buf, sizeof(buf), "  VnIS        = 0x%08lX  (stride: %lu pixels)\r\n",
+                 (unsigned long)R_VIN->IS,
+                 (unsigned long)(R_VIN->IS & 0x1FFF));
+        print_to_console(buf);
+
+        /* MB1/MB2/MB3 (offset 0x30/0x34/0x38): Memory base addresses */
+        snprintf(buf, sizeof(buf), "  VnMB1       = 0x%08lX\r\n", (unsigned long)R_VIN->MB1);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  VnMB2       = 0x%08lX\r\n", (unsigned long)R_VIN->MB2);
+        print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  VnMB3       = 0x%08lX\r\n", (unsigned long)R_VIN->MB3);
+        print_to_console(buf);
+
+        /* LC (offset 0x3C): Line count */
+        uint32_t lc = R_VIN->LC;
+        snprintf(buf, sizeof(buf), "  VnLC        = 0x%08lX  (line count: %lu)\r\n",
+                 (unsigned long)lc,
+                 (unsigned long)(lc & 0xFFF));
+        print_to_console(buf);
+    }
+
+    /* ---- Diagnosis ---- */
+    print_to_console("[Diagnosis]\r\n");
+    {
+        vin_port_info_t vin_info;
+        vin_port_get_info(&vin_info);
+
+        csi2_info_t csi_info;
+        csi2_port_get_info(&csi_info);
+
+        if (vin_info.stats.frame_complete > 0)
+        {
+            print_to_console("  PASS: VIN frame complete events received.\r\n");
+        }
+        else if (csi_info.frames.frame_start > 0)
+        {
+            print_to_console("  PARTIAL: CSI-2 FS received but VIN not completing.\r\n");
+            print_to_console("  Check: VIN preclip/format vs OV5640 output size.\r\n");
+        }
+        else if (csi_info.callback_count > 0)
+        {
+            print_to_console("  PARTIAL: CSI-2 callbacks but no FS packets.\r\n");
+            print_to_console("  Check: OV5640 stream/power state, MIPI lane config.\r\n");
+        }
+        else
+        {
+            print_to_console("  FAIL: No callbacks from CSI-2 or VIN.\r\n");
+            print_to_console("  Check: OV5640 MIPI output (0x300e), PLL lock,\r\n");
+            print_to_console("         stream ctrl (0x4202), HTS/VTS registers.\r\n");
+            /*
+             * Provide targeted diagnosis based on HW register state:
+             */
+            uint32_t hw_dphyocr = R_MIPI_PHY->DPHYOCR;
+            uint32_t hw_dphysfr = R_MIPI_PHY->DPHYSFR;
+            uint32_t hw_mct3    = R_MIPI_CSI->MCT3;
+            uint32_t hw_mc      = R_VIN->MC;
+            uint32_t hw_fc      = R_VIN->FC;
+            uint32_t hw_ie      = R_VIN->IE;
+
+            if (!(hw_dphysfr & 0x1))
+            {
+                print_to_console("  -> D-PHY LDO not powered: MIPI PHY not initialized.\r\n");
+            }
+            else if (!(hw_dphyocr & 0x1))
+            {
+                print_to_console("  -> D-PHY disabled: PHY_Open may not have been called.\r\n");
+            }
+            else if (!(hw_mct3 & 0x1))
+            {
+                print_to_console("  -> CSI-2 RX disabled: CSI_Start may not have been called.\r\n");
+            }
+            else if (!(hw_mc & 0x1))
+            {
+                print_to_console("  -> VIN ME=0: VIN_CaptureStart not called or VIN reset.\r\n");
+            }
+            else if (!((hw_fc >> 1) & 0x1))
+            {
+                print_to_console("  -> VIN CC=0: Continuous capture not enabled.\r\n");
+            }
+            else if (!((hw_ie >> 5) & 0x1))
+            {
+                print_to_console("  -> VIN FME=0: Frame complete interrupt not enabled.\r\n");
+            }
+            else
+            {
+                print_to_console("  -> All HW control bits look correct.\r\n");
+                print_to_console("     Possible causes:\r\n");
+                print_to_console("       - OV5640 not streaming (check 0x4202, 0x3008)\r\n");
+                print_to_console("       - MIPI clock not reaching D-PHY (check XCLK, board HW)\r\n");
+                print_to_console("       - Signal integrity issue (check camera cable)\r\n");
+                print_to_console("       - CSI-2 timing mismatch (THS_SETTLE/TCLK_SETTLE)\r\n");
+            }
+        }
+    }
+
+    /*
+     * Close camera I2C if we opened it for diagnostics.
+     * This releases IIC1 back for the touch panel's exclusive use.
+     *
+     * Reference: Issue #93 fix - IIC1 channel conflict prevention
+     */
+    if (diag_i2c_opened)
+    {
+        R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+    }
+}
+
 /**
  * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-3 / S-003-4)
  *
@@ -874,6 +1704,12 @@ int usrcmd_camera(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* F-002-6: MIPI data path diagnostics sub-command */
+    if (ntlibc_strcmp(argv[1], "diag") == 0) {
+        mipi_cmd_diag();
+        return CMD_OK;
+    }
+
     /* S-003-4: Integration test sub-commands */
     if (ntlibc_strcmp(argv[1], "test") == 0) {
         camera_test_cmd(argc, argv);
@@ -956,9 +1792,19 @@ static void mipi_cmd_sensor(int argc, char **argv)
     if (ntlibc_strcmp(argv[2], "id") == 0) {
         print_to_console("  Reading OV5640 chip ID...\r\n");
 
-        /* Ensure I2C is open */
+        /*
+         * Temporarily open camera I2C for register reads.
+         * Must close after to avoid IIC1 conflict with touch panel.
+         * Reference: Issue #93 fix
+         */
+        bool id_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
-            R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+            if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
+                id_i2c_opened = true;
+            } else {
+                print_to_console("  ERROR: Could not open camera I2C.\r\n");
+                return;
+            }
         }
 
         uint8_t id_h = ov5640_read_reg(OV5640_REG_CHIP_ID_H);
@@ -974,6 +1820,10 @@ static void mipi_cmd_sensor(int argc, char **argv)
         } else {
             print_to_console("  Chip ID verification: FAIL (expected 0x56xx where xx=40/41/4C)\r\n");
         }
+
+        if (id_i2c_opened) {
+            R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+        }
         return;
     }
 
@@ -986,9 +1836,19 @@ static void mipi_cmd_sensor(int argc, char **argv)
             return;
         }
 
-        /* Ensure I2C is open */
+        /*
+         * Temporarily open camera I2C for register access.
+         * Must close after to avoid IIC1 conflict with touch panel.
+         * Reference: Issue #93 fix
+         */
+        bool reg_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
-            R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+            if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
+                reg_i2c_opened = true;
+            } else {
+                print_to_console("  ERROR: Could not open camera I2C.\r\n");
+                return;
+            }
         }
 
         cmd_parse_result_t addr_result = cmd_parse_uint32(argv[3]);
@@ -1013,6 +1873,10 @@ static void mipi_cmd_sensor(int argc, char **argv)
             snprintf(buf, sizeof(buf), "  Read: reg[0x%04X] = 0x%02X\r\n", (unsigned)addr, val);
         }
         print_to_console(buf);
+
+        if (reg_i2c_opened) {
+            R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+        }
         return;
     }
 

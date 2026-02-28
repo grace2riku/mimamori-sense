@@ -57,9 +57,9 @@
     <node id="board.clock.pll2.div" option="board.clock.pll2.div.3"/>
     <node id="board.clock.pll2.mul" option="board.clock.pll2.mul.300_00"/>
     <node id="board.clock.pll2.display" option="board.clock.pll2.display.value"/>
-    <node id="board.clock.pll2p.div" option="board.clock.pll2p.div.4"/>
+    <node id="board.clock.pll2p.div" option="board.clock.pll2p.div.2"/>
     <node id="board.clock.pll2p.display" option="board.clock.pll2p.display.value"/>
-    <node id="board.clock.pll2q.div" option="board.clock.pll2q.div.3"/>
+    <node id="board.clock.pll2q.div" option="board.clock.pll2q.div.8"/>
     <node id="board.clock.pll2q.display" option="board.clock.pll2q.display.value"/>
     <node id="board.clock.pll2r.div" option="board.clock.pll2r.div.5"/>
     <node id="board.clock.pll2r.display" option="board.clock.pll2r.display.value"/>
@@ -111,9 +111,9 @@
     <node id="board.clock.gptclk.source" option="board.clock.gptclk.source.pll2r"/>
     <node id="board.clock.gptclk.div" option="board.clock.gptclk.div.2"/>
     <node id="board.clock.gptclk.display" option="board.clock.gptclk.display.value"/>
-    <node id="board.clock.gtclk.source" option="board.clock.gtclk.source.gptclk"/>
+    <node id="board.clock.gtclk.source" option="board.clock.gtclk.source.pclkd"/>
     <node id="board.clock.gtclk.display" option="board.clock.gtclk.display.value"/>
-    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll1r"/>
+    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll2r"/>
     <node id="board.clock.lcdclk.div" option="board.clock.lcdclk.div.2"/>
     <node id="board.clock.lcdclk.display" option="board.clock.lcdclk.display.value"/>
     <node id="board.clock.i3cclk.source" option="board.clock.i3cclk.source.pll2q"/>
@@ -246,6 +246,8 @@
       <configSetting altId="p107.input" configurationId="p107"/>
       <configSetting altId="p107.gpio_irq.gpio_irq_enabled" configurationId="p107.gpio_irq"/>
       <configSetting altId="p107.gpio_mode.gpio_mode_in" configurationId="p107.gpio_mode"/>
+      <configSetting altId="p108.output.high" configurationId="p108"/>
+      <configSetting altId="p108.gpio_mode.gpio_mode_out.high" configurationId="p108.gpio_mode"/>
       <configSetting altId="p109.output.high" configurationId="p109"/>
       <configSetting altId="p109.gpio_speed.gpio_speed_m" configurationId="p109.gpio_drivecapacity"/>
       <configSetting altId="p109.gpio_mode.gpio_mode_out.high" configurationId="p109.gpio_mode"/>
@@ -322,7 +324,6 @@
       <configSetting altId="p415.gpio_speed.gpio_speed_m" configurationId="p415.gpio_drivecapacity"/>
       <configSetting altId="p415.gpio_mode.gpio_mode_peripheral" configurationId="p415.gpio_mode"/>
       <configSetting altId="p500.gpio_mode.gpio_mode_peripheral" configurationId="p500.gpio_mode"/>
-      <configSetting altId="p501.gpio_speed.gpio_speed_h" configurationId="p501.gpio_drivecapacity"/>
       <configSetting altId="p501.gpio_mode.gpio_mode_peripheral" configurationId="p501.gpio_mode"/>
       <configSetting altId="p502.gpio_speed.gpio_speed_m" configurationId="p502.gpio_drivecapacity"/>
       <configSetting altId="p502.gpio_mode.gpio_mode_peripheral" configurationId="p502.gpio_mode"/>

@@ -106,24 +106,22 @@ const gpt_extended_cfg_t g_timer_camera_xclk_extend =
 				.gtioca_polarity = GPT_GTIOC_POLARITY_NORMAL, .gtiocb_polarity =
 						GPT_GTIOC_POLARITY_NORMAL, };
 
-const timer_cfg_t g_timer_camera_xclk_cfg =
-		{ .mode = TIMER_MODE_PERIODIC,
-				/* Actual period: 4.166666666666667e-8 seconds. Actual duty: 50%. */.period_counts =
-						(uint32_t) 0xa, .duty_cycle_counts = 0x5, .source_div =
-						(timer_source_div_t) 0, .channel = 12, .p_callback =
-						NULL,
-				/** If NULL then do not add & */
+const timer_cfg_t g_timer_camera_xclk_cfg = { .mode = TIMER_MODE_PERIODIC,
+/* Actual period: 4e-8 seconds. Actual duty: 50%. */.period_counts =
+		(uint32_t) 0xa, .duty_cycle_counts = 0x5, .source_div =
+		(timer_source_div_t) 0, .channel = 12, .p_callback = NULL,
+/** If NULL then do not add & */
 #if defined(NULL)
     .p_context           = NULL,
 #else
-				.p_context = (void*) &NULL,
+		.p_context = (void*) &NULL,
 #endif
-				.p_extend = &g_timer_camera_xclk_extend, .cycle_end_ipl =
-						(BSP_IRQ_DISABLED),
+		.p_extend = &g_timer_camera_xclk_extend, .cycle_end_ipl =
+				(BSP_IRQ_DISABLED),
 #if defined(VECTOR_NUMBER_GPT12_COUNTER_OVERFLOW)
     .cycle_end_irq       = VECTOR_NUMBER_GPT12_COUNTER_OVERFLOW,
 #else
-				.cycle_end_irq = FSP_INVALID_VECTOR,
+		.cycle_end_irq = FSP_INVALID_VECTOR,
 #endif
 		};
 /* Instance structure to use this module. */

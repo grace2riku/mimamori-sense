@@ -123,6 +123,7 @@
             <slot name="P105.CPU0" secure="true"/>
             <slot name="P106.CPU0" secure="true"/>
             <slot name="P107.CPU0" secure="true"/>
+            <slot name="P108.CPU0" secure="true"/>
             <slot name="P109.CPU0" secure="true"/>
             <slot name="P111.CPU0" secure="true"/>
             <slot name="P112.CPU0" secure="true"/>
