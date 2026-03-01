@@ -219,12 +219,17 @@ void ui_main_screen_invalidate_camera(void)
 {
     if (s_camera_image != NULL) {
         /*
-         * To update the displayed image, we need to re-set the source.
-         * Simply invalidating the object may not trigger a re-read of
-         * the pixel data because LVGL caches image sources. Re-setting
-         * the source forces LVGL to re-read the buffer.
+         * Only invalidate the widget area to trigger a redraw.
+         *
+         * Note: lv_image_set_src() is NOT called here. The original code
+         * called lv_image_set_src() every frame to force LVGL to re-read
+         * the buffer, but this triggers heavy image source processing
+         * (cache lookup, header re-read, decode preparation) that caused
+         * ~200ms overhead per frame. Since the lv_image_dsc_t descriptor
+         * already points to the SDRAM pixel buffer, lv_obj_invalidate()
+         * alone is sufficient - Dave2D reads the updated pixels directly
+         * when rendering the dirty area.
          */
-        lv_image_set_src(s_camera_image, &camera_img_dsc);
         lv_obj_invalidate(s_camera_image);
     }
 }
