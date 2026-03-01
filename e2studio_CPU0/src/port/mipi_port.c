@@ -43,6 +43,7 @@
 #include "vin_port.h"
 #include "camera_test.h"
 #include "camera_framebuffer.h"
+#include "camera_display.h"
 #include "bsp_api.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
@@ -515,6 +516,7 @@ static void mipi_cmd_print_help(void)
     print_to_console("  sensor reg <addr> <val>  - Write OV5640 register (F-002-4)\r\n");
     print_to_console("  sensor stream on|off     - Control MIPI stream (F-002-4)\r\n");
     print_to_console("  fb       - Show frame buffer status, addresses, FPS (F-002-6)\r\n");
+    print_to_console("  display  - Show camera-to-LVGL display transfer status (F-001-8)\r\n");
     print_to_console("  diag     - MIPI data path diagnostics: OV5640 regs + FSP state (F-002-6)\r\n");
     print_to_console("  test     - Integration test commands (S-003-4)\r\n");
     print_to_console("    test capture         - Single frame capture with validation\r\n");
@@ -1733,6 +1735,12 @@ int usrcmd_camera(int argc, char **argv)
     /* F-002-6: Frame buffer management sub-command */
     if (ntlibc_strcmp(argv[1], "fb") == 0) {
         camera_framebuffer_cmd_status();
+        return CMD_OK;
+    }
+
+    /* F-001-8: Camera display transfer sub-command */
+    if (ntlibc_strcmp(argv[1], "display") == 0) {
+        camera_display_cmd_status();
         return CMD_OK;
     }
 

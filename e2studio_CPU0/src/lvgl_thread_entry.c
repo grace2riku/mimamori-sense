@@ -62,6 +62,7 @@
 #include "port/dave2d_port.h"
 #include "port/lv_port_indev.h"
 #include "ui/ui_main_screen.h"
+#include "camera_display.h"
 
 /**
  * LVGL thread entry function
@@ -169,7 +170,27 @@ void lvgl_thread_entry(void *pvParameters)
     ui_main_screen_create();
 
     /*
-     * Step 7: LVGL main loop
+     * Step 7: Initialize camera display transfer (F-001-8)
+     *
+     * Creates an LVGL timer that periodically polls for new camera frames
+     * from camera_framebuffer and transfers them to the LVGL camera image
+     * buffer with letterbox centering (768x450 -> centered in 1024x560).
+     *
+     * The timer fires every 16ms (~60Hz) and calls camera_framebuffer_get_latest().
+     * When a new frame is available, it is copied to the display buffer and
+     * the LVGL image widget is invalidated.
+     *
+     * Depends on:
+     *   - ui_main_screen_create() (display buffer must exist)
+     *   - camera_framebuffer_init() (called by camera_thread, may not have
+     *     executed yet; the timer gracefully handles NULL returns)
+     *
+     * Reference: e2studio_CPU0/src/camera_display.c
+     */
+    camera_display_init();
+
+    /*
+     * Step 8: LVGL main loop
      *
      * lv_timer_handler() processes all pending LVGL tasks:
      *   - Rendering invalidated areas to the active framebuffer
