@@ -587,6 +587,18 @@ static void mipi_cmd_csi_stop(void)
  */
 static void mipi_cmd_vin_start(void)
 {
+    /*
+     * Guard: If camera_thread has already initialized VIN and started
+     * capture, do not call R_VIN_CaptureStart() again. The camera_thread
+     * manages VIN directly (bypassing vin_port status), so vin_port's
+     * s_vin_status may still be NOT_INITIALIZED even though VIN HW is
+     * actively capturing. Re-calling CaptureStart on a running VIN freezes.
+     */
+    if (camera_thread_is_initialized()) {
+        print_to_console("  Camera capture is already running (managed by camera thread).\r\n");
+        return;
+    }
+
     vin_port_status_t status = vin_port_get_status();
 
     /* Auto-initialize if not yet initialized */
@@ -626,6 +638,18 @@ static void mipi_cmd_vin_start(void)
  */
 static void mipi_cmd_vin_stop(void)
 {
+    /*
+     * Guard: When camera_thread is managing VIN, vin_port status tracking
+     * is out of sync. Stopping VIN while the camera thread's main loop
+     * polls R_VIN_StatusGet() could cause undefined behavior. For now,
+     * reject stop when camera_thread owns the capture pipeline.
+     */
+    if (camera_thread_is_initialized()) {
+        print_to_console("  Camera capture is managed by camera thread.\r\n");
+        print_to_console("  Stop is not supported while camera thread is running.\r\n");
+        return;
+    }
+
     if (!vin_port_is_available()) {
         print_to_console("  Error: VIN is not initialized.\r\n");
         return;

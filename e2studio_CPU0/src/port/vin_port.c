@@ -52,6 +52,8 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "camera_framebuffer.h"
+#include "camera_thread_api.h"
+#include "ov5640.h"
 
 /*
  * Check if the FSP VIN module is available.
@@ -531,6 +533,21 @@ void vin_cmd_status(void)
     snprintf(buf, sizeof(buf), "  VIN Open      : %s\r\n", info.vin_open ? "Yes" : "No");
     print_to_console(buf);
 
+    /* Camera thread state */
+    snprintf(buf, sizeof(buf), "  Camera Init   : %s\r\n",
+             camera_thread_has_error() ? "ERROR" :
+             camera_thread_is_initialized() ? "Yes" : "No");
+    print_to_console(buf);
+
+    /* FPS and frame count from frame buffer manager (F-002-7) */
+    snprintf(buf, sizeof(buf), "  FPS           : %lu\r\n",
+             (unsigned long)camera_framebuffer_get_fps());
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Frames        : %lu\r\n",
+             (unsigned long)camera_framebuffer_get_frame_count());
+    print_to_console(buf);
+
     /* Hardware capture state */
 #if VIN_PORT_FSP_AVAILABLE
     {
@@ -671,6 +688,15 @@ void vin_cmd_info(void)
 
     print_to_console("[Camera Module Information]\r\n");
     print_to_console("  Sensor        : OmniVision OV5640\r\n");
+
+    {
+        const ov5640_status_t *st = ov5640_get_status();
+        snprintf(buf, sizeof(buf), "  Chip ID       : 0x%04X%s\r\n",
+                 st->chip_id,
+                 st->chip_id_verified ? " (verified)" : " (not verified)");
+        print_to_console(buf);
+    }
+
     print_to_console("  Max Resolution: 2592 x 1944 (5MP)\r\n");
 
     snprintf(buf, sizeof(buf), "  Capture Res   : %u x %u\r\n",
