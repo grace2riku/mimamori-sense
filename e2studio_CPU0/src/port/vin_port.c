@@ -51,6 +51,7 @@
 #include "bsp_api.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
+#include "camera_framebuffer.h"
 
 /*
  * Check if the FSP VIN module is available.
@@ -448,6 +449,14 @@ void vin_port_callback(void *p_args)
                  * Reference: camera_thread_entry.c:921
                  */
                 s_last_frame_buffer = p_cb->p_buffer;
+
+                /* F-002-6: Notify frame buffer manager of the new frame.
+                 * This updates the latest-frame pointer and FPS counter.
+                 *
+                 * Reference: reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:921
+                 *            (display_next_buffer_set(p_args->p_buffer))
+                 */
+                camera_framebuffer_set_latest(p_cb->p_buffer);
             }
 
             if (interrupt_status.bits.end_of_frame) {

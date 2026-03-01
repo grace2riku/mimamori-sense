@@ -60,6 +60,7 @@
 
 #include "camera_thread.h"
 #include "camera_thread_api.h"
+#include "camera_framebuffer.h"
 #include "hal_data.h"
 #include "common_data.h"
 #include "bsp_api.h"
@@ -437,6 +438,13 @@ void camera_thread_entry(void *pvParameters)
      * Reference: reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:355-363
      * ====================================================================== */
     camera_thread_log("  Starting capture...\r\n");
+
+    /* F-002-6: Initialize frame buffer management before capture starts.
+     * This resets frame counters, FPS tracker, and latest-frame pointer.
+     * Must be called before R_VIN_CaptureStart so the first frame_complete
+     * callback can safely call camera_framebuffer_set_latest(). */
+    camera_framebuffer_init();
+    camera_thread_log("  Frame buffer manager initialized.\r\n");
 
     ov5640_stream_off();
     ov5640_write_reg(OV5640_REG_SYS_CTRL, 0x42);  /* Software power-down */
