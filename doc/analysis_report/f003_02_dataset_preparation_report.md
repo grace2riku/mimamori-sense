@@ -85,9 +85,11 @@
 **概要:** Roboflow Universe上で公開されている転倒検出用データセット。複数のバリエーションがあるが、代表的なものを取り上げる。
 
 - **URL:** https://universe.roboflow.com/ で "fall detection" を検索
-- **代表的プロジェクト:**
-  - Fall Detection (YOLO形式対応、約1,000-2,800枚)
-  - Fall Detection Computer Vision Project (YOLO/COCO/VOC等複数形式に対応)
+- **選定プロジェクト:** [Fall Detection by Roboflow Universe Projects](https://universe.roboflow.com/roboflow-universe-projects/fall-detection-ca3o8) (version 4)
+  - workspace: `roboflow-universe-projects`
+  - project: `fall-detection-ca3o8`
+  - version: 4
+  - 実際の画像数: **10,787枚** (train/valid/test合計)
 - **アノテーション:** YOLO TXT / COCO JSON / Pascal VOC等、エクスポート時に選択可能
 - **クラス:** fall / not-fall (または fall / standing 等)
 - **ライセンス:** プロジェクトにより異なる (CC BY 4.0が多い)
@@ -103,7 +105,12 @@
 - クラス定義が "fall/not-fall" の2クラスであり、本プロジェクトの "person" 1クラスに統合する変換が必要
 - 一部データセットはダウンロードにRoboflowアカウントが必要
 
-**推奨使用方法:** fall/not-fall の2クラスを "person" 1クラスに統合して使用する。転倒シーンの人物バウンディングボックスとして貴重なデータソース。1,000-2,800枚を全量使用する。
+**推奨使用方法:** fall/not-fall の2クラスを "person" 1クラスに統合して使用する。転倒シーンの人物バウンディングボックスとして貴重なデータソース。全量使用する。
+
+**ダウンロード方法:** Roboflow Python SDK を使用する。APIキーの取得が必要 (Roboflow Public Planで可):
+1. https://app.roboflow.com/ でアカウント作成
+2. Settings > API Key で Private API Key を取得 (Generate New Key)
+3. `dataset/scripts/download_roboflow_fall.py` を実行
 
 #### 2.2.3 UR Fall Detection Dataset (URFD)
 
@@ -224,7 +231,17 @@
 
 **合計目標: 約9,000-22,000枚** (最小構成: COCO + Roboflow で約6,000-13,000枚)
 
-注意: 上記の枚数は推奨値であり、学習結果の精度に応じて調整する。初回の学習では最小構成 (COCO 5,000枚 + Roboflow 1,000枚 = 6,000枚) から開始し、精度が不十分な場合にデータを追加する段階的アプローチを推奨する。
+注意: 上記の枚数は推奨値であり、学習結果の精度に応じて調整する。初回の学習では最小構成 (COCO 5,000枚 + Roboflow) から開始し、精度が不十分な場合にデータを追加する段階的アプローチを推奨する。
+
+#### 初回構築の実績
+
+最小構成として以下のデータセットでデータセットを構築した。
+
+| データセット | 取得枚数 | 備考 |
+|---|---|---|
+| COCO 2017 (person) | 5,000枚 | train2017から person アノテーション付き画像をランダム抽出 (seed=42) |
+| Roboflow Fall Detection | 10,787枚 | fall-detection-ca3o8 v4 の train/valid/test 全量 |
+| **合計** | **15,787枚** | |
 
 ---
 
@@ -684,61 +701,241 @@ Issue #19の受け入れ条件として、3種類以上の転倒シーンバリ�
 
 ## 8. 実行手順のまとめ
 
-以下の手順でデータセットを準備する。
+以下の手順でデータセットを準備する。すべてのスクリプトは `dataset/scripts/` に配置されている。
+
+### 前提条件: Python環境の準備
+
+```bash
+pip install pycocotools requests tqdm roboflow albumentations opencv-python-headless
+```
+
+### ディレクトリ構成
+
+```
+dataset/
+  scripts/                      # 実行スクリプト (Git管理対象)
+    download_coco_person.py     # Step 1: COCO person画像ダウンロード
+    download_roboflow_fall.py   # Step 1: Roboflow転倒データセットダウンロード
+    merge_and_split.py          # Step 3: 統合・分割 (Step 5含む)
+    quality_check.py            # Step 4: 品質チェック
+    augment_offline.py          # Step 6: オフラインデータ拡張
+  downloads/                    # ダウンロード一時ファイル (.gitignore)
+  coco_person/                  # COCO person抽出結果 (.gitignore)
+  roboflow_fall/                # Roboflowダウンロード結果 (.gitignore)
+  merged/                       # 統合・分割済みデータセット (.gitignore)
+```
+
+**注意:** `downloads/`, `coco_person/`, `roboflow_fall/`, `merged/` は `.gitignore` で除外されている。スクリプトから再生成可能である。
 
 ### Step 1: データセットのダウンロード
 
+#### Step 1a: COCO 2017 person画像のダウンロード
+
+```bash
+cd dataset/scripts
+python download_coco_person.py --max-images 5000 --seed 42
+```
+
+処理内容:
+1. COCO 2017 アノテーションZIP (約253MB) をダウンロード・展開
+2. `instances_train2017.json` から person クラス (category_id=1) のアノテーションを抽出
+3. 極端に小さいBBox (幅 or 高さ < 10px) と iscrowd=1 を除外
+4. 指定枚数をランダムサンプリングし、各画像をcoco_urlから個別ダウンロード
+5. COCO JSON形式からYOLO TXT形式に変換してラベルファイルを生成
+
+出力先: `dataset/coco_person/images/`, `dataset/coco_person/labels/`
+
+| パラメータ | デフォルト値 | 説明 |
+|---|---|---|
+| `--max-images` | 5000 | ダウンロードする最大画像枚数 |
+| `--seed` | 42 | ランダムサンプリングのシード値 |
+
+**初回実行結果:** 5,000画像・5,000ラベル (アノテーションZIPダウンロード + 個別画像ダウンロードで計40-60分)
+
+#### Step 1b: Roboflow Fall Detectionのダウンロード
+
+```bash
+cd dataset/scripts
+python download_roboflow_fall.py --api-key YOUR_ROBOFLOW_API_KEY
+```
+
+処理内容:
+1. Roboflow Python SDKで `fall-detection-ca3o8` (version 4) をYOLOv5形式でダウンロード
+2. train/valid/test各splitの画像・ラベルを統合
+3. fall/not-fall の2クラスを person (class_id=0) の1クラスに統合
+
+出力先: `dataset/roboflow_fall/images/`, `dataset/roboflow_fall/labels/`
+
+| パラメータ | デフォルト値 | 説明 |
+|---|---|---|
+| `--api-key` | 環境変数 `ROBOFLOW_API_KEY` | Roboflow APIキー (必須) |
+
+**APIキーの取得手順:**
+1. https://app.roboflow.com/ でアカウント作成 (Public Planで可)
+2. 初回ログイン時の用途選択はスキップ可能
+3. Settings > API Key > Generate New Key で Private API Key を取得
+
+**初回実行結果:** 10,787画像・10,787ラベル
+
+#### (将来拡張) 追加データセット
+
+精度が不十分な場合、以下のデータセットを追加できる:
+
 | # | データセット | ダウンロード方法 | 推奨枚数 |
 |---|---|---|---|
-| 1 | COCO 2017 (train2017 + annotations) | https://cocodataset.org/ からダウンロード | person画像5,000-10,000枚抽出 |
-| 2 | Roboflow Fall Detection | Roboflow UniverseからYOLO形式でエクスポート | 全量 (1,000-2,800枚) |
 | 3 | DiverseFall10500 | Mendeley Dataからダウンロード | 2,000-5,000枚サブセット |
 | 4 | UR Fall Detection (任意) | 公式サイトからダウンロード | フレーム抽出300-500枚 |
 | 5 | Le2i Fall Detection (任意) | 公式サイトから申請・ダウンロード | フレーム抽出500-1,000枚 |
 
+追加する場合は、Section 3.3 (クラス統合) および Section 3.4 (動画フレーム抽出+半自動アノテーション) の手順を参照のこと。
+
 ### Step 2: アノテーション形式の統一
 
-1. COCO JSON -> YOLO TXT変換 (Section 3.2のスクリプトを使用)
-2. Roboflow/DiverseFall のクラス統合: fall/not-fall -> person (Section 3.3のスクリプトを使用)
-3. 動画データセットのフレーム抽出 + 半自動アノテーション (Section 3.4の手順)
+**Step 1のダウンロードスクリプト内で自動処理されるため、追加作業は不要である。**
+
+- `download_coco_person.py`: COCO JSON → YOLO TXT変換を内蔵 (Section 3.2の変換ロジックを実装)
+- `download_roboflow_fall.py`: fall/not-fall → person (class_id=0) のクラス統合を内蔵 (Section 3.3の統合ロジックを実装)
+
+将来、動画データセット (UR Fall, Le2i等) を追加する場合は、Section 3.4の半自動アノテーション手順を別途実行する必要がある。
 
 ### Step 3: データセットの統合と分割
 
-1. 全データセットを統一ディレクトリに配置
-2. 動画由来データは動画単位で分割 (Section 5.2)
-3. Train/Val/Test = 70/15/15 で分割
-4. train.txt, valid.txt, test.txt を生成
+```bash
+cd dataset/scripts
+python merge_and_split.py --train-ratio 0.70 --val-ratio 0.15 --seed 42
+```
+
+処理内容:
+1. `coco_person/` と `roboflow_fall/` から画像-ラベルのペアを収集
+2. ファイル名にプレフィックスを付与して衝突回避 (`coco_`, `rf_`)
+3. 全ペアをシャッフルし Train/Val/Test = 70/15/15 で分割
+4. `dataset/merged/` に分割先ディレクトリを作成してコピー
+5. Darknet学習用ファイル (obj.data, obj.names, train.txt, valid.txt, test.txt) を生成 (Step 5を兼ねる)
+
+出力先: `dataset/merged/`
+
+| パラメータ | デフォルト値 | 説明 |
+|---|---|---|
+| `--train-ratio` | 0.70 | Train分割比率 |
+| `--val-ratio` | 0.15 | Validation分割比率 (Test = 1 - train - val) |
+| `--seed` | 42 | シャッフルのシード値 |
+
+**初回実行結果:**
+
+| セット | 合計 | COCO | Roboflow |
+|---|---|---|---|
+| Train | 11,050 (70.0%) | 3,530 | 7,520 |
+| Val | 2,368 (15.0%) | 722 | 1,646 |
+| Test | 2,369 (15.0%) | 748 | 1,621 |
+| **合計** | **15,787** | **5,000** | **10,787** |
+
+**注意:** 動画由来データセットを追加する場合は、データリーケージ防止のため動画単位での分割が必須である (Section 5.2参照)。現在の最小構成 (COCO + Roboflow) は静止画のみのため、画像単位のランダム分割で問題ない。
 
 ### Step 4: 品質チェック
 
-1. アノテーション形式の検証 (Section 6.2のチェックリスト)
-2. ランダムサンプルの目視確認
-3. アスペクト比分布の分析 (Section 6.1.3)
-4. BBoxサイズ分布の確認
+```bash
+cd dataset/scripts
+python quality_check.py
+```
+
+処理内容 (Section 6.2のチェックリストを自動検証):
+1. アノテーション形式の検証 (YOLO形式 5値)
+2. 座標値の範囲チェック (0.0-1.0)
+3. 画像-ラベル対応の整合性チェック
+4. 空ラベルファイルの検出
+5. BBoxサイズの異常値検出
+6. アスペクト比分布の分析
+7. データソース別の内訳
+
+**初回実行結果:**
+
+```
+Check 1: Annotation Format        -> PASS (28,460 bboxes, all valid YOLO format)
+Check 2: Coordinate Range          -> PASS (all within [0.0, 1.0])
+Check 3: Image-Label Correspondence -> PASS (15,787 matched pairs)
+Check 4: Empty Label Files         -> PASS (no empty files)
+Check 5: BBox Size Anomalies       -> PASS (no tiny bboxes)
+                                      WARNING: 1,776 huge bboxes (w or h > 0.95)
+Check 6: Aspect Ratio Distribution -> Portrait (w/h < 1.0): 71.4%, Landscape: 28.6%
+Check 7: Source Breakdown          -> COCO/Roboflow比率が各splitで均等
+
+RESULT: ALL CHECKS PASSED
+```
+
+アスペクト比分布の詳細:
+
+| 範囲 | 件数 | 姿勢の解釈 |
+|---|---|---|
+| 0.0-0.5 | 10,479 | 立位・歩行 (強い縦長) |
+| 0.5-1.0 | 9,852 | 立位・座位 (やや縦長〜正方形) |
+| 1.0-1.5 | 5,568 | 座位・転倒初期 (やや横長) |
+| 1.5-3.0+ | 2,561 | 転倒状態 (強い横長) |
+
+**所見:** アスペクト比 w/h=1.0 を閾値とした転倒判定 (アプローチC) の妥当性が確認できる分布である。縦長 (71.4%) と横長 (28.6%) が明確に分離しており、閾値による分類が有効であることを示している。
 
 ### Step 5: Darknet学習用ファイル生成
 
-1. obj.data, obj.names の作成 (Section 5.3)
-2. 画像パスリスト (train.txt, valid.txt) の最終確認
+**Step 3 の `merge_and_split.py` 内で自動生成されるため、追加作業は不要である。**
 
-### Step 6: オフラインデータ拡張 (任意)
+生成されるファイル:
 
-1. Albumentationsパイプラインの実行 (Section 4.3)
-2. 拡張後のデータセットサイズ確認
+| ファイル | 内容 |
+|---|---|
+| `dataset/merged/obj.data` | データセット設定 (classes, train/valid/namesパス, backupディレクトリ) |
+| `dataset/merged/obj.names` | クラス名定義 (`person`) |
+| `dataset/merged/train.txt` | Train画像の絶対パスリスト |
+| `dataset/merged/valid.txt` | Validation画像の絶対パスリスト |
+| `dataset/merged/test.txt` | Test画像の絶対パスリスト |
+
+### Step 6: オフラインデータ拡張
+
+```bash
+cd dataset/scripts
+python augment_offline.py --multiplier 2 --seed 42
+```
+
+処理内容:
+1. Train画像に対してAlbumentationsパイプライン (Section 4.3) を適用
+2. 各画像から指定回数の拡張画像を生成 (BBoxも同期変換)
+3. 拡張後にBBoxが残っている画像のみ保存
+4. `train.txt` を更新 (拡張画像を追加)
+
+| パラメータ | デフォルト値 | 説明 |
+|---|---|---|
+| `--multiplier` | 2 | 元画像1枚あたりの拡張コピー数 |
+| `--seed` | 42 | 乱数シード |
+
+**初回実行結果:**
+
+| 項目 | 数値 |
+|---|---|
+| 元のTrain画像 | 11,050 |
+| 拡張生成画像 | 21,803 |
+| **拡張後Train合計** | **32,853** |
+| 処理時間 | 約6分 |
+
+**拡張後の最終データセット構成:**
+
+| セット | 枚数 |
+|---|---|
+| Train (拡張後) | 32,853 |
+| Validation | 2,368 |
+| Test | 2,369 |
+| **合計** | **37,590** |
 
 ---
 
 ## 9. 追加調査が必要な項目
 
-| # | 項目 | 理由 | 優先度 |
-|---|---|---|---|
-| 1 | COCO 2017 personクラスの実際の画像枚数確認 | 本レポートでは約64,000枚と記載したが、実際にダウンロードして確認が必要 | 高 |
-| 2 | Roboflow Fall Detectionの具体的プロジェクト選定 | 複数のバリエーションがあるため、最適なものを実際に確認して選定する | 高 |
-| 3 | DiverseFall10500のデータ品質確認 | ダウンロード後にアノテーション品質を目視確認する | 高 |
-| 4 | Grayscale変換後の人物検出精度への影響 | 色情報なしでの検出精度を小規模実験で確認する必要がある | 中 |
-| 5 | アスペクト比判定の閾値の予備検証 | 学習データのBBoxアスペクト比分布から適切な閾値を事前検討する | 中 |
-| 6 | Le2i/UR Fall Detectionの入手手続き | 研究用データセットの利用申請が必要な場合の手続き確認 | 中 |
-| 7 | 独自撮影データの必要性判断 | 公開データセットで十分な精度が得られない場合、EK-RA8P1のカメラで独自撮影データを追加する | 低 (精度評価後) |
+| # | 項目 | 理由 | 優先度 | 状態 |
+|---|---|---|---|---|
+| 1 | ~~COCO 2017 personクラスの実際の画像枚数確認~~ | ~~本レポートでは約64,000枚と記載したが、実際にダウンロードして確認が必要~~ | ~~高~~ | **解決済み**: train2017に約64,000枚のperson画像を確認。5,000枚を抽出して使用 |
+| 2 | ~~Roboflow Fall Detectionの具体的プロジェクト選定~~ | ~~複数のバリエーションがあるため、最適なものを実際に確認して選定する~~ | ~~高~~ | **解決済み**: `fall-detection-ca3o8` v4 を選定 (10,787枚) |
+| 3 | DiverseFall10500のデータ品質確認 | ダウンロード後にアノテーション品質を目視確認する | 中 | 未着手 (最小構成で精度不十分な場合に追加) |
+| 4 | Grayscale変換後の人物検出精度への影響 | 色情報なしでの検出精度を小規模実験で確認する必要がある | 中 | 未着手 (F-003-3以降) |
+| 5 | ~~アスペクト比判定の閾値の予備検証~~ | ~~学習データのBBoxアスペクト比分布から適切な閾値を事前検討する~~ | ~~中~~ | **解決済み**: 品質チェックで分布を確認。縦長71.4% vs 横長28.6%で w/h=1.0 の閾値が妥当 |
+| 6 | Le2i/UR Fall Detectionの入手手続き | 研究用データセットの利用申請が必要な場合の手続き確認 | 低 | 未着手 (最小構成で精度不十分な場合に追加) |
+| 7 | 独自撮影データの必要性判断 | 公開データセットで十分な精度が得られない場合、EK-RA8P1のカメラで独自撮影データを追加する | 低 (精度評価後) | 未着手 |
 
 ---
 
@@ -757,7 +954,9 @@ Issue #19の受け入れ条件として、3種類以上の転倒シーンバリ�
 ### 10.2 ツール・ライブラリ
 
 - [pycocotools](https://github.com/cocodataset/cocoapi) - COCO APIライブラリ
+- [Roboflow Python SDK](https://github.com/roboflow/roboflow-python) - Roboflowデータセットダウンロード用
 - [Albumentations](https://albumentations.ai/) - データ拡張ライブラリ
+- [OpenCV (opencv-python-headless)](https://github.com/opencv/opencv-python) - 画像処理ライブラリ
 - [CVAT](https://www.cvat.ai/) - Computer Vision Annotation Tool
 - [LabelImg](https://github.com/HumanSignal/labelImg) - 画像アノテーションツール
 - [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) - 半自動アノテーション用
@@ -781,3 +980,4 @@ Issue #19の受け入れ条件として、3種類以上の転倒シーンバリ�
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-03-02 | 1.0 | 初版作成 | Claude Code |
+| 2026-03-03 | 1.1 | Step 1-6の実行結果を反映。実際に使用したスクリプト名・コマンド・実行結果・前提条件を追記。Roboflowプロジェクト詳細 (fall-detection-ca3o8 v4) を追記。Section 9の解決済み項目を更新 | Claude Code |
