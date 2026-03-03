@@ -50,3 +50,9 @@ nul
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Dataset (images and downloads - reproducible via scripts)
+dataset/downloads/
+dataset/coco_person/
+dataset/roboflow_fall/
+dataset/merged/
