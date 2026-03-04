@@ -614,6 +614,15 @@ Step 1: データセット準備 (F-003-2)
        |
        v
 Step 2: モデル学習 (本レポート)
+  ※ GPU環境がない場合は Google Colab ノートブックを使用する:
+    dataset/scripts/train_yolo_fastest_colab.ipynb
+
+  [事前準備]
+    cd mimamori-sense/dataset/merged
+    zip -r fall_detection_dataset.zip images/ labels/
+    → fall_detection_dataset.zip を Google Drive のマイドライブ直下にアップロード
+    → ノートブックを Colab で開き、ランタイムを GPU (T4) に変更して実行
+
   [パスB] python train.py --data data.yaml --cfg yolo-fastest-1.1.cfg
        |
        v
