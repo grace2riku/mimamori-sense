@@ -71,9 +71,55 @@ pip install mera                      # Renesas提供
 
 ## 3. 学習アプローチ
 
-2つの学習パスが利用可能である。**パスB (PyTorch / Nota-NetsPresso)** を推奨する。モダンな学習パイプラインとONNXエクスポートツールが充実しているためである。
+### 3.0 実行結果サマリと方針変更
 
-### 3.1 パスA: Darknet (Cフレームワーク)
+初版レポートでは パスA (Darknet) と パスB (Nota-NetsPresso) の2つを検討し、パスBを推奨した。
+しかし実際の実行では両パスとも問題が発生したため、**パスC (Ultralytics YOLOv8n)** に切り替えて学習を完了した。
+
+#### 方針変更の経緯
+
+| 段階 | 内容 | 結果 |
+|------|------|------|
+| 当初計画 | YOLO-Fastest v1.1 を Darknet で学習 | — |
+| Colab実行 (パスA) | Darknet ビルド・学習を試行 | **失敗**: 下記の問題が多発 |
+| 方針変更 | Ultralytics YOLOv8n に切り替え | **成功**: mAP@0.5 = 67.8% |
+
+#### Darknet で発生した問題 (パスA 失敗の理由)
+
+| 問題 | 詳細 | 予見可能だったか |
+|------|------|-----------------|
+| OpenCVヘッダ不足 | `libopencv-dev` が Colab に未インストール | はい |
+| tensorflow-cpu 競合 | Colab の GPU 版 TF を上書き | はい |
+| numpy 破損 | pip install による numpy ダウングレードで scikit-learn 等が動作不能 | はい |
+| `-show` で Segfault | ヘッドレス環境で OpenCV GUI を起動しようとしてクラッシュ | はい |
+| ラベルパス置換不動作 | `images/` → `labels/` の自動置換が機能せず、ラベルなしで学習が進行 | はい |
+| `cp *.txt` 引数上限超過 | 32,853 ファイルのコピーでシェル引数上限を超過 | はい |
+| cuDNN エラー | mAP 評価時に `CUDNN_STATUS_BAD_PARAM` | 部分的に予見可能 |
+| mAP 3.42% | ラベル問題修正後も channels=1 の cfg が正しく動作せず | 実行前に検証すべきだった |
+
+**教訓**: ノートブックを Colab 上で実際にテスト実行せずに提供した。環境固有の問題は事前テストで発見できた。
+
+#### パスC (Ultralytics YOLOv8n) を選択した理由
+
+1. **環境構築が `pip install ultralytics` のみ** — ビルドエラーのリスクがない
+2. **ラベル読み込みが標準対応** — images/labels ディレクトリ構造をそのまま認識
+3. **学習・評価・エクスポートが Python API で完結** — デバッグが容易
+4. **COCO 事前学習済み重みが利用可能** — 転移学習で少ないエポックでも精度が出やすい
+
+#### モデル変更の影響
+
+| 項目 | 当初計画 (YOLO-Fastest) | 実行結果 (YOLOv8n) |
+|------|------------------------|-------------------|
+| パラメータ数 | 約0.24M | 約3.0M |
+| INT8 モデルサイズ | 約300KB (推定) | 3,149KB (実測) |
+| アリーナ 432KB 制約 | 収まる見込み | **超過 (要対策)** |
+| 入力チャネル | 1 (Grayscale) | 3 (RGB) |
+| mAP@0.5 | 未達成 | 67.8% |
+
+YOLOv8n はモデルサイズが大きいため MCU の 432KB アリーナ制約を満たさない。
+MCU デプロイ時にはモデル小型化（プルーニング、カスタムアーキテクチャ等）が必要である。
+
+### 3.1 パスA: Darknet (Cフレームワーク) — 実行済み・失敗
 
 **リポジトリ**: [dog-qiuqiu/Yolo-Fastest](https://github.com/dog-qiuqiu/Yolo-Fastest)
 
@@ -146,7 +192,7 @@ person
 - `backup/yolo-fastest-1.1-fall_best.weights` (最良mAPチェックポイント)
 - `backup/yolo-fastest-1.1-fall_final.weights`
 
-### 3.2 パスB: PyTorch / Nota-NetsPresso (推奨)
+### 3.2 パスB: PyTorch / Nota-NetsPresso (未実行)
 
 **リポジトリ**: [Nota-NetsPresso/ModelZoo-YOLOFastest-for-ARM-U55-M85](https://github.com/Nota-NetsPresso/ModelZoo-YOLOFastest-for-ARM-U55-M85)
 
@@ -225,6 +271,69 @@ python export.py \
 ```
 
 出力: `best.onnx`
+
+### 3.3 パスC: Ultralytics YOLOv8n (実行済み・採用)
+
+パスA失敗後に採用した学習パス。Google Colab 上で実行。
+
+#### 3.3.1 使用ノートブック
+
+`dataset/scripts/train_yolov8_colab.ipynb`
+
+#### 3.3.2 環境
+
+| 項目 | 値 |
+|------|-----|
+| プラットフォーム | Google Colab |
+| GPU | NVIDIA L4 (24GB VRAM) |
+| フレームワーク | Ultralytics 8.4.19 |
+| PyTorch | 2.10.0+cu128 |
+| Python | 3.12.12 |
+
+#### 3.3.3 学習パラメータ
+
+| パラメータ | 値 | 備考 |
+|-----------|-----|------|
+| ベースモデル | yolov8n.pt | COCO事前学習済み (転移学習) |
+| 入力サイズ | 192x192 | MCUデプロイ先に合わせる |
+| 入力チャネル | 3 (RGB) | ※当初計画の1chから変更 |
+| バッチサイズ | 64 | |
+| エポック数 | 100 | |
+| オプティマイザ | SGD | |
+| 学習率 (初期) | 0.01 | |
+| 学習率 (最終) | 0.01 × lr_f | Cosineスケジュール |
+| Momentum | 0.937 | |
+| Weight decay | 0.0005 | |
+| Warmupエポック | 3.0 | |
+| hsv_h / hsv_s | 0.0 / 0.0 | グレースケール運用を想定し無効化 |
+| hsv_v | 0.4 | 明度変換のみ有効 |
+| mosaic | 1.0 | |
+
+#### 3.3.4 実行結果
+
+| メトリクス | 値 |
+|-----------|-----|
+| mAP@0.5 | **67.8%** |
+| mAP@0.5:0.95 | 42.4% |
+| Precision | 80.4% |
+| Recall | 59.3% |
+| 学習時間 | 2.5時間 (L4 GPU) |
+| best.pt サイズ | 6.2MB |
+
+#### 3.3.5 モデル変換結果
+
+| 形式 | サイズ |
+|------|--------|
+| ONNX (FP32) | 11,828 KB (11.6 MB) |
+| TFLite FP32 | 11,807 KB (11.5 MB) |
+| TFLite INT8 | **3,149 KB (3.1 MB)** |
+
+#### 3.3.6 INT8モデル詳細
+
+```
+Input:  shape=[1, 192, 192, 3] dtype=int8 scale=0.00392157 zero_point=-128
+Output: shape=[1, 5, 756]      dtype=int8 scale=0.89210844 zero_point=-128
+```
 
 ---
 
@@ -551,9 +660,21 @@ RUHMI mcu_quantize.py は量子化品質を自動検証する:
 
 ---
 
-## 9. 提供スクリプト
+## 9. 提供スクリプト・ノートブック
 
-### 9.1 dataset/scripts/train_darknet.sh
+### 9.1 dataset/scripts/train_yolov8_colab.ipynb (推奨)
+
+Ultralytics YOLOv8n を Google Colab 上で学習するノートブック。
+環境構築・学習・評価・ONNX/TFLite変換を一連のセルで実行できる。
+
+**使用方法**: セクション10.1 の再現手順を参照。
+
+### 9.2 dataset/scripts/train_yolo_fastest_colab.ipynb (非推奨)
+
+Darknet ベースの YOLO-Fastest 学習ノートブック。
+Colab 上で多数の問題が発生したため非推奨。記録として残す。
+
+### 9.3 dataset/scripts/train_darknet.sh
 
 PyTorch (パスB) とDarknet (パスA) の両方に対応する学習起動スクリプト。
 
@@ -565,7 +686,7 @@ bash dataset/scripts/train_darknet.sh pytorch 192 300 64
 bash dataset/scripts/train_darknet.sh darknet 192
 ```
 
-### 9.2 dataset/scripts/convert_to_tflite.py
+### 9.4 dataset/scripts/convert_to_tflite.py
 
 モデル変換スクリプト: ONNX → TFLite (FP32/INT8)。
 
@@ -583,7 +704,7 @@ python dataset/scripts/convert_to_tflite.py \
     --inspect --input model_int8.tflite
 ```
 
-### 9.3 dataset/scripts/evaluate_model.py
+### 9.5 dataset/scripts/evaluate_model.py
 
 モデル評価・検査ツール。
 
@@ -605,55 +726,127 @@ python dataset/scripts/evaluate_model.py \
 
 ## 10. End-to-Endワークフロー
 
+### 10.1 再現手順 (Google Colab + Ultralytics YOLOv8n)
+
+以下は実際に実行し成功した手順である。次回実行時はこの手順に従うこと。
+
+#### Step 1: データセットZIP作成 (ローカルPC)
+
+```bash
+cd mimamori-sense/dataset/merged
+# images/ と labels/ のみを圧縮する (obj.data等は不要)
+zip -r fall_detection_dataset.zip images/ labels/
 ```
-Step 1: データセット準備 (F-003-2)
-  dataset/scripts/download_coco_person.py
-  dataset/scripts/download_roboflow_fall.py
-  dataset/scripts/merge_and_split.py
-  dataset/scripts/augment_offline.py
-       |
-       v
-Step 2: モデル学習 (本レポート)
-  ※ GPU環境がない場合は Google Colab ノートブックを使用する:
-    dataset/scripts/train_yolo_fastest_colab.ipynb
 
-  [事前準備]
-    cd mimamori-sense/dataset/merged
-    zip -r fall_detection_dataset.zip images/ labels/
-    → fall_detection_dataset.zip を Google Drive のマイドライブ直下にアップロード
-    → ノートブックを Colab で開き、ランタイムを GPU (T4) に変更して実行
+**注意**: Windows環境では `zip` コマンドがない場合がある。PowerShellを使用:
+```powershell
+Compress-Archive -Path 'dataset\merged\images', 'dataset\merged\labels' `
+    -DestinationPath 'dataset\fall_detection_dataset.zip'
+```
 
-  [パスB] python train.py --data data.yaml --cfg yolo-fastest-1.1.cfg
+ファイル数が多い場合（32,853枚×2）、数十分かかる。
+
+#### Step 2: Google Drive にアップロード
+
+`fall_detection_dataset.zip` を Google Drive のマイドライブ直下にアップロード。
+
+#### Step 3: Colab ノートブック実行
+
+1. `dataset/scripts/train_yolov8_colab.ipynb` を Google Drive にアップロード
+2. 右クリック →「Google Colaboratory」で開く
+3. メニュー「ランタイム」→「ランタイムのタイプを変更」→ **GPU (T4 または L4)** を選択
+4. セルを上から順番に実行
+
+ノートブック内のステップ:
+```
+Step 1: 環境構築
+  pip install ultralytics onnx onnx2tf onnxsim
        |
        v
-Step 3: ONNXエクスポート
-  python export.py --weights best.pt --img-size 192
+Step 2: データセット準備
+  Google Drive マウント → ZIP展開 → data.yaml 作成
        |
        v
-Step 4: TFLite FP32変換
-  python dataset/scripts/convert_to_tflite.py --onnx best.onnx
+Step 3: モデル学習
+  YOLOv8n, 192x192, 100エポック, batch=64
+  → train/weights/best.pt, train/weights/last.pt
        |
        v
-Step 5: INT8量子化 + MCUコード生成
-  python scripts/mcu_quantize.py models_fp32 deploy_out --ethos
-  [代替: python scripts/mcu_deploy.py models_int8 deploy_out --ethos]
+Step 4: 精度評価 (mAP)
+  model.val() で検証・テストデータを評価
        |
        v
-Step 6: 精度評価
-  python dataset/scripts/evaluate_model.py --inspect model_int8.tflite
-  python dataset/scripts/evaluate_model.py --eval --model model_int8.tflite --data val/
+Step 5: ONNX エクスポート
+  model.export(format='onnx', imgsz=192)
        |
        v
-Step 7: 生成C99コードをe2studioプロジェクトに統合
-  deploy_out/<model>/build/MCU/compilation/src/* を
-  e2studio_CPU0/src/ai_application/mera/ にコピー
+Step 6: TFLite FP32/INT8 変換
+  onnx2tf → SavedModel → TFLite FP32
+  → INT8量子化 (キャリブレーション画像200枚)
+       |
+       v
+Step 7: 成果物を Google Drive に保存
+  best.pt, model.onnx, model_fp32.tflite, model_int8.tflite
+```
+
+#### Step 4: (今後) RUHMI/MERA デプロイ
+
+```bash
+# MERA SDK ライセンス取得後に実施
+python scripts/mcu_quantize.py models_fp32 deploy_out --ethos
+# または
+python scripts/mcu_deploy.py models_int8 deploy_out --ethos
+```
+
+#### Step 5: (今後) e2studio プロジェクトに統合
+
+```
+deploy_out/<model>/build/MCU/compilation/src/* を
+e2studio_CPU0/src/ai_application/mera/ にコピー
+```
+
+### 10.2 参考: 当初計画のワークフロー (Darknet版・失敗)
+
+当初計画では以下のワークフローを想定していたが、Step 2 で Darknet の問題が多発し断念した。
+記録として残す。使用ノートブック: `dataset/scripts/train_yolo_fastest_colab.ipynb` (非推奨)
+
+```
+Step 1: Darknet ビルド (AlexeyAB/darknet)
+Step 2: cfg ファイル作成 (192x192x1, 1クラス)
+Step 3: アンカー計算 (darknet detector calc_anchors)
+Step 4: 学習 (darknet detector train)
+Step 5: mAP評価 (darknet detector map)
+Step 6: ONNX変換 (darknet2pytorch → torch.onnx.export)
+Step 7: TFLite変換 (onnx2tf)
+→ Step 4 で mAP 3.42% に留まり、実用に至らず
 ```
 
 ---
 
 ## 11. トラブルシューティング
 
-### 11.1 よくある問題と対処
+### 11.1 Google Colab 固有の問題 (実際に遭遇した問題)
+
+| 問題 | 原因 | 対処方法 |
+|------|------|---------|
+| `numpy.dtype size changed` | pip install で numpy がダウングレードされた | 「セッションを再起動する」で解決 |
+| pip の dependency conflict 警告 | onnx2tf 等が古い numpy を要求 | 無視してよい (動作に影響なし) |
+| セッション切断で作業消失 | Colab 無料版の制限 (最大12時間) | Google Drive にチェックポイント保存 |
+| `drive.mount()` エラー | ランタイム再起動後にマウント解除 | 再度 `drive.mount()` を実行 |
+
+### 11.2 Darknet 固有の問題 (パスA で遭遇した問題)
+
+| 問題 | 原因 | 対処方法 |
+|------|------|---------|
+| Darknet ビルド失敗 | `libopencv-dev` 未インストール | `apt-get install libopencv-dev` |
+| `tensorflow-cpu` 競合 | Colab GPU版TF を上書き | `tensorflow-cpu` を使用しない |
+| ラベルファイル読み込み失敗 | `images/`→`labels/` パス置換が不動作 | ラベルを `images/` にもコピー (`find ... -exec cp`) |
+| `cp *.txt` 失敗 | ファイル数が多くシェル引数上限超過 | `find ... -exec cp {} dst/ \;` を使用 |
+| `-show` で Segfault | ヘッドレス環境で GUI 起動 | `-show` を外すか `-dont_show` を使用 |
+| cuDNN エラー (mAP計算時) | depthwise conv + channels=1 の組み合わせ | `-map` を外して学習、mAP は別途評価 |
+| mAP 3.42% | ラベルが正しく読めていなかった / cfg の問題 | **Ultralytics に切り替えで解決** |
+
+### 11.3 一般的な問題と対処
 
 | 問題 | 対処方法 |
 |---|---|
@@ -679,14 +872,24 @@ Step 7: 生成C99コードをe2studioプロジェクトに統合
 
 ## 12. 未解決事項とリスク
 
+### 12.1 解決済み
+
+| 項目 | 当初の状態 | 解決方法 |
+|------|-----------|---------|
+| personクラスのアンカー再計算 | 未実施 | Python K-means で計算済み: `12,23, 32,70, 85,71, 68,140, 136,105, 166,168` (Darknet版で使用) |
+| Grayscale vs RGB学習性能 | 未検証 | RGB (3ch) で学習し mAP 67.8% を確認。MCUデプロイ時に1ch対応を検討 |
+| INT8量子化精度劣化 | 未検証 | TFLite PTQ で INT8 変換完了 (3,149KB)。RUHMI量子化は今後 |
+
+### 12.2 未解決 (今後の課題)
+
 | 項目 | 状態 | リスク | 対策 |
-|---|---|---|---|
-| personクラスのアンカー再計算 | 未実施 | 中 | personデータセットでcalc_anchorsを実行 |
-| Grayscale vs RGB学習性能 | 未検証 | 中 | 両方で比較; 必要に応じてRGBにフォールバック |
-| INT8量子化精度劣化 | 未検証 | 低 | YOLO-Fastestは良好な量子化特性を持つ |
+|------|------|--------|------|
+| mAP 67.8% (目標90%未達) | 要改善 | 高 | エポック数増加 (100→300)、入力サイズ拡大 (192→320)、データセット見直し |
+| INT8モデル 3.1MB (アリーナ432KB超過) | 要対策 | 高 | YOLOv8n以外の小型モデル検討、プルーニング、カスタムアーキテクチャ |
+| RGB→Grayscale変換 | 未対応 | 中 | MCUデプロイ時にチャネル複製 (1ch→3ch) またはGrayscaleで再学習 |
 | RUHMI/MERA SDKの利用可否 | ライセンス必要 | 高 | Renesasに評価ライセンスを問い合わせ |
-| Nota-NetsPressoリポジトリの互換性 | 未検証 | 中 | 最新バージョンでテスト |
-| 実データによるキャリブレーション | 未実施 | 低 | mcu_quantize.pyのgenerate_input_data()を修正 |
+| 実データによるキャリブレーション | 実施済み (200枚) | 低 | 必要に応じて枚数増加 |
+| Recall 59.3% (人物の4割を見逃し) | 要改善 | 高 | 信頼度閾値の調整、学習エポック増加、データセット品質改善 |
 
 ---
 
@@ -694,13 +897,14 @@ Step 7: 生成C99コードをe2studioプロジェクトに統合
 
 1. [YOLO-Fastest (Darknet)](https://github.com/dog-qiuqiu/Yolo-Fastest)
 2. [Nota-NetsPresso YOLO-Fastest for ARM U55/M85](https://github.com/Nota-NetsPresso/ModelZoo-YOLOFastest-for-ARM-U55-M85)
-3. [RUHMI Framework MCU](../../reference_projects/ruhmi-framework-mcu/)
-4. [RUHMI Models Tested](../../reference_projects/ruhmi-framework-mcu/docs/models_tested.md)
-5. [RUHMI Operator Support](../../reference_projects/ruhmi-framework-mcu/docs/operator_support.md)
-6. [RUHMI Runtime API](../../reference_projects/ruhmi-framework-mcu/docs/runtime_api.md)
-7. [顔認識サンプル](../../reference_projects/ruhmi-framework-mcu/application_examples/face_detection/)
-8. [F-003-1: 転倒検出AIモデル調査・選定レポート](f003_01_model_selection_report.md)
-9. [F-003-2: 転倒検出AIモデルの学習データセット準備レポート](f003_02_dataset_preparation_report.md)
+3. [Ultralytics YOLOv8](https://docs.ultralytics.com/)
+4. [RUHMI Framework MCU](../../reference_projects/ruhmi-framework-mcu/)
+5. [RUHMI Models Tested](../../reference_projects/ruhmi-framework-mcu/docs/models_tested.md)
+6. [RUHMI Operator Support](../../reference_projects/ruhmi-framework-mcu/docs/operator_support.md)
+7. [RUHMI Runtime API](../../reference_projects/ruhmi-framework-mcu/docs/runtime_api.md)
+8. [顔認識サンプル](../../reference_projects/ruhmi-framework-mcu/application_examples/face_detection/)
+9. [F-003-1: 転倒検出AIモデル調査・選定レポート](f003_01_model_selection_report.md)
+10. [F-003-2: 転倒検出AIモデルの学習データセット準備レポート](f003_02_dataset_preparation_report.md)
 
 ---
 
@@ -709,3 +913,4 @@ Step 7: 生成C99コードをe2studioプロジェクトに統合
 | 日付 | バージョン | 変更内容 | 作成者 |
 |------|-----------|---------|--------|
 | 2026-03-04 | 1.0 | 初版作成 | Claude Code |
+| 2026-03-05 | 1.1 | 実行結果反映: Darknet失敗→Ultralytics YOLOv8nに変更、実測値(mAP 67.8%, INT8 3.1MB)追記、再現手順整備、トラブルシューティング拡充 | Claude Code |
