@@ -1,0 +1,58 @@
+# YOLOv8-nano-slim: 転倒検出用カスタム軽量モデル (精度優先版)
+# Issue #102 (F-003-3b) / Issue #103 (F-003-3c)
+#
+# YOLOv8n (depth=0.33, width=0.25, 3.0M params) を縮小しつつ、
+# picoより高い精度を目指す。Arena 432KB 制約ギリギリの構成。
+#
+# 推定パラメータ数: 約0.35M
+# 推定INT8サイズ: 約340KB (実測457KB — Arena超過のため不採用)
+#
+# 変更点 (YOLOv8n からの差分):
+#   - width_multiple: 0.25 → 0.12 (チャネル数を削減)
+#   - max_channels: 1024 → 256 (深い層のチャネル数を制限)
+#   - ch: 3 → 1 (Grayscale入力, F-003-3c対応)
+#   - nc: 80 → 1 (personクラスのみ)
+#
+# 実験結果: mAP50=50.7% (pico比+4.8pt) だがINT8=457KBでArena超過(432KB)
+
+# Parameters
+nc: 1  # number of classes (person only)
+ch: 1  # input channels (Grayscale)
+
+scales:
+  # [depth, width, max_channels]
+  nano-slim: [0.33, 0.12, 256]  # 軽量構成 (精度優先、ただしArena超過で不採用)
+
+# YOLOv8 backbone
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]       # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]      # 1-P2/4
+  - [-1, 3, C2f, [128, True]]
+  - [-1, 1, Conv, [256, 3, 2]]      # 3-P3/8
+  - [-1, 6, C2f, [256, True]]
+  - [-1, 1, Conv, [512, 3, 2]]      # 5-P4/16
+  - [-1, 6, C2f, [512, True]]
+  - [-1, 1, Conv, [1024, 3, 2]]     # 7-P5/32
+  - [-1, 3, C2f, [1024, True]]
+  - [-1, 1, SPPF, [1024, 5]]        # 9
+
+# YOLOv8 head
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat, [1]]       # cat backbone P4
+  - [-1, 3, C2f, [512]]             # 12
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat, [1]]       # cat backbone P3
+  - [-1, 3, C2f, [256]]             # 15 (P3/8-small)
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]      # cat head P4
+  - [-1, 3, C2f, [512]]             # 18 (P4/16-medium)
+
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]       # cat head P5
+  - [-1, 3, C2f, [1024]]            # 21 (P5/32-large)
+
+  - [[15, 18, 21], 1, Detect, [nc]] # Detect(P3, P4, P5)
