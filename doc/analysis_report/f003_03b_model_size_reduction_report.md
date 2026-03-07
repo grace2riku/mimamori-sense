@@ -475,8 +475,8 @@ MERA SDK が利用可能になった時点で:
 
 | 項目 | 状態 | 次のアクション |
 |------|------|---------------|
-| MERA SDK ライセンス | 未取得 | Issue #104 で対応中 |
-| pico モデルの実際の Arena サイズ | 未検証 | MERA SDK 取得後に検証 |
+| MERA SDK ライセンス | **解消済み** | Apache 2.0で無償利用可能 (Issue #104で確認) |
+| pico モデルの実際の Arena サイズ | 未検証 | RUHMI Framework で変換後に確認 |
 | SDRAM への Arena 配置可否 | 公式実例なし | Renesas に直接問い合わせ (推奨しないが選択肢として残す) |
 | Knowledge Distillation の効果 | 未検証 | Phase 1 の精度が不十分な場合に検討 |
 
