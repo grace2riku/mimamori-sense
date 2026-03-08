@@ -18,19 +18,26 @@
 
 ---
 
-### 手順1: FSPコンポーネントパックのインストール確認
+### 手順1: FSPコンポーネントパックの確認
 
-1. e2 studioのメニューから `Renesas Views` > `Renesas Software Installer` を開く
-2. 以下のパックがインストール済みか確認する:
-   - Arm.CMSIS-NN
-   - Arm.CMSIS-DSP
-   - Arm.Ethos-U-Core-Driver
-   - Google.TFLM-Core-Lib
-   - Google.TFLM-CMSIS-NN-Kernel
-   - Google.Flatbuffers
-3. 未インストールのパックがあれば、チェックを入れてインストールする
+以下のコンポーネントがFSPに同梱されているか確認する。
 
-> **注意**: FSP 6.3.0環境ではパックバージョンが `+fsp.6.3.0` となっている可能性がある。利用可能な最新互換バージョンを選択すること。
+1. `e2studio_CPU0/configuration.xml` を開く
+2. **Stacks** タブで任意のスレッドを選択し、**New Stack** をクリックする
+3. モジュール一覧に以下が表示されるか確認する:
+   - TFLM Core Lib (Google.TFLM-Core-Lib)
+   - CMSIS-NN (Arm.CMSIS-NN)
+   - Ethos-U Core Driver (Arm.Ethos-U-Core-Driver)
+   - Flatbuffers (Google.Flatbuffers)
+   - TFLM CMSIS-NN Kernel (Google.TFLM-CMSIS-NN-Kernel)
+   - CMSIS-DSP (Arm.CMSIS-DSP)
+   - Ethos-U Driver Wrapper (rm_ethosu)
+4. 表示されれば、パックはFSP 6.3.0に同梱済みであり追加インストールは不要（手順2へ進む）
+5. 表示されない場合は、以下のいずれかで対応する:
+   - e2 studioのメニュー `File` > `New` > `FSP Configuration` 等からFSP Pack Managerを開き、該当パックをインストールする
+   - FSP 6.3.0のリリースノートでAI関連パックの同梱状況を確認する
+
+> **注意**: `Renesas Views` > `Renesas Software Installer` はe2 studioプラグイン（Renesas QE等）のインストーラであり、FSPコンポーネントパックの管理画面ではない。
 
 ---
 
