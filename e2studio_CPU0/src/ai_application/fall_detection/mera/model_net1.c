@@ -60,11 +60,11 @@
 #include "sub_0002_net1_invoke.h"
 
 // Buffers for CPU units
-int8_t buf_serving_default_images_0[110592];
-int8_t buf_model_78_tf_reshape_23_Reshape_70431[3024];
-int8_t buf_model_78_tf_strided_slice_1_StridedSlice_70443[1512];
-int8_t buf_model_78_tf_strided_slice_StridedSlice_70445[1512];
-int8_t buf_PartitionedCall_0_70452[3780];
+int8_t buf_net1_serving_default_images_0[110592];
+int8_t buf_net1_model_78_tf_reshape_23_Reshape_70431[3024];
+int8_t buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443[1512];
+int8_t buf_net1_model_78_tf_strided_slice_StridedSlice_70445[1512];
+int8_t buf_net1_PartitionedCall_0_70452[3780];
 
 // Arenas for CPU units
 uint8_t compute_arena_sub_0001_net1[kBufferSize_sub_0001_net1];
@@ -84,16 +84,14 @@ int8_t* GetModelOutputPtr_net1_PartitionedCall_0_70452() {
 void RunModel_net1(bool clean_outputs) {
   // Buffers for NPU units
   int8_t* buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_math_sigmoid_56_Sigmoid1_70442);
-  int8_t* buf_net1_model_78_tf_reshape_23_Reshape_70431 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_reshape_23_Reshape_70431);
-  int8_t* buf_net1_PartitionedCall_0_70452 = (int8_t*) (sub_0002_net1_arena + sub_0002_net1_address_PartitionedCall_0_70452);
-  int8_t* buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443 = buf_model_78_tf_strided_slice_1_StridedSlice_70443;
-  int8_t* buf_net1_model_78_tf_strided_slice_StridedSlice_70445 = buf_model_78_tf_strided_slice_StridedSlice_70445;
+  int8_t* buf_net1_model_78_tf_reshape_23_Reshape_70431_npu = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_reshape_23_Reshape_70431);
+  int8_t* buf_net1_PartitionedCall_0_70452_npu = (int8_t*) (sub_0002_net1_arena + sub_0002_net1_address_PartitionedCall_0_70452);
 
 // NPU Unit
   sub_0000_net1_invoke(clean_outputs);
 
 // CPU Unit
-  compute_sub_0001_net1(compute_arena_sub_0001_net1, buf_net1_model_78_tf_reshape_23_Reshape_70431, buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443, buf_net1_model_78_tf_strided_slice_StridedSlice_70445  );
+  compute_sub_0001_net1(compute_arena_sub_0001_net1, buf_net1_model_78_tf_reshape_23_Reshape_70431_npu, buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443, buf_net1_model_78_tf_strided_slice_StridedSlice_70445  );
 
 // NPU Unit
   sub_0002_net1_invoke(clean_outputs);
