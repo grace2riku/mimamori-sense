@@ -6,7 +6,7 @@
         #endif
 /* Number of interrupts allocated */
 #ifndef VECTOR_DATA_IRQ_COUNT
-#define VECTOR_DATA_IRQ_COUNT    (19)
+#define VECTOR_DATA_IRQ_COUNT    (20)
 #endif
 /* ISR prototypes */
 void sci_b_uart_rxi_isr(void);
@@ -28,6 +28,7 @@ void mipi_csi_dl_isr(void);
 void mipi_csi_vc_isr(void);
 void mipi_csi_pm_isr(void);
 void mipi_csi_gst_isr(void);
+void rm_ethosu_isr(void);
 
 /* Vector table allocations */
 #define VECTOR_NUMBER_SCI8_RXI ((IRQn_Type) 0) /* SCI8 RXI (Receive data full) */
@@ -68,8 +69,10 @@ void mipi_csi_gst_isr(void);
 #define MIPICSI_PM_IRQn          ((IRQn_Type) 17) /* MIPICSI PM (Power Management interrupt) */
 #define VECTOR_NUMBER_MIPICSI_GST ((IRQn_Type) 18) /* MIPICSI GST (Generic Short Packet interrupt) */
 #define MIPICSI_GST_IRQn          ((IRQn_Type) 18) /* MIPICSI GST (Generic Short Packet interrupt) */
+#define VECTOR_NUMBER_NPU_IRQ ((IRQn_Type) 19) /* NPU IRQ (NPU IRQ) */
+#define NPU_IRQ_IRQn          ((IRQn_Type) 19) /* NPU IRQ (NPU IRQ) */
 /* The number of entries required for the ICU vector table. */
-#define BSP_ICU_VECTOR_NUM_ENTRIES (19)
+#define BSP_ICU_VECTOR_NUM_ENTRIES (20)
 
 #ifdef __cplusplus
         }

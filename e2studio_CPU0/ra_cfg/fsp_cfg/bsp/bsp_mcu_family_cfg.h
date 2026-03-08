@@ -179,7 +179,7 @@
             (1U << 1) /* SRAM1 */ | \
             (1U << 2) /* SRAM2 */ | \
             (1U << 3) /* SRAM3 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 16) /* NPU */ | \
+            (((1 > 0) ? 0U : 1U) << 16) /* NPU */ | \
             (1U << 22) /* DTC0_DMAC0 */ | \
             (1U << 23) /* DTC1_DMAC1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 31) /* ELC */)
