@@ -5,12 +5,12 @@
  * Implements the "ai" command for NT-Shell, providing subcommands
  * to inspect AI model configuration and runtime status.
  *
- * Currently supports (F-003-5):
- *   ai model  - Display model information (input/output sizes, arena sizes)
- *   ai config - Display AI application configuration constants
+ * Currently supports (F-003-5, F-003-6):
+ *   ai model   - Display model information (input/output sizes, arena sizes)
+ *   ai config  - Display AI application configuration constants
+ *   ai preproc - Preprocessing status/timing (F-003-6)
  *
- * Future subcommands (F-003-6 ~ F-003-8):
- *   ai preproc - Preprocessing status/timing
+ * Future subcommands (F-003-7 ~ F-003-8):
  *   ai status  - Inference thread state
  *   ai infer   - Manual inference trigger
  *   ai time    - Timing breakdown
@@ -26,6 +26,8 @@
 #include "jlink_console.h"
 #include "ai_application_config.h"
 #include "ai_cmd.h"
+#include "camera_layer/camera_utils.h"
+#include "camera_framebuffer.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -37,6 +39,7 @@
  *********************************************************************************************************************/
 static void ai_cmd_model(void);
 static void ai_cmd_config(void);
+static void ai_cmd_preproc(void);
 static void ai_cmd_help(void);
 
 /**********************************************************************************************************************
@@ -57,6 +60,8 @@ int usrcmd_ai(int argc, char **argv)
         ai_cmd_model();
     } else if (ntlibc_strcmp(argv[1], "config") == 0) {
         ai_cmd_config();
+    } else if (ntlibc_strcmp(argv[1], "preproc") == 0) {
+        ai_cmd_preproc();
     } else if (ntlibc_strcmp(argv[1], "help") == 0) {
         ai_cmd_help();
     } else {
@@ -161,6 +166,49 @@ static void ai_cmd_config(void)
 }
 
 /**
+ * Display preprocessing status and timing (F-003-6)
+ */
+static void ai_cmd_preproc(void)
+{
+    char buf[AI_CMD_BUF_SIZE];
+
+    print_to_console("=== AI Preprocessing Status (F-003-6) ===\r\n");
+
+    print_to_console("Function       : image_rgb565_to_rgb_int8()\r\n");
+
+    snprintf(buf, sizeof(buf), "Input          : %u x %u RGB565 (%u bytes)\r\n",
+             (unsigned int)CAMERA_FRAME_WIDTH,
+             (unsigned int)CAMERA_FRAME_HEIGHT,
+             (unsigned int)(CAMERA_FRAME_WIDTH * CAMERA_FRAME_HEIGHT * 2u));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "Output         : %d x %d x %d RGB INT8 (%d bytes)\r\n",
+             AI_INPUT_IMAGE_WIDTH, AI_INPUT_IMAGE_HEIGHT,
+             AI_INPUT_IMAGE_BYTE_PER_PIXEL,
+             AI_INPUT_IMAGE_WIDTH * AI_INPUT_IMAGE_HEIGHT * AI_INPUT_IMAGE_BYTE_PER_PIXEL);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "Crop offset    : %u px (center crop %u x %u -> %u x %u)\r\n",
+             (unsigned int)((CAMERA_FRAME_WIDTH - CAMERA_FRAME_HEIGHT) / 2u),
+             (unsigned int)CAMERA_FRAME_WIDTH,
+             (unsigned int)CAMERA_FRAME_HEIGHT,
+             (unsigned int)CAMERA_FRAME_HEIGHT,
+             (unsigned int)CAMERA_FRAME_HEIGHT);
+    print_to_console(buf);
+
+    print_to_console("Resize         : Nearest neighbor\r\n");
+    print_to_console("Normalization  : uint8 [0,255] -> int8 [-128,+127]\r\n");
+
+    snprintf(buf, sizeof(buf), "Call count     : %lu\r\n",
+             (unsigned long)camera_utils_get_preproc_count());
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "Last time      : %lu ms\r\n",
+             (unsigned long)camera_utils_get_preproc_time_ms());
+    print_to_console(buf);
+}
+
+/**
  * Display help for the ai command
  */
 static void ai_cmd_help(void)
@@ -169,10 +217,10 @@ static void ai_cmd_help(void)
     print_to_console("Subcommands:\r\n");
     print_to_console("  model   - Display model information (input/output sizes)\r\n");
     print_to_console("  config  - Display AI application configuration\r\n");
+    print_to_console("  preproc - Preprocessing status/timing (F-003-6)\r\n");
     print_to_console("  help    - Show this help\r\n");
     print_to_console("\r\n");
-    print_to_console("Future subcommands (F-003-6 ~ F-003-8):\r\n");
-    print_to_console("  preproc - Preprocessing status/timing\r\n");
+    print_to_console("Future subcommands (F-003-7 ~ F-003-8):\r\n");
     print_to_console("  status  - Inference thread state\r\n");
     print_to_console("  infer   - Manual inference trigger\r\n");
     print_to_console("  time    - Timing breakdown\r\n");
