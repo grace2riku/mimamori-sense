@@ -66,6 +66,7 @@
 #include "port/mipi_port.h"
 #include "port/lv_port_indev.h"
 #include "ui/ui_main_screen.h"
+#include "ai_application/ai_cmd.h"
 
 #include "lvgl.h"
 
@@ -125,6 +126,7 @@ static int usrcmd_mw(int argc, char **argv);
  *
  */
 static const cmd_table_t cmdlist[] = {
+    NTSHELL_CMD("ai",      "AI inference: ai model|config",              usrcmd_ai),
     NTSHELL_CMD("camera",  "Camera: camera thread|phy|csi|sensor|status|start|stop|capture|info|fb|display|test", usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
     NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
