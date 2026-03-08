@@ -1,5 +1,19 @@
 /* generated common source file - do not edit */
 #include "common_data.h"
+#include "ethosu_driver.h"
+struct ethosu_driver g_ethosu0;
+rm_ethosu_instance_ctrl_t g_rm_ethosu0_ctrl = { .p_dev = &g_ethosu0, };
+
+const rm_ethosu_cfg_t g_rm_ethosu0_cfg = {
+#if defined(VECTOR_NUMBER_NPU_IRQ)
+            .irq             = VECTOR_NUMBER_NPU_IRQ,
+#else
+		.irq = FSP_INVALID_VECTOR,
+#endif
+		.ipl = (12), .p_callback = NULL, .p_context = NULL, };
+
+const rm_ethosu_instance_t g_rm_ethosu0 = { .p_ctrl = &g_rm_ethosu0_ctrl,
+		.p_cfg = &g_rm_ethosu0_cfg, .p_api = &g_rm_ethosu_on_npu, };
 /* MIPI PHY Macros */
 #define MIPI_PHY_CLKSTPT   ((uint16_t)1183)
 #define MIPI_PHY_CLKBFHT   ((uint8_t)10 + 1)

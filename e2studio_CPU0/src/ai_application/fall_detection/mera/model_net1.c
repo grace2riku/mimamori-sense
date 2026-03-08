@@ -86,6 +86,8 @@ void RunModel_net1(bool clean_outputs) {
   int8_t* buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_math_sigmoid_56_Sigmoid1_70442);
   int8_t* buf_net1_model_78_tf_reshape_23_Reshape_70431 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_reshape_23_Reshape_70431);
   int8_t* buf_net1_PartitionedCall_0_70452 = (int8_t*) (sub_0002_net1_arena + sub_0002_net1_address_PartitionedCall_0_70452);
+  int8_t* buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443 = buf_model_78_tf_strided_slice_1_StridedSlice_70443;
+  int8_t* buf_net1_model_78_tf_strided_slice_StridedSlice_70445 = buf_model_78_tf_strided_slice_StridedSlice_70445;
 
 // NPU Unit
   sub_0000_net1_invoke(clean_outputs);

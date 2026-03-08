@@ -319,6 +319,7 @@
             <slot name="IRQ16.CPU0" secure="true"/>
             <slot name="IRQ17.CPU0" secure="true"/>
             <slot name="IRQ18.CPU0" secure="true"/>
+            <slot name="IRQ19.CPU0" secure="true"/>
         </peripheral>
     </partition>
     <zones>
@@ -543,6 +544,7 @@
             <assign peripheral="ICU.IRQ16"/>
             <assign peripheral="ICU.IRQ17"/>
             <assign peripheral="ICU.IRQ18"/>
+            <assign peripheral="ICU.IRQ19"/>
         </zone>
     </zones>
 </azone>
