@@ -47,10 +47,16 @@
 #include "ui/ui_main_screen.h"
 #include "jlink_console.h"
 
+#include "camera_layer/camera_utils.h"
+#include "common_util.h"
+#include "ai_application/ai_application_config.h"
+#include "ai_inference_thread_api.h"
+
 #include "lvgl.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "event_groups.h"
 
 #include "bsp_api.h"
 
@@ -73,6 +79,9 @@ static lv_timer_t *s_timer = NULL;
 
 /** True after at least one camera frame has been transferred to the display */
 static bool s_active = false;
+
+/** True after AI inference thread initialization is confirmed */
+static bool s_ai_init_done = false;
 
 /**
  * LVGL image descriptor for zero-copy camera display.
@@ -343,6 +352,31 @@ static void camera_display_timer_cb(lv_timer_t *timer)
     camera_display_update((const uint16_t *)frame,
                           CAMERA_FRAME_WIDTH,
                           CAMERA_FRAME_HEIGHT);
+
+    /* ---- AI inference pipeline: preprocess + notify (F-003-12) ---- */
+    if (!s_ai_init_done) {
+        /* Check if AI inference thread has completed initialization */
+        if (g_ai_app_event != NULL) {
+            EventBits_t bits = xEventGroupGetBits(g_ai_app_event);
+            if (bits & SOFTWARE_AI_INFERENCE_INIT_DONE) {
+                s_ai_init_done = true;
+            }
+        }
+    }
+
+    if (s_ai_init_done) {
+        /* Preprocess: RGB565 (768x450) -> RGB INT8 (192x192x3) */
+        image_rgb565_to_rgb_int8(frame, model_buffer_int8,
+                                  CAMERA_FRAME_WIDTH, CAMERA_FRAME_HEIGHT,
+                                  AI_INPUT_IMAGE_WIDTH, AI_INPUT_IMAGE_HEIGHT);
+
+        /* D-Cache clean: flush model_buffer_int8 so NPU DMA reads correct data */
+        SCB_CleanDCache_by_Addr((void *)model_buffer_int8,
+                                (int32_t)AI_INPUT_IMAGE_SIZE);
+
+        /* Notify AI inference thread that preprocessed image is ready */
+        xEventGroupSetBits(g_ai_app_event, AI_INFERENCE_INPUT_IMAGE_READY);
+    }
 
     s_time_total_ms = (uint32_t)(xTaskGetTickCount() - t_start);
 }
