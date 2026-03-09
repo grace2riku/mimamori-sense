@@ -40,14 +40,9 @@
 /**
  * MERA_INFERENCE_ENABLED controls whether MERA model functions are linked.
  *
- * When disabled (0), mera_invoke() / mera_input_ptr() / mera_output_ptr()
- * are not called, avoiding linking the ~307KB model weight data into FLASH.
- * This allows verifying the thread structure without FLASH overflow.
- *
- * TODO: Enable once FLASH partition is expanded or model data is relocated
- *       to SDRAM. See GitHub Issue for FLASH partition/model placement.
+ * Requires CPU0 FLASH partition >= 1MB (see Issue #115).
  */
-#define MERA_INFERENCE_ENABLED  (0)
+#define MERA_INFERENCE_ENABLED  (1)
 
 #if MERA_INFERENCE_ENABLED
 #include "ai_application/fall_detection/wrapper.h"
