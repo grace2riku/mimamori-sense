@@ -129,7 +129,7 @@
       <property id="config.bsp.option_setting.ofs2.dcdc" value="config.bsp.option_setting.ofs2.dcdc.enabled"/>
       <property id="config.bsp.option_setting.ofs2.cvm_reset" value="config.bsp.option_setting.ofs2.cvm_reset.disabled"/>
       <property id="config.bsp.option_setting.ofs2.npusa" value="config.bsp.option_setting.ofs2.npusa.secure"/>
-      <property id="config.bsp.option_setting.ofs2.npupa" value="config.bsp.option_setting.ofs2.npupa.unprivilege"/>
+      <property id="config.bsp.option_setting.ofs2.npupa" value="config.bsp.option_setting.ofs2.npupa.privilege"/>
       <property id="config.bsp.option_setting.sas" value="config.bsp.option_setting.sas.disabled"/>
       <property id="config.bsp.option_setting.sas.btsize" value="config.bsp.option_setting.sas.btsize.8k"/>
       <property id="config.bsp.option_setting.ofs1" value="config.bsp.option_setting.ofs1.disabled"/>
@@ -284,7 +284,7 @@
     </config>
     <config id="config.bsp.ra">
       <property id="config.bsp.common.main" value="0x400"/>
-      <property id="config.bsp.common.heap" value="0"/>
+      <property id="config.bsp.common.heap" value="0x8000"/>
       <property id="config.bsp.common.bootloader.xip_enable" value="config.bsp.common.bootloader.xip_enable.disabled"/>
       <property id="config.bsp.common.vcc" value="3300"/>
       <property id="config.bsp.common.checking" value="config.bsp.common.checking.disabled"/>
