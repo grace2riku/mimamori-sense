@@ -94,9 +94,8 @@ void RunModel_net1(bool clean_outputs) {
   int8_t* buf_net1_model_78_tf_reshape_23_Reshape_70431_npu = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_reshape_23_Reshape_70431);
   int8_t* buf_net1_PartitionedCall_0_70452_npu = (int8_t*) (sub_0002_net1_arena + sub_0002_net1_address_PartitionedCall_0_70452);
 
-// D-cache clean: flush CPU-written input data from D-cache to SDRAM
+// D-cache clean: flush CPU-written input data from D-cache to on-chip RAM
 // so NPU can read the latest preprocessed image via DMA.
-// (sub_0000 arena is on SDRAM which is cacheable on Cortex-M85)
   SCB_CleanDCache_by_Addr(
       (uint32_t *)(sub_0000_net1_arena + sub_0000_net1_address_serving_default_images_0),
       110592);
@@ -104,8 +103,8 @@ void RunModel_net1(bool clean_outputs) {
 // NPU Unit
   g_sub0000_last_rc = sub_0000_net1_invoke(clean_outputs);
 
-// D-cache invalidate: discard stale cached data for sub_0000 output regions
-// in SDRAM. NPU wrote fresh data via DMA but CPU D-cache still has old values.
+// D-cache invalidate: discard stale cached data for sub_0000 output regions.
+// NPU wrote fresh data via DMA but CPU D-cache still has old values.
   SCB_InvalidateDCache_by_Addr(
       (uint32_t *)buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442,
       756);

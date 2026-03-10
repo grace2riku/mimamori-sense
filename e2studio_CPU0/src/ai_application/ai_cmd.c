@@ -29,6 +29,7 @@
 #include "ai_inference_thread_api.h"
 #include "common_util.h"
 #include "common_data.h"
+#include "bsp_mcu_ofs_cfg.h"
 #include "fall_detection/fall_detection_postprocess.h"
 #include "fall_detection/mera/sub_0000_net1_tensors.h"
 #include "fall_detection/mera/sub_0000_net1_invoke.h"
@@ -676,8 +677,20 @@ static void ai_cmd_diag(void)
 
     print_to_console("=== MERA Pipeline Diagnosis ===\r\n");
 
+    /* NPU OFS2 configuration (security/privilege derived at init) */
+    {
+        uint32_t ofs2 = (uint32_t)BSP_CFG_OPTION_SETTING_OFS2;
+        uint32_t npusa = (ofs2 >> 2) & 1;  /* bit 2: 1=secure, 0=non-secure */
+        uint32_t npupa = (ofs2 >> 3) & 1;  /* bit 3: 1=unprivileged, 0=privileged */
+        snprintf(buf, sizeof(buf), "OFS2=0x%08lX NPUSA=%lu(%s) NPUPA=%lu(%s)\r\n",
+                 (unsigned long)ofs2,
+                 (unsigned long)npusa, npusa ? "Secure" : "NonSecure",
+                 (unsigned long)npupa, npupa ? "Unpriv" : "Priv");
+        print_to_console(buf);
+    }
+
     /* Pointer addresses */
-    snprintf(buf, sizeof(buf), "sub_0000_arena addr   : 0x%08lX (size %lu, SDRAM)\r\n",
+    snprintf(buf, sizeof(buf), "sub_0000_arena addr   : 0x%08lX (size %lu, SRAM)\r\n",
              (unsigned long)(uintptr_t)sub_0000_net1_arena,
              (unsigned long)kArenaSize_sub_0000_net1);
     print_to_console(buf);
@@ -710,7 +723,7 @@ static void ai_cmd_diag(void)
         print_to_console(buf);
     }
 
-    /* Invalidate D-cache for SDRAM regions before reading,
+    /* Invalidate D-cache before reading,
      * so we see the latest data written by NPU DMA, not stale cache. */
     SCB_InvalidateDCache_by_Addr(
         (uint32_t *)sub_0000_net1_arena, (int32_t)kArenaSize_sub_0000_net1);

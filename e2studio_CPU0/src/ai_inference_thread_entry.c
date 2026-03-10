@@ -337,7 +337,25 @@ void ai_inference_thread_entry(void *pvParameters)
      * Reference: face_detection/src/ai_inference_thread_entry.c line 104
      * ====================================================================== */
 #if MERA_INFERENCE_ENABLED
-    RM_ETHOSU_Open(&g_rm_ethosu0_ctrl, &g_rm_ethosu0_cfg);
+    {
+        fsp_err_t ethosu_err = RM_ETHOSU_Open(&g_rm_ethosu0_ctrl, &g_rm_ethosu0_cfg);
+        if (FSP_SUCCESS != ethosu_err)
+        {
+            snprintf(buf, sizeof(buf), "  ERROR: RM_ETHOSU_Open() failed (err=%d)\r\n", (int)ethosu_err);
+            ai_thread_log(buf);
+
+            /* Read NPU registers for diagnosis (R_NPU_BASE = 0x40140000) */
+            volatile uint32_t *npu = (volatile uint32_t *)0x40140000UL;
+            snprintf(buf, sizeof(buf), "  NPU ID=0x%08lX CONFIG=0x%08lX\r\n",
+                     (unsigned long)npu[0x0000/4],  /* ID register */
+                     (unsigned long)npu[0x0010/4]);  /* CONFIG register */
+            ai_thread_log(buf);
+            snprintf(buf, sizeof(buf), "  NPU STATUS=0x%08lX PROT=0x%08lX\r\n",
+                     (unsigned long)npu[0x0004/4],  /* STATUS register */
+                     (unsigned long)npu[0x0024/4]);  /* PROT register */
+            ai_thread_log(buf);
+        }
+    }
 
     xEventGroupSetBits(g_ai_app_event, HARDWARE_ETHOSU_INIT_DONE);
 

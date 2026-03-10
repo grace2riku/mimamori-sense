@@ -15,7 +15,7 @@
 #include "ethosu_driver.h"
 
 // Define arenas with allocation and 16-byte alignment
-__attribute__((aligned(16), section(".sdram"))) uint8_t sub_0000_net1_arena[991872];
+__attribute__((aligned(16))) uint8_t sub_0000_net1_arena[991872];
 // Fast scratch arena not used for Ethos-U55
 //  We will not create it for now and reuse the address of the other arena
 // __attribute__((aligned(16))) static uint8_t sub_0000_net1_fast_scratch[991872];

@@ -7,7 +7,7 @@
 #define BSP_CFG_OPTION_SETTING_OFS0  (OFS_IWDT | OFS_WDT)
 #endif
 #ifndef BSP_CFG_OPTION_SETTING_OFS2
-#define BSP_CFG_OPTION_SETTING_OFS2  ((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (0xFFFFFFE0))
+#define BSP_CFG_OPTION_SETTING_OFS2  ((1 << 0) | (1 << 1) | (1 << 2) | (0 << 3) | (0xFFFFFFE0))
 #endif
 #ifndef BSP_CFG_OPTION_SETTING_OFS1_SEC
 #define BSP_CFG_OPTION_SETTING_OFS1_SEC_NO_HOCOFRQ (0xFCFFF0D0 | 1 <<3 | 7 | 1 << 5 | 1 << 8 | 1 << 24 | 0 << 25)
