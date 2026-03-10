@@ -126,7 +126,7 @@ static int usrcmd_mw(int argc, char **argv);
  *
  */
 static const cmd_table_t cmdlist[] = {
-    NTSHELL_CMD("ai",      "AI inference: ai model|config|preproc|status|time|detect", usrcmd_ai),
+    NTSHELL_CMD("ai",      "AI inference: ai model|config|preproc|status|time|detect|nms", usrcmd_ai),
     NTSHELL_CMD("camera",  "Camera: camera thread|phy|csi|sensor|status|start|stop|capture|info|fb|display|test", usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
     NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
