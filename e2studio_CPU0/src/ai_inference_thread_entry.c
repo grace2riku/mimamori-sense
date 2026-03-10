@@ -52,6 +52,7 @@
 #include "camera_framebuffer.h"
 #include "camera_thread_api.h"
 #include "camera_layer/camera_utils.h"
+#include "ai_application/fall_detection/fall_detection_postprocess.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -356,6 +357,15 @@ void ai_inference_thread_entry(void *pvParameters)
     dwt_counter_enable();
 
     /* ======================================================================
+     * Step 3b: Initialize post-processing module (F-003-8)
+     *
+     * Sets default confidence threshold, NMS IoU threshold, and
+     * coordinate conversion parameters.
+     * ====================================================================== */
+    fall_detection_postprocess_init();
+    ai_thread_log("  Post-processing initialized (F-003-8).\r\n");
+
+    /* ======================================================================
      * Step 4: Signal AI inference initialization complete
      *
      * Reference: face_detection/src/ai_inference_thread_entry.c line 115
@@ -422,10 +432,9 @@ void ai_inference_thread_entry(void *pvParameters)
         /* Update processing time for global diagnostics */
         g_processing_time.ai_inference_time_ms = s_time_invoke_ms;
 
-        /* ---- Post-processing ----
-         * TODO (F-003-8): Call YOLO post-processing here.
+        /* ---- Post-processing (F-003-8) ----
          *
-         * The post-processing will:
+         * YOLOv8 post-processing pipeline:
          *   1. Get output tensor pointer via mera_output_ptr()
          *   2. Dequantize INT8 output to float
          *   3. Decode YOLO bounding boxes (x_center, y_center, w, h)
@@ -433,16 +442,16 @@ void ai_inference_thread_entry(void *pvParameters)
          *   5. Apply Non-Maximum Suppression (NMS)
          *   6. Store results in g_ai_detection[] via update_detection_result()
          *
-         * For now, we read the raw output pointer as a placeholder.
+         * Reference: face_detection/src/ai_application/face_detection/MainLoop_obj.cc
+         *            main_loop_face_detection() lines 115-142
          */
         s_ai_state = AI_STATE_POSTPROCESSING;
 
         {
 #if MERA_INFERENCE_ENABLED
             int8_t *output = mera_output_ptr();
-            (void)output;   /* Placeholder until F-003-8 post-processing is implemented */
+            fall_detection_postprocess(output);
 #endif
-            /* TODO (F-003-8): Call fall_detection_postprocess(output, g_ai_detection) */
         }
 
         INFERENCE_END_INDICATE_LED;

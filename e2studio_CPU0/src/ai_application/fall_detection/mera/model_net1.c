@@ -51,6 +51,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
+
+#include "common_data.h"
 
 #include "model_net1.h"
 
@@ -81,19 +84,56 @@ int8_t* GetModelOutputPtr_net1_PartitionedCall_0_70452() {
 }
 
 
+// Diagnostic: last return code from each sub-unit invoke
+volatile int g_sub0000_last_rc = -99;
+volatile int g_sub0002_last_rc = -99;
+
 void RunModel_net1(bool clean_outputs) {
   // Buffers for NPU units
   int8_t* buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_math_sigmoid_56_Sigmoid1_70442);
   int8_t* buf_net1_model_78_tf_reshape_23_Reshape_70431_npu = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_model_78_tf_reshape_23_Reshape_70431);
   int8_t* buf_net1_PartitionedCall_0_70452_npu = (int8_t*) (sub_0002_net1_arena + sub_0002_net1_address_PartitionedCall_0_70452);
 
+// D-cache clean: flush CPU-written input data from D-cache to SDRAM
+// so NPU can read the latest preprocessed image via DMA.
+// (sub_0000 arena is on SDRAM which is cacheable on Cortex-M85)
+  SCB_CleanDCache_by_Addr(
+      (uint32_t *)(sub_0000_net1_arena + sub_0000_net1_address_serving_default_images_0),
+      110592);
+
 // NPU Unit
-  sub_0000_net1_invoke(clean_outputs);
+  g_sub0000_last_rc = sub_0000_net1_invoke(clean_outputs);
+
+// D-cache invalidate: discard stale cached data for sub_0000 output regions
+// in SDRAM. NPU wrote fresh data via DMA but CPU D-cache still has old values.
+  SCB_InvalidateDCache_by_Addr(
+      (uint32_t *)buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442,
+      756);
+  SCB_InvalidateDCache_by_Addr(
+      (uint32_t *)buf_net1_model_78_tf_reshape_23_Reshape_70431_npu,
+      3024);
 
 // CPU Unit
   compute_sub_0001_net1(compute_arena_sub_0001_net1, buf_net1_model_78_tf_reshape_23_Reshape_70431_npu, buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443, buf_net1_model_78_tf_strided_slice_StridedSlice_70445  );
 
+// Copy intermediate results into sub_0002 arena for NPU consumption.
+// The MERA code generator outputs CPU sub_0001 to global buffers, but
+// sub_0002 NPU reads from its own arena at fixed offsets.
+// Without these copies, sub_0002 reads zeros and produces invalid output.
+  // Sigmoid1 (756 bytes): sub_0000 arena -> sub_0002 arena offset 3072 (0xc00)
+  memcpy(sub_0002_net1_arena + sub_0002_net1_address_model_78_tf_math_sigmoid_56_Sigmoid1_70442,
+         buf_net1_model_78_tf_math_sigmoid_56_Sigmoid1_70442,
+         756);
+  // StridedSlice (1512 bytes): global buffer -> sub_0002 arena offset 3840 (0xf00)
+  memcpy(sub_0002_net1_arena + sub_0002_net1_address_model_78_tf_strided_slice_StridedSlice_70445,
+         buf_net1_model_78_tf_strided_slice_StridedSlice_70445,
+         1512);
+  // StridedSlice_1 (1512 bytes): global buffer -> sub_0002 arena offset 6880 (0x1ae0)
+  memcpy(sub_0002_net1_arena + sub_0002_net1_address_model_78_tf_strided_slice_1_StridedSlice_70443,
+         buf_net1_model_78_tf_strided_slice_1_StridedSlice_70443,
+         1512);
+
 // NPU Unit
-  sub_0002_net1_invoke(clean_outputs);
+  g_sub0002_last_rc = sub_0002_net1_invoke(clean_outputs);
 
 }
