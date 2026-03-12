@@ -74,6 +74,7 @@
 #define AI_INFERENCE_RESULT_UPDATED     (1 << 14)
 #define DISPLAY_PAUSE                   (1 << 15)
 #define CAMERA_AUTO_FOCUS_EXECUTE       (1 << 16)
+#define FALL_DETECTED_EVENT             (1 << 17)  /**< Fall confirmed (F-003-9 -> F-004) */
 
 #define APP_ERROR_TRAP(err)  if(err) { __asm("BKPT #0\n"); }
 
