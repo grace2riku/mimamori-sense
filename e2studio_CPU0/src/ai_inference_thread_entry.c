@@ -53,6 +53,7 @@
 #include "camera_thread_api.h"
 #include "camera_layer/camera_utils.h"
 #include "ai_application/fall_detection/fall_detection_postprocess.h"
+#include "fall_detection_logic.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -384,6 +385,15 @@ void ai_inference_thread_entry(void *pvParameters)
     ai_thread_log("  Post-processing initialized (F-003-8).\r\n");
 
     /* ======================================================================
+     * Step 3c: Initialize fall detection logic module (F-003-9)
+     *
+     * Sets default threshold parameters and resets the state machine
+     * to NORMAL state.
+     * ====================================================================== */
+    fall_detection_init();
+    ai_thread_log("  Fall detection logic initialized (F-003-9).\r\n");
+
+    /* ======================================================================
      * Step 4: Signal AI inference initialization complete
      *
      * Reference: face_detection/src/ai_inference_thread_entry.c line 115
@@ -471,6 +481,14 @@ void ai_inference_thread_entry(void *pvParameters)
             fall_detection_postprocess(output);
 #endif
         }
+
+        /* ---- Fall detection judgment (F-003-9) ----
+         *
+         * Evaluate detection results against fall criteria (aspect ratio,
+         * score threshold) and advance the state machine.
+         * This must run after post-processing populates g_fall_detection_results[].
+         */
+        fall_detection_update();
 
         INFERENCE_END_INDICATE_LED;
 
