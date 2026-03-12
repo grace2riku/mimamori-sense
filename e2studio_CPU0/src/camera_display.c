@@ -51,6 +51,7 @@
 #include "common_util.h"
 #include "ai_application/ai_application_config.h"
 #include "ai_inference_thread_api.h"
+#include "ui/fall_detection_screen.h"
 
 #include "lvgl.h"
 
@@ -379,4 +380,29 @@ static void camera_display_timer_cb(lv_timer_t *timer)
     }
 
     s_time_total_ms = (uint32_t)(xTaskGetTickCount() - t_start);
+
+    /*
+     * Update fall detection screen overlay (F-003-10)
+     *
+     * Check if new AI inference results are available and update the
+     * overlay widgets (bounding boxes, status text, info panel).
+     * The AI_INFERENCE_RESULT_UPDATED event is set by ai_inference_thread
+     * after each inference + post-processing + fall_detection_update cycle.
+     *
+     * We check and clear the event bit here so the overlay is updated
+     * in sync with the display refresh. Even if no new AI results are
+     * available, we still call update to keep the info panel (FPS) current.
+     */
+    if (g_ai_app_event != NULL)
+    {
+        EventBits_t bits = xEventGroupGetBits(g_ai_app_event);
+        if (bits & AI_INFERENCE_RESULT_UPDATED)
+        {
+            /* Clear the event bit */
+            xEventGroupClearBits(g_ai_app_event, AI_INFERENCE_RESULT_UPDATED);
+
+            /* Update overlay with latest detection results */
+            fall_detection_screen_update();
+        }
+    }
 }

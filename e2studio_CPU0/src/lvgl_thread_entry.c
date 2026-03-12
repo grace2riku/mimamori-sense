@@ -62,6 +62,7 @@
 #include "port/dave2d_port.h"
 #include "port/lv_port_indev.h"
 #include "ui/ui_main_screen.h"
+#include "ui/fall_detection_screen.h"
 #include "camera_display.h"
 
 /**
@@ -188,6 +189,28 @@ void lvgl_thread_entry(void *pvParameters)
      * Reference: e2studio_CPU0/src/camera_display.c
      */
     camera_display_init();
+
+    /*
+     * Step 7b: Initialize fall detection screen overlay (F-003-10)
+     *
+     * Creates LVGL overlay widgets (bounding boxes, status text, info panel)
+     * on top of the camera image for displaying fall detection results.
+     *
+     * Must be called after ui_main_screen_create() and camera_display_init()
+     * so that the camera image widget is properly positioned.
+     *
+     * The overlay is updated from the camera_display timer callback when
+     * new AI inference results are available.
+     *
+     * Reference: e2studio_CPU0/src/ui/fall_detection_screen.c
+     */
+    {
+        lv_obj_t *screen = lv_screen_active();
+        if (screen != NULL)
+        {
+            fall_detection_screen_init(screen);
+        }
+    }
 
     /*
      * Step 8: LVGL main loop
