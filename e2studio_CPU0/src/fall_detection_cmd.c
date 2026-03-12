@@ -12,8 +12,9 @@
  *   fall set <param> <value> - Set a threshold parameter at runtime
  *   fall reset     - Reset state machine to NORMAL
  *   fall log       - Display state transition log
+ *   fall display   - Display screen overlay status (F-003-10)
  *
- * Reference: Issue #26 (F-003-9) specification
+ * Reference: Issue #26 (F-003-9), Issue #27 (F-003-10) specification
  */
 
 /**********************************************************************************************************************
@@ -25,6 +26,7 @@
 #include "jlink_console.h"
 #include "fall_detection_logic.h"
 #include "fall_detection_cmd.h"
+#include "ui/fall_detection_screen.h"
 #include "cmd_utils.h"
 
 /**********************************************************************************************************************
@@ -95,6 +97,10 @@ int usrcmd_fall(int argc, char **argv)
     else if (ntlibc_strcmp(argv[1], "log") == 0)
     {
         fall_cmd_log();
+    }
+    else if (ntlibc_strcmp(argv[1], "display") == 0)
+    {
+        fall_detection_screen_cmd_status();
     }
     else
     {
@@ -443,6 +449,7 @@ static void fall_cmd_usage(void)
     print_to_console("  set <param> <value> - Set threshold parameter\r\n");
     print_to_console("  reset     - Reset state to NORMAL\r\n");
     print_to_console("  log       - Show state transition log\r\n");
+    print_to_console("  display   - Show screen overlay status (F-003-10)\r\n");
 }
 
 /**
