@@ -1,21 +1,20 @@
 # YOLOv8-pico: 転倒検出用カスタム超軽量モデル
-# Issue #102 (F-003-3b) / Issue #103 (F-003-3c)
+# Issue #102 (F-003-3b) / Issue #126 (F-003-3e)
 #
 # YOLOv8n (depth=0.33, width=0.25, 3.0M params) を更に縮小し、
-# Ethos-U55 NPU の Arena 制約 (432KB) に収まるサイズを目指す。
+# MCUデプロイ可能なサイズを目指す。
 #
-# 推定パラメータ数: 約0.05-0.15M
-# 推定INT8サイズ: 約100-200KB
+# 推定パラメータ数: 約0.26M
+# INT8サイズ: 約366KB (動作実績あり)
 #
 # 変更点 (YOLOv8n からの差分):
 #   - width_multiple: 0.25 → 0.08 (チャネル数を大幅削減)
 #   - max_channels: 1024 → 256 (深い層のチャネル数を制限)
-#   - ch: 3 → 1 (Grayscale入力, F-003-3c対応)
 #   - nc: 80 → 1 (personクラスのみ)
 
 # Parameters
 nc: 1  # number of classes (person only)
-ch: 1  # input channels (Grayscale)
+ch: 3  # input channels (RGB, MCU前処理に合わせる)
 
 scales:
   # [depth, width, max_channels]

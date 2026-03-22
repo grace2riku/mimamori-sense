@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # deploy_fall_detection.ps1
 # RUHMI (MERA) による転倒検出モデルの Ethos-U55 向け変換スクリプト
 #
@@ -20,6 +20,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# PowerShell コンソールの文字化け対策 (UTF-8)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
@@ -138,7 +142,7 @@ if (-not (Test-Path $MeraDest)) {
 # MCU組み込みに必要なファイルのみコピー (x86テスト用ファイルは除外)
 $excludeFiles = @("CMakeLists.txt", "compare.cpp", "hal_entry.c", "python_bindings.cpp")
 
-Get-ChildItem $GeneratedDir.FullName -Include "*.c", "*.h" -File | ForEach-Object {
+Get-ChildItem (Join-Path $GeneratedDir.FullName "*") -Include "*.c", "*.h" -File | ForEach-Object {
     if ($excludeFiles -contains $_.Name) {
         Write-Host "  SKIP: $($_.Name) (x86テスト用)" -ForegroundColor DarkGray
     } else {
