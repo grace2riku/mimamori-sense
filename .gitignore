@@ -56,3 +56,14 @@ dataset/downloads/
 dataset/coco_person/
 dataset/roboflow_fall/
 dataset/merged/
+dataset/fall_detection_dataset.zip
+
+# Python cache
+__pycache__/
+*.pyc
+
+# MERA conversion output (reproducible via deploy_fall_detection.ps1)
+scripts/deploy_fall_detection_output/
+
+# FSP setup guide generator
+doc/fsp-setup-guide/_gen.py
