@@ -48,7 +48,7 @@ if ($RuhmiRoot -eq "") {
 }
 
 # パス設定
-$ModelSrc = Join-Path $ProjectRoot "dataset\models\yolov8_pico_fall_int8.tflite"
+$ModelSrc = Join-Path $ProjectRoot "dataset\models\yolo_fastest_person_darknet_int8.tflite"
 $RuhmiScripts = Join-Path $RuhmiRoot "scripts"
 $McuDeploy = Join-Path $RuhmiScripts "mcu_deploy.py"
 

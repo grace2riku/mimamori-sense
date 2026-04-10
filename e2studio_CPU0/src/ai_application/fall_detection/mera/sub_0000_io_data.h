@@ -53,17 +53,17 @@
 
 #include <stdint.h>
 
-extern int8_t sub_0000_serving_default_images_0[];
-#define sub_0000_serving_default_images_0_SIZE (110592)
-#define sub_0000_serving_default_images_0_COUNT (110592)
+extern int8_t sub_0000_serving_default_image_input_0[];
+#define sub_0000_serving_default_image_input_0_SIZE (110592)
+#define sub_0000_serving_default_image_input_0_COUNT (110592)
 
-extern int8_t sub_0000_model_78_tf_math_sigmoid_56_Sigmoid1_70442[];
-#define sub_0000_model_78_tf_math_sigmoid_56_Sigmoid1_70442_SIZE (756)
-#define sub_0000_model_78_tf_math_sigmoid_56_Sigmoid1_70442_COUNT (756)
+extern int8_t sub_0000_StatefulPartitionedCall_0_70535[];
+#define sub_0000_StatefulPartitionedCall_0_70535_SIZE (648)
+#define sub_0000_StatefulPartitionedCall_0_70535_COUNT (648)
 
-extern int8_t sub_0000_model_78_tf_reshape_23_Reshape_70431[];
-#define sub_0000_model_78_tf_reshape_23_Reshape_70431_SIZE (3024)
-#define sub_0000_model_78_tf_reshape_23_Reshape_70431_COUNT (3024)
+extern int8_t sub_0000_StatefulPartitionedCall_1_70554[];
+#define sub_0000_StatefulPartitionedCall_1_70554_SIZE (2592)
+#define sub_0000_StatefulPartitionedCall_1_70554_COUNT (2592)
 
 
 #endif // SUB_0000_MODEL_DATA_H

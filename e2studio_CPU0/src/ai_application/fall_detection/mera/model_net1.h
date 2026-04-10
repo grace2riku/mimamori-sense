@@ -53,22 +53,21 @@
 
 // NPU unit addresses
 #include "sub_0000_net1_tensors.h"
-#include "sub_0002_net1_tensors.h"
 
 // Arenas for NPU units
 extern uint8_t sub_0000_net1_arena[kArenaSize_sub_0000_net1];
-extern uint8_t sub_0002_net1_arena[kArenaSize_sub_0002_net1];
 
 // Buffers
-extern int8_t buf_net1_model_78_tf_reshape_23_Reshape_70431[3024];
-extern int8_t buf_net1_PartitionedCall_0_70452[3780];
+extern int8_t buf_net1_StatefulPartitionedCall_0_70535[648];
+extern int8_t buf_net1_StatefulPartitionedCall_1_70554[2592];
 
 
 void RunModel_net1(bool clean_outputs);
 
   // Model input pointers
-int8_t* GetModelInputPtr_net1_serving_default_images_0();
+int8_t* GetModelInputPtr_net1_serving_default_image_input_0();
 
   // Model output pointers
-int8_t* GetModelOutputPtr_net1_PartitionedCall_0_70452();
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_0_70535();
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_1_70554();
 
