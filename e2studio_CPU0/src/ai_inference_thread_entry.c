@@ -360,10 +360,16 @@ void ai_inference_thread_entry(void *pvParameters)
 
     xEventGroupSetBits(g_ai_app_event, HARDWARE_ETHOSU_INIT_DONE);
 
-    snprintf(buf, sizeof(buf), "  NPU initialized. Arena sub0=%lu, sub2=%lu bytes\r\n",
+#if YOLO_FASTEST_MODEL
+    snprintf(buf, sizeof(buf), "  NPU initialized. Arena sub0=%lu bytes (YOLO-Fastest V1)\r\n",
+             (unsigned long)mera_arena_size_sub0());
+    ai_thread_log(buf);
+#else
+    snprintf(buf, sizeof(buf), "  NPU initialized. Arena sub0=%lu, sub2=%lu bytes (YOLOv8 legacy)\r\n",
              (unsigned long)mera_arena_size_sub0(),
              (unsigned long)mera_arena_size_sub2());
     ai_thread_log(buf);
+#endif
 #else
     /* Stub: Skip NPU init to avoid linking MERA model data (~307KB) */
     xEventGroupSetBits(g_ai_app_event, HARDWARE_ETHOSU_INIT_DONE);
@@ -462,13 +468,11 @@ void ai_inference_thread_entry(void *pvParameters)
 
         /* ---- Post-processing (F-003-8) ----
          *
-         * YOLOv8 post-processing pipeline:
-         *   1. Get output tensor pointer via mera_output_ptr()
-         *   2. Dequantize INT8 output to float
-         *   3. Decode YOLO bounding boxes (x_center, y_center, w, h)
-         *   4. Apply confidence threshold filtering
-         *   5. Apply Non-Maximum Suppression (NMS)
-         *   6. Store results in g_ai_detection[] via update_detection_result()
+         * YOLOv3 anchor-based post-processing pipeline (YOLO-Fastest V1):
+         *   1. Get 2 output tensor pointers via mera_output_ptr_branch0/1()
+         *   2. For each branch: dequantize INT8, decode anchors, filter
+         *   3. Apply Non-Maximum Suppression (NMS)
+         *   4. Store results in g_ai_detection[] via update_detection_result()
          *
          * Reference: face_detection/src/ai_application/face_detection/MainLoop_obj.cc
          *            main_loop_face_detection() lines 115-142
@@ -477,8 +481,9 @@ void ai_inference_thread_entry(void *pvParameters)
 
         {
 #if MERA_INFERENCE_ENABLED
-            int8_t *output = mera_output_ptr();
-            fall_detection_postprocess(output);
+            int8_t *branch0 = mera_output_ptr_branch0();
+            int8_t *branch1 = mera_output_ptr_branch1();
+            fall_detection_postprocess(branch0, branch1);
 #endif
         }
 

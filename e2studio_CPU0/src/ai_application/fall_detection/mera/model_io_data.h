@@ -53,13 +53,17 @@
 
 #include <stdint.h>
 
-extern int8_t model_serving_default_images_0[];
-#define model_serving_default_images_0_SIZE (110592)
-#define model_serving_default_images_0_COUNT (110592)
+extern int8_t model_serving_default_image_input_0[];
+#define model_serving_default_image_input_0_SIZE (110592)
+#define model_serving_default_image_input_0_COUNT (110592)
 
-extern int8_t model_PartitionedCall_0[];
-#define model_PartitionedCall_0_SIZE (3780)
-#define model_PartitionedCall_0_COUNT (3780)
+extern int8_t model_StatefulPartitionedCall_1[];
+#define model_StatefulPartitionedCall_1_SIZE (2592)
+#define model_StatefulPartitionedCall_1_COUNT (2592)
+
+extern int8_t model_StatefulPartitionedCall_0[];
+#define model_StatefulPartitionedCall_0_SIZE (648)
+#define model_StatefulPartitionedCall_0_COUNT (648)
 
 
 #endif // MODEL_MODEL_DATA_H
