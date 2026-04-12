@@ -62,16 +62,16 @@ extern "C" {
 /**
  * Per-branch quantization parameters.
  *
- * From TFLite INT8 model (yolo_fastest_person_darknet_int8.tflite):
- *   Branch 0 (6x6, StatefulPartitionedCall:0): scale=0.10543527, zp=23
- *   Branch 1 (12x12, StatefulPartitionedCall:1): scale=0.11069885, zp=12
+ * From TFLite INT8 model (yolo_fastest_person_darknet_int8.tflite, Issue #131):
+ *   Branch 0 (6x6, StatefulPartitionedCall:0): scale=0.10909886, zp=34
+ *   Branch 1 (12x12, StatefulPartitionedCall:1): scale=0.10983318, zp=23
  *
  * Dequantization formula: float_val = (int8_val - zero_point) * scale
  */
-#define POSTPROC_BRANCH0_SCALE       (0.10543527f)  /* StatefulPartitionedCall:0 (6x6) */
-#define POSTPROC_BRANCH0_ZERO_POINT  (23)           /* StatefulPartitionedCall:0 (6x6) */
-#define POSTPROC_BRANCH1_SCALE       (0.11069885f)  /* StatefulPartitionedCall:1 (12x12) */
-#define POSTPROC_BRANCH1_ZERO_POINT  (12)           /* StatefulPartitionedCall:1 (12x12) */
+#define POSTPROC_BRANCH0_SCALE       (0.10909886f)  /* StatefulPartitionedCall:0 (6x6) */
+#define POSTPROC_BRANCH0_ZERO_POINT  (34)           /* StatefulPartitionedCall:0 (6x6) */
+#define POSTPROC_BRANCH1_SCALE       (0.10983318f)  /* StatefulPartitionedCall:1 (12x12) */
+#define POSTPROC_BRANCH1_ZERO_POINT  (23)           /* StatefulPartitionedCall:1 (12x12) */
 
 /**
  * Default detection confidence threshold.
