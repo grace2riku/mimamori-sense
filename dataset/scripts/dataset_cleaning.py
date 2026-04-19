@@ -109,14 +109,12 @@ def remove_pair(
     dataset_dir: Path,
     reason: str,
     removed_root: Path,
-    apply: bool,
 ) -> None:
     """画像とラベルのペアを一括で退避する"""
     label = label_path_for(image_path, dataset_dir)
-    if apply:
-        move_to_removed(image_path, dataset_dir, reason, removed_root)
-        if label.exists():
-            move_to_removed(label, dataset_dir, reason, removed_root)
+    move_to_removed(image_path, dataset_dir, reason, removed_root)
+    if label.exists():
+        move_to_removed(label, dataset_dir, reason, removed_root)
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +122,21 @@ def remove_pair(
 # ---------------------------------------------------------------------------
 
 def laplacian_variance(image_path: Path) -> float:
-    """Laplacian variance (ぼけ指標)。値が小さいほどぼけている。"""
+    """Laplacian variance (ぼけ指標)。値が小さいほどぼけている。
+
+    NOTE: OpenCV (cv2.Laplacian) と Pillow (FIND_EDGES) では値域が
+    大きく異なる。--blur-threshold のデフォルト値 (50) は OpenCV 用。
+    Pillow fallback 使用時はスクリプト起動時に警告を表示する。
+    Colab には OpenCV が標準で入っているため、通常は cv2 経路が使われる。
+    """
     if HAS_CV2:
         img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
         if img is None:
             return -1.0
         return float(cv2.Laplacian(img, cv2.CV_64F).var())
-    # Pillow fallback: 近似的な sharpness 指標
+    # Pillow fallback: FIND_EDGES の variance は cv2.Laplacian と値域が異なる。
+    # cv2.Laplacian: 典型 10-1000、Pillow FIND_EDGES.var: 典型 100-10000+
+    # Pillow 用の推奨閾値は --blur-threshold 500 程度。
     img = Image.open(image_path).convert("L")
     edges = img.filter(ImageFilter.FIND_EDGES)
     arr = np.asarray(edges, dtype=np.float32)
@@ -180,7 +186,12 @@ def check_low_quality_images(
 # ---------------------------------------------------------------------------
 
 def check_label_issues(dataset_dir: Path) -> dict:
-    """ラベル異常 (範囲外, サイズ0, 画像/ラベル対応ミス) を検出する"""
+    """ラベル異常 (範囲外, サイズ0, 画像/ラベル対応ミス) を検出する
+
+    out_of_range, zero_size, tiny, bad_class の各リストは
+    (split, filename, line_num, message) のタプルを格納する。
+    missing_label, missing_image は "split/stem" の文字列を格納する。
+    """
     result = {
         "out_of_range": [],
         "zero_size": [],
@@ -220,7 +231,7 @@ def check_label_issues(dataset_dir: Path) -> dict:
                     continue
                 if len(parts) != 5:
                     result["out_of_range"].append(
-                        f"{split}/{txt_path.name}:{line_num} - not 5 values"
+                        (split, txt_path.name, line_num, "not 5 values")
                     )
                     continue
                 try:
@@ -228,34 +239,34 @@ def check_label_issues(dataset_dir: Path) -> dict:
                     cx, cy, w, h = (float(v) for v in parts[1:])
                 except ValueError:
                     result["out_of_range"].append(
-                        f"{split}/{txt_path.name}:{line_num} - non-numeric"
+                        (split, txt_path.name, line_num, "non-numeric")
                     )
                     continue
                 result["total_bboxes"] += 1
                 if cls != 0:
                     result["bad_class"].append(
-                        f"{split}/{txt_path.name}:{line_num} - class={cls}"
+                        (split, txt_path.name, line_num, f"class={cls}")
                     )
                 # 範囲外
                 if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0
                         and 0.0 <= w <= 1.0 and 0.0 <= h <= 1.0):
                     result["out_of_range"].append(
-                        f"{split}/{txt_path.name}:{line_num} - "
-                        f"cx={cx:.3f} cy={cy:.3f} w={w:.3f} h={h:.3f}"
+                        (split, txt_path.name, line_num,
+                         f"cx={cx:.3f} cy={cy:.3f} w={w:.3f} h={h:.3f}")
                     )
                 # 境界はみ出し
                 if (cx - w / 2 < -0.01 or cy - h / 2 < -0.01
                         or cx + w / 2 > 1.01 or cy + h / 2 > 1.01):
                     result["out_of_range"].append(
-                        f"{split}/{txt_path.name}:{line_num} - bbox out of image"
+                        (split, txt_path.name, line_num, "bbox out of image")
                     )
                 if w <= 0 or h <= 0:
                     result["zero_size"].append(
-                        f"{split}/{txt_path.name}:{line_num} - w={w} h={h}"
+                        (split, txt_path.name, line_num, f"w={w} h={h}")
                     )
                 elif w < 0.005 or h < 0.005:
                     result["tiny"].append(
-                        f"{split}/{txt_path.name}:{line_num} - w={w:.4f} h={h:.4f}"
+                        (split, txt_path.name, line_num, f"w={w:.4f} h={h:.4f}")
                     )
 
     # 画像/ラベル対応
@@ -381,8 +392,13 @@ def print_report(
     for tag in ("out_of_range", "zero_size", "missing_label", "missing_image"):
         if labels[tag]:
             print(f"  -- {tag} preview --")
-            for s in labels[tag][:max_preview]:
-                print(f"     {s}")
+            for entry in labels[tag][:max_preview]:
+                if isinstance(entry, tuple):
+                    # (split, filename, line_num, message)
+                    print(f"     {entry[0]}/{entry[1]}:{entry[2]} - {entry[3]}")
+                else:
+                    # missing_label / missing_image: "split/stem" 文字列
+                    print(f"     {entry}")
 
     print("\n[3] Duplicate images (perceptual hash)")
     print(f"  total images hashed  : {duplicates['total']}")
@@ -416,21 +432,21 @@ def apply_cleaning(
     for path_str, _ in quality["blur"]:
         p = Path(path_str)
         if p.exists():
-            remove_pair(p, dataset_dir, "blur", removed_root, apply=True)
+            remove_pair(p, dataset_dir, "blur", removed_root)
             removed_paths.add(path_str)
             stats["removed_blur"] += 1
     for path_str, _ in quality["too_dark"]:
         p = Path(path_str)
         if str(p) in removed_paths or not p.exists():
             continue
-        remove_pair(p, dataset_dir, "too_dark", removed_root, apply=True)
+        remove_pair(p, dataset_dir, "too_dark", removed_root)
         removed_paths.add(path_str)
         stats["removed_dark"] += 1
     for path_str, _ in quality["too_bright"]:
         p = Path(path_str)
         if str(p) in removed_paths or not p.exists():
             continue
-        remove_pair(p, dataset_dir, "too_bright", removed_root, apply=True)
+        remove_pair(p, dataset_dir, "too_bright", removed_root)
         removed_paths.add(path_str)
         stats["removed_bright"] += 1
 
@@ -438,28 +454,22 @@ def apply_cleaning(
     #    out_of_range/zero_size を含むラベル行 -> ファイルごと退避は過剰になるため
     #    ここでは「完全に壊れているラベルファイル (全行が out_of_range or zero_size)」
     #    と missing 対応のみを退避する。軽微な異常行は darknet 側の clip に任せる。
-    def _txt_from_code(code: str) -> Path | None:
-        # code 例: "train/img_0001.txt:3 - ..."
-        head = code.split(" ", 1)[0]
-        rel = head.split(":", 1)[0]
-        return dataset_dir / "labels" / rel
-
     bad_files: dict[Path, int] = defaultdict(int)
-    total_lines: dict[Path, int] = defaultdict(int)
-    for code in labels["out_of_range"] + labels["zero_size"]:
-        lp = _txt_from_code(code)
-        if lp is not None:
-            bad_files[lp] += 1
-    for lbl_dir in (dataset_dir / "labels").glob("*"):
-        if not lbl_dir.is_dir():
-            continue
-        for txt in lbl_dir.glob("*.txt"):
-            try:
-                total_lines[txt] = sum(
-                    1 for ln in txt.read_text().splitlines() if ln.strip()
-                )
-            except Exception:
-                total_lines[txt] = 0
+    for entry in labels["out_of_range"] + labels["zero_size"]:
+        # entry = (split, filename, line_num, message)
+        split, filename = entry[0], entry[1]
+        lp = dataset_dir / "labels" / split / filename
+        bad_files[lp] += 1
+
+    # bad_files に含まれるラベルファイルのみ行数を数える (全件走査を回避)
+    total_lines: dict[Path, int] = {}
+    for lp in bad_files:
+        try:
+            total_lines[lp] = sum(
+                1 for ln in lp.read_text().splitlines() if ln.strip()
+            )
+        except Exception:
+            total_lines[lp] = 0
 
     for lp, bad_count in bad_files.items():
         total = total_lines.get(lp, 0)
@@ -470,7 +480,7 @@ def apply_cleaning(
             for ext in IMAGE_EXTENSIONS:
                 img = dataset_dir / "images" / split / (stem + ext)
                 if img.exists():
-                    remove_pair(img, dataset_dir, "bad_label", removed_root, apply=True)
+                    remove_pair(img, dataset_dir, "bad_label", removed_root)
                     removed_paths.add(str(img))
                     stats["removed_bad_label"] += 1
                     break
@@ -502,7 +512,7 @@ def apply_cleaning(
             p = Path(path_str)
             if str(p) in removed_paths or not p.exists():
                 continue
-            remove_pair(p, dataset_dir, "duplicate", removed_root, apply=True)
+            remove_pair(p, dataset_dir, "duplicate", removed_root)
             removed_paths.add(path_str)
             stats["removed_duplicate"] += 1
 
@@ -546,6 +556,15 @@ def main():
 
     print(f"Dataset: {dataset_dir}")
     print(f"OpenCV available: {HAS_CV2}")
+    if not HAS_CV2 and args.blur_threshold < 200:
+        print(
+            f"\nWARNING: OpenCV が利用できません。Pillow fallback (FIND_EDGES) は "
+            f"cv2.Laplacian と値域が異なります。\n"
+            f"  現在の --blur-threshold={args.blur_threshold} は OpenCV 用の値です。\n"
+            f"  Pillow 使用時は --blur-threshold 500 程度を推奨します。\n"
+            f"  Colab には OpenCV が標準でインストールされているため、\n"
+            f"  Colab 上で実行する場合はこの警告は表示されません。\n"
+        )
     print()
 
     print("[1/3] Scanning image quality ...")
