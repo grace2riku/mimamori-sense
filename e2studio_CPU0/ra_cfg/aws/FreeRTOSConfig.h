@@ -17,6 +17,8 @@
 
 #include "bsp_api.h"
 
+#include "User_FreeRTOSConfig.h"
+
 /* Common macro for FSP header files. There is also a corresponding FSP_FOOTER macro at the end of this file. */
 FSP_HEADER
 

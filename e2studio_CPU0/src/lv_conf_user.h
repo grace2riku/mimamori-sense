@@ -455,13 +455,25 @@
 #if LV_USE_SYSMON
     /** Idle percentage callback
      *
-     * Uses LVGL's built-in timer idle tracking. Returns the percentage of
-     * time the system was idle (not processing LVGL tasks) during the last
-     * refresh period.
+     * Uses LVGL's FreeRTOS-based idle tracking (lv_os_get_idle_percent).
+     * The idle/non-idle time is measured by the FreeRTOS task switch trace
+     * hooks (traceTASK_SWITCHED_IN/OUT) defined in src/User_FreeRTOSConfig.h,
+     * which feed lv_freertos_task_switch_in/out() in LVGL's FreeRTOS OSAL.
      *
-     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/lv_conf_user.h:114
+     * This is more accurate than the previous lv_timer_get_idle (LVGL timer
+     * based tracking) because it accounts for time consumed by other FreeRTOS
+     * tasks (camera, AI inference, NT-Shell), not just LVGL's own processing.
+     *
+     * Requires:
+     *   - src/User_FreeRTOSConfig.h (trace hook definitions)
+     *   - FSP: FreeRTOS "Custom FreeRTOSConfig.h" = User_FreeRTOSConfig.h
+     *
+     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/User_FreeRTOSConfig.h
+     *            (upstream commit 47b0e35 "Reduce CPU usage in benchmark demo")
+     *
+     * Issue: #138
      */
-    #define LV_SYSMON_GET_IDLE lv_timer_get_idle
+    #define LV_SYSMON_GET_IDLE lv_os_get_idle_percent
 
     /** Performance monitor (FPS + CPU usage overlay)
      *

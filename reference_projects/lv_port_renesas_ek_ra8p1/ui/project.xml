@@ -1,7 +1,0 @@
-<project>
-    <targets>
-        <target name="g_display0">
-            <display width="1024" height="600" color_format="RGB565"/>
-        </target>
-    </targets>
-</project>

@@ -5,6 +5,7 @@ collapse/module.driver.comms_i2c_on_comms_i2c_device.766285098=false
 collapse/module.driver.display_on_glcdc.1751298632=false
 collapse/module.driver.drw.34055402=false
 collapse/module.driver.i2c_on_iic_master.849101248=false
+collapse/module.driver.ospi_on_ospi_b.1927589596=false
 collapse/module.driver.tes.dave2d.1835230417=false
 collapse/module.driver.uart_on_sci_b_uart.1538376486=false
 collapse/module.lvgl.lvgl.1763482917=false
