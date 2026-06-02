@@ -3,11 +3,8 @@
 #include "port/lv_port_disp.h"
 #include "port/lv_port_indev.h"
 #include "lv_demos.h"
-#include "../ui/ui.h"
+#include "ospi_flash.h"
 
-#if (0 == LV_USE_DEMO_BENCHMARK) && (0 == LV_USE_DEMO_MUSIC) && (0 == LV_USE_DEMO_KEYPAD_AND_ENCODER) && (0 == LV_USE_DEMO_WIDGETS)
-#define USE_LVGL_EDITOR 1
-#endif
 
 lv_obj_t * settings;
 
@@ -20,6 +17,8 @@ void new_thread0_entry(void *pvParameters)
 
     err = R_SCI_B_UART_Open(&g_uart0_ctrl, &g_uart0_cfg);
     assert(FSP_SUCCESS == err);
+
+    init_opsi_flash();
 
     lv_init();
 
@@ -37,21 +36,6 @@ void new_thread0_entry(void *pvParameters)
     lv_demo_stress();
 #elif (1 == LV_USE_DEMO_WIDGETS && 0 == LV_USE_DEMO_BENCHMARK)
     lv_demo_widgets();
-#elif (1 == USE_LVGL_EDITOR)
-
-    ui_init(NULL);
-
-    LV_IMAGE_DECLARE(img_bell_data);
-    LV_IMAGE_DECLARE(img_bluetooth_data);
-    LV_IMAGE_DECLARE(img_wifi_data);
-
-    img_bell      = &img_bell_data;
-    img_bluetooth = &img_bluetooth_data;
-    img_wifi      = &img_wifi_data;
-
-    settings = settings_create();
-    lv_screen_load(settings);
-
 #endif
 
     /* TODO: add your own code here */

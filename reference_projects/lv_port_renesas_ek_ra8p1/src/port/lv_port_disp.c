@@ -40,7 +40,6 @@ static void glcdc_flush_finish_event(lv_event_t * event);
 
 static void glcdc_flush_finish_event(lv_event_t * event)
 {
-    FSP_PARAMETER_NOT_USED(event);
     lv_display_t * disp;
 
     if (LV_EVENT_FLUSH_FINISH == lv_event_get_code(event))

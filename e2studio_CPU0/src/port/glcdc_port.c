@@ -221,8 +221,6 @@ static void glcdc_lcd_reset(void)
  */
 static void glcdc_backlight_on_event(lv_event_t *event)
 {
-    FSP_PARAMETER_NOT_USED(event);
-
     if (LV_EVENT_FLUSH_FINISH == lv_event_get_code(event)) {
         /* Enable backlight */
         R_IOPORT_PinWrite(&g_ioport_ctrl, GLCDC_PIN_BACKLIGHT, BSP_IO_LEVEL_HIGH);
