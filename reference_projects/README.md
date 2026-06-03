@@ -40,6 +40,13 @@
 - **タグ**: `v6.3.0.example.1` (`a7f7046a1f501de9bc71bf393a453851a2ca6d14`, 2025-12-27)
 - **FSPバージョン**: 6.3.0
 
+### 備考
+- 2026-06-03 に GitHub 最新版と比較（Issue #139）。比較時点の最新は `v6.4.0.example.3` (`a1ec3727069fc6e269a91bd2888581b665d28edf`, FSP 6.4.0)。
+  - 対象パス配下の差分は **FSP 6.3.0 → 6.4.0 のバージョンbumpのみ**で、ソースコード（`src/` の `.c`/`.h`）の変更はなし。
+  - 唯一の機能的FSP設定変更（`board.clock.bclkout.div` `.2`→`.0`）は本体 `e2studio/solution.xml` で既に `.0` のため反映不要。
+  - 移植価値のあるコード差分がないため、ローカルのリファレンスは `v6.3.0.example.1`（FSP 6.3.0）のまま据え置き、本体の FSP 6.4.0 移行も実施しない（ユーザー判断）。
+  - 比較結果の詳細: `doc/analysis_report/quickstart_ek_ra8p1_ep_update_report.md`
+
 ---
 
 ## ruhmi-framework-mcu
