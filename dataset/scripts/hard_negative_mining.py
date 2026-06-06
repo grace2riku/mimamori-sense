@@ -237,8 +237,13 @@ def apply_hard_negatives(
         if not dst_img.exists():
             shutil.copy2(str(src), str(dst_img))
         # 3) 空ラベル (人物なし) を生成
+        #    darknet (Yolo-Fastest fork) は画像と同じ images/train/ から .txt を
+        #    読むため、labels/train/ と images/train/ の両方に空ラベルを置く。
+        #    (labels/train 側は本データセットのラベル原本格納先との整合用)
         dst_lbl = lbl_train / (new_stem + ".txt")
         dst_lbl.write_text("")  # 空 = negative sample
+        dst_lbl_next = img_train / (new_stem + ".txt")
+        dst_lbl_next.write_text("")  # darknet が実際に参照する位置
         added.append(str(dst_img))
 
     return added
