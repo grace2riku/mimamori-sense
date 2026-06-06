@@ -53,6 +53,14 @@
 
 ### 対象ソースコード
 - **リポジトリ**: https://github.com/renesas/ruhmi-framework-mcu
-- **コミット**: `82ebd1cfd663303f3de751936cd6279e054ed51a` (2026-02-08)
-- **直近のリリースタグ**: `Release-2026-02-02` (`a458bb2`)
+- **コミット**: `6f6159f853d50e3efa35cf770cf98554be8f4119` (2026-06-04)
+- **直近のリリースタグ**: `Release-2026-04-27` (`757fb63`)
+- **MERA バージョン**: `2.6.0+pkg.4513` (vela 4.2.0)
 - **概要**: RUHMI Framework AI Compiler for MCU - EdgeCortix MERA を利用したAIモデル最適化・デプロイフレームワーク
+
+### 備考
+- 2026-06-06 にローカル PC（`C:\work\ruhmi-framework-mcu`）を `82ebd1c` (MERA 2.5.0+pkg.3577) から `6f6159f8` (MERA 2.6.0+pkg.4513) へ更新（Issue #144）。
+  - 破壊的変更: 変換スクリプトが `mcu_deploy.py` / `mcu_quantize.py` から統合スクリプト `mcu_compile.py` へ移行。
+  - これに伴い `scripts/deploy_fall_detection.ps1` を `mcu_compile.py`（`--npu --ref-data --suffix _net1`）へ対応させ、転倒/人物検出モデルを再変換。
+  - 再変換で MERA 生成コードの内部ノードIDサフィックスが変化したため `fall_detection/wrapper.h` の出力ポインタ関数名を追従更新。
+  - 更新手順・チェック項目の詳細: `doc/analysis_report/ruhmi_framework_update_procedure.md`、変換手順: `doc/analysis_report/f003_04_mera_conversion_guide.md`

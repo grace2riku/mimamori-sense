@@ -11118,12 +11118,12 @@ int8_t sub_0000_serving_default_image_input_0[] = {
   -5, 46,
 };
 
-// Output tensor: StatefulPartitionedCall_0_70535
+// Output tensor: StatefulPartitionedCall_0_70327
 // Data Type: INT8
 // Shape: [1, 6, 6, 18]
 // Number of elements: 648
 // Size in bytes: 648
-int8_t sub_0000_StatefulPartitionedCall_0_70535[] = {
+int8_t sub_0000_StatefulPartitionedCall_0_70327[] = {
   38, 40, 27, 28, -40, 83, 44, 42, 26, 24,
   -49, 73, 45, 44, 24, 23, -78, 60, 27, 39,
   32, 29, -35, 83, 30, 40, 31, 23, -38, 78,
@@ -11191,12 +11191,12 @@ int8_t sub_0000_StatefulPartitionedCall_0_70535[] = {
   -37, 84, 16, 10, 24, 25, -67, 65,
 };
 
-// Output tensor: StatefulPartitionedCall_1_70554
+// Output tensor: StatefulPartitionedCall_1_70338
 // Data Type: INT8
 // Shape: [1, 12, 12, 18]
 // Number of elements: 2592
 // Size in bytes: 2592
-int8_t sub_0000_StatefulPartitionedCall_1_70554[] = {
+int8_t sub_0000_StatefulPartitionedCall_1_70338[] = {
   47, 47, 54, 47, 5, 113, 53, 52, 48, 44,
   -9, 104, 57, 59, 47, 41, -31, 93, 48, 46,
   57, 45, -5, 110, 48, 51, 52, 43, -8, 107,
