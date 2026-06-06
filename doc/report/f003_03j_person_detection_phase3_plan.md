@@ -111,9 +111,9 @@ Phase 3 は **「FP を減らす (Precision を上げる)」を最優先軸**に
 3. **3D アンカー再最適化** (学習設定)
    - クリーニング + negative 追加後の train 全体で K-means 再計算 (既存 Step 4 をそのまま再実行)。
    - 小物体側アンカー (mask=0,1,2) が極端に小さくないか分布を目視確認。
-4. **3C mosaic/cutmix 抑制 + loss 微調整** (cfg 変更)
-   - `cutmix=0` (192px では弊害が大きい)、`mosaic=1` は維持しつつ `mosaic_min_ratio` を導入して過度な縮小を抑制。
-   - `mixup=1` は維持 (色/質感の頑健性に寄与)。
+4. **3C mosaic/mixup/cutmix 全無効 + loss 微調整** (cfg 変更)
+   - `cutmix=0` (192px では弊害が大きい)。
+   - **`mosaic=0` / `mixup=0`**: hard negative (bbox ゼロの negative 画像) を train に追加した結果、OpenCV 無効ビルドの darknet で mosaic が負例画像を合成する際に SIGSEGV (segfault) するため、Phase 3 では mosaic/mixup を無効化する (8章 R7 参照)。hard negative が主軸であり、mosaic/mixup は副次的なので無効化のデメリットは限定的。
    - loss は `iou_loss=ciou` を明示 (localization 改善)、`obj_normalizer` を弱める方向は **まず既定のまま**で 1 周回し、未達なら次周で調整 (過調整リスク回避)。
 5. **3F Phase 2 best からの finetune 起点化** (運用)
    - スクラッチではなく Phase 2 final/best を起点に finetune。`max_batches` は **100,000** に短縮 (finetune なので 200k 不要、Colab 時間も節約)。
@@ -144,9 +144,9 @@ cell 13 (手書きテンプレート) と cell 14 (base-cfg patcher) の両方�
 |---|---|---|---|
 | `max_batches` | 200000 | **100000** | Phase 2 best 起点の finetune のため短縮 |
 | `cutmix` | 1 | **0** | 192px で弊害大 (背景断片が人物化 -> FP) |
-| `mosaic` | 1 | 1 (維持) | 多様性は維持 |
-| `mosaic_min_ratio` | (なし) | **0.2** | mosaic 縮小の下限を設け小物体潰れを抑制 |
-| `mixup` | 1 | 1 (維持) | 色/質感頑健性 |
+| `mosaic` | 1 | **0** | hard negative (負例) との併用で darknet が SIGSEGV するため無効 (8章 R7) |
+| `mosaic_min_ratio` | (なし) | 0.2 (無効時は不使用) | mosaic=0 のため実質未使用 |
+| `mixup` | 1 | **0** | mosaic と同様、負例画像合成での crash 回避のため無効 |
 | `policy` | sgdr | sgdr (維持) | finetune でも cosine restart 有効 |
 | `burn_in` | 4000 | **1000** | finetune 起点なので warmup 短縮 |
 | `[yolo] iou_loss` | (既定) | **ciou** | localization 改善 (FN/位置質) |
@@ -308,6 +308,12 @@ Phase 3 はモデル構造を変えないため、アリーナ 432KB / 単一 su
 ### R5. クリーニング閾値の副作用
 
 - hamming=3 への厳格化で重複除去が増える。似た姿勢の有用サンプルまで消すと Recall を損なうため、dry-run の redundant 件数が Phase 2 から大きく増えないか確認。増えすぎる場合は hamming=4 に戻す。
+
+### R7. hard negative + mosaic/mixup の SIGSEGV (Phase 3 実学習で発生)
+
+- OpenCV 無効ビルドの darknet (Yolo-Fastest fork) で `mosaic=1`/`mixup=1` のまま hard negative (bbox ゼロの負例) を train に含めると、最初のバッチ読み込み (`Create N permanent cpu-threads` 直後) で SIGSEGV (終了コード -11) する。Phase 2 は全画像に人物がいたため顕在化しなかった。
+- **対処**: Phase 3 cfg で `mosaic=0` / `mixup=0` に設定する (cfg 生成セル 15/16 で対応済み)。負例画像を mosaic 合成しないことで回避する。
+- 関連: finetune 起点重み (phase2, 200k iter 済み) を `max_batches=100000` で学習する際は seen カウンタが上限超過となるため、学習コマンドに `-clear` を付与してカウンタを 0 リセットする (付与しないと学習 0 回 + double free で終了コード -6)。
 
 ### R6. 評価条件の固定
 
