@@ -57,13 +57,13 @@ extern int8_t sub_0000_serving_default_image_input_0[];
 #define sub_0000_serving_default_image_input_0_SIZE (110592)
 #define sub_0000_serving_default_image_input_0_COUNT (110592)
 
-extern int8_t sub_0000_StatefulPartitionedCall_0_70535[];
-#define sub_0000_StatefulPartitionedCall_0_70535_SIZE (648)
-#define sub_0000_StatefulPartitionedCall_0_70535_COUNT (648)
+extern int8_t sub_0000_StatefulPartitionedCall_0_70327[];
+#define sub_0000_StatefulPartitionedCall_0_70327_SIZE (648)
+#define sub_0000_StatefulPartitionedCall_0_70327_COUNT (648)
 
-extern int8_t sub_0000_StatefulPartitionedCall_1_70554[];
-#define sub_0000_StatefulPartitionedCall_1_70554_SIZE (2592)
-#define sub_0000_StatefulPartitionedCall_1_70554_COUNT (2592)
+extern int8_t sub_0000_StatefulPartitionedCall_1_70338[];
+#define sub_0000_StatefulPartitionedCall_1_70338_SIZE (2592)
+#define sub_0000_StatefulPartitionedCall_1_70338_COUNT (2592)
 
 
 #endif // SUB_0000_MODEL_DATA_H

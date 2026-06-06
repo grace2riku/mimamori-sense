@@ -12,8 +12,8 @@ extern const size_t sub_0000_net1_tensors_count;
 
 // Addresses for each input and output buffer inside of the arena
 extern const uint32_t sub_0000_net1_address_serving_default_image_input_0;
-extern const uint32_t sub_0000_net1_address_StatefulPartitionedCall_1_70554;
-extern const uint32_t sub_0000_net1_address_StatefulPartitionedCall_0_70535;
+extern const uint32_t sub_0000_net1_address_StatefulPartitionedCall_1_70338;
+extern const uint32_t sub_0000_net1_address_StatefulPartitionedCall_0_70327;
 
 
 #endif // __SUB_0000_NET1_TENSORS_H__

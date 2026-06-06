@@ -50,6 +50,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdbool.h>
 
 #include "model_net1.h"
@@ -58,9 +59,7 @@
 #include "sub_0000_net1_invoke.h"
 
 // Buffers for CPU units
-int8_t buf_serving_default_image_input_0[110592];
-int8_t buf_StatefulPartitionedCall_0_70535[648];
-int8_t buf_StatefulPartitionedCall_1_70554[2592];
+int8_t buf_net1_serving_default_image_input_0[110592];
 
 // Arenas for CPU units
 
@@ -71,21 +70,21 @@ int8_t* GetModelInputPtr_net1_serving_default_image_input_0() {
 
 
   // Model output pointers
-int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_0_70535() {
-  return (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_0_70535);
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_0_70327() {
+  return (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_0_70327);
 }
 
-int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_1_70554() {
-  return (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_1_70554);
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_1_70338() {
+  return (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_1_70338);
 }
 
 
 void RunModel_net1(bool clean_outputs) {
   // Buffers for NPU units
-  int8_t* buf_net1_StatefulPartitionedCall_0_70535 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_0_70535);
-  int8_t* buf_net1_StatefulPartitionedCall_1_70554 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_1_70554);
+  int8_t* buf_net1_StatefulPartitionedCall_0_70327 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_0_70327);
+  int8_t* buf_net1_StatefulPartitionedCall_1_70338 = (int8_t*) (sub_0000_net1_arena + sub_0000_net1_address_StatefulPartitionedCall_1_70338);
 
-// NPU Unit
+  // NPU Unit
   sub_0000_net1_invoke(clean_outputs);
 
 }

@@ -10,12 +10,14 @@ Issue: #21
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `dataset/models/yolov8_pico_fall_int8.tflite` |
-| サイズ | 366 KB (374,456 bytes) |
+| ファイル | `dataset/models/yolo_fastest_person_darknet_int8.tflite` |
+| サイズ | 503 KB (515,112 bytes) |
 | 入力 | 192x192x3 (RGB), NHWC, INT8 |
-| 出力 | 1x5x756, INT8 |
-| パラメータ数 | 0.263M |
+| 出力 | 6x6x18 (648 bytes) + 12x12x18 (2,592 bytes), INT8（2系統） |
+| パラメータ数 | — |
 | 量子化 | Post-training INT8 |
+
+> 注: 本書の初版（v1.0 / 1.1）は `yolov8_pico_fall_int8.tflite`（366KB, 出力 1x5x756）を対象に作成された。その後、デプロイ対象は上表の `yolo_fastest_person_darknet_int8.tflite` に変更されている（`scripts/deploy_fall_detection.ps1` の `$ModelSrc` が変換対象モデルの正）。下記「5. 入出力仕様」には初版 pico 変換時の実測値が一部残るため、現行モデルの正確な値は `ruhmi_framework_update_procedure.md` および生成済み `mera/` を参照のこと。
 
 ## 2. 環境構築 (Windows)
 
@@ -56,18 +58,20 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 ### 2.4 MERA インストール (PowerShell)
 
 ```powershell
-# MERA 本体のインストール
-python -m pip install .\install\mera-2.5.0+pkg.3577-cp310-cp310-win_amd64.whl
+# MERA 本体のインストール (MERA 2.6.0 以降)
+python -m pip install .\install\mera-2.6.0+pkg.4513-cp310-cp310-win_amd64.whl
 
 # 依存パッケージのインストール
 python -m pip install onnx==1.17.0 tflite==2.18.0
 ```
 
+> 注: 最新の正確な wheel ファイル名は [install ディレクトリ](https://github.com/renesas/ruhmi-framework-mcu/tree/main/install) で確認すること（pkg 番号はリリースで変わる）。MERA 2.6.0 で変換スクリプトが `mcu_deploy.py` / `mcu_quantize.py` から統合スクリプト `mcu_compile.py` へ置き換わった。
+
 ### 2.5 動作確認
 
 ```powershell
 python -c "import mera; print(mera.__version__)"
-# 期待出力: 2.5.0+pkg.3577
+# 期待出力: 2.6.0+pkg.4513
 
 vela --version
 # 期待出力: 4.2.0
@@ -86,15 +90,18 @@ python -c "import mera; print(dir(mera))"
 cd C:\work\ruhmi-framework-mcu
 .venv\Scripts\Activate.ps1
 
-# 転倒検出モデルだけを一時ディレクトリに配置
-# (mcu_deploy.py はディレクトリ内の全 .tflite を変換するため)
-New-Item -ItemType Directory -Path C:\work\fall_model_input -Force
-Copy-Item C:\Users\grace\github\mimamori-sense\dataset\models\yolov8_pico_fall_int8.tflite C:\work\fall_model_input\
-
 # RUHMI変換 (Ethos-U55向け)
+# mcu_compile.py は単一モデルファイルを直接受け付けるため一時ディレクトリは不要
 cd scripts
-python mcu_deploy.py --ethos --ref_data C:\work\fall_model_input C:\work\deploy_fall_detection_output
+python mcu_compile.py C:\Users\grace\github\mimamori-sense\dataset\models\yolo_fastest_person_darknet_int8.tflite C:\work\deploy_fall_detection_output --npu --ref-data --suffix _net1
 ```
+
+> 引数の対応（旧 `mcu_deploy.py` → 新 `mcu_compile.py`）:
+> - `--ethos` → `--npu`（Ethos-U55 NPU 向け）
+> - `--ref_data`（フラグ）→ `--ref-data`（フラグ）
+> - モデル/出力は位置引数 `<model_path> <output_dir>`。`mcu_compile.py` は単一ファイル指定が可能
+> - `--suffix _net1`: 生成関数名のサフィックス。旧 `mcu_deploy.py` の `suffix='_net1'` ハードコード相当
+> - モデルは既に INT8 のため `--quantize` は不要
 
 ### 3.2 生成コードの確認
 
@@ -103,14 +110,16 @@ python mcu_deploy.py --ethos --ref_data C:\work\fall_model_input C:\work\deploy_
 Get-ChildItem C:\work\deploy_fall_detection_output\ -Recurse -Include "*.c","*.h" | Select-Object Name, Length
 ```
 
-期待される出力パス: `C:\work\deploy_fall_detection_output\yolov8_pico_fall_int8_no_ospi\build\MCU\compilation\src\`
+期待される出力パス（MERA 2.6.0 の命名規約 `{model_name}_NPU` + `--suffix` 値）: `C:\work\deploy_fall_detection_output\yolo_fastest_person_darknet_int8_NPU_net1\deploy\build\MCU\compilation\src\`
+
+> `--suffix _net1` を指定すると出力ディレクトリ名も `{model_name}_NPU_net1` となる（suffix 値がディレクトリ名に付与される）。
 
 ### 3.3 e2studio プロジェクトへの配置
 
 生成された `src/` 内から、MCU組み込みに必要なファイル（*.c, *.h）を以下にコピー:
 
 ```powershell
-$src = "C:\work\deploy_fall_detection_output\yolov8_pico_fall_int8_no_ospi\build\MCU\compilation\src"
+$src = "C:\work\deploy_fall_detection_output\yolo_fastest_person_darknet_int8_NPU_net1\deploy\build\MCU\compilation\src"
 $dest = "C:\Users\grace\github\mimamori-sense\e2studio_CPU0\src\ai_application\fall_detection\mera"
 
 # x86テスト用ファイルを除外してコピー
@@ -121,9 +130,10 @@ Get-ChildItem $src -Include "*.c","*.h" -File | Where-Object {
 
 ### 3.4 注意事項
 
-- `mcu_deploy.py` は `models_dir` 内の全 `.tflite` を再帰変換するため、`dataset/models/` を直接渡すと3モデル全てが変換される。上記手順ではpicoモデルのみを一時ディレクトリに配置して回避している。
-- モデルサイズ 366KB < 1.5MB なので OSPI は自動無効 (`_no_ospi` サフィックス)
-- `mcu_config['suffix']` が `'_net1'` にハードコードされている。生成される関数名にサフィックスが付く場合は、`wrapper.h` の関数名を合わせて調整する。
+- `mcu_compile.py` は単一モデルファイルを直接受け付ける（旧 `mcu_deploy.py` のようにディレクトリ内全 `.tflite` を変換しないため、一時ディレクトリでの隔離は不要）。
+- モデルサイズ 366KB は `--memory-threshold`（既定 0.8MB）未満のため外部メモリモードは自動無効（出力ディレクトリ名に `_external` は付かない）。
+- `--suffix _net1` で生成関数名のサフィックスを明示する。既存統合コード（`model_net1.c` / `RunModel_net1()` 等）との互換のため `_net1` を維持する。サフィックスを変える場合は上位 `wrapper.h` の関数名を合わせて調整する。
+- 内蔵SRAMを超える arena は、`--external`（OSPI配置）ではなく `.sdram` セクション属性の手動付与で対応する（5.6節）。
 
 ## 4. 生成ファイル一覧と配置先
 
@@ -157,6 +167,8 @@ e2studio_CPU0/src/ai_application/fall_detection/mera/
 **除外するファイル**: `CMakeLists.txt`, `compare.cpp`, `hal_entry.c`, `python_bindings.cpp` (x86テスト用)
 
 ## 5. 入出力仕様（変換結果）
+
+> 注: 以下 5.1〜5.6 は**初版 pico モデル変換時**の実測値を含む（出力 5x756・Arena 991,872 bytes 超過・3リージョン分割等）。**現行 deployed モデル（darknet）の変換結果は Arena 442,368 bytes (432KB, 内蔵SRAMに収まり SDRAM 配置は不要)・出力2系統 (648 / 2,592 bytes)・100% NPU（1リージョン, 112 ops）** であり値が異なる。現行モデルの正確な入出力仕様は `ruhmi_framework_update_procedure.md` および生成済み `mera/` ファイルを参照のこと。
 
 ### 5.1 入力テンソル
 
@@ -257,7 +269,7 @@ __attribute__((aligned(16), section(".sdram"))) uint8_t sub_0000_net1_arena[9918
 
 ### Arena超過の場合
 
-picoモデル (366KB) はArena 432KB以内に収まる見込みだが、入力サイズが顔認識の3倍 (110KB vs 36KB) のため超過する可能性がある。
+現行モデル（darknet）は Arena 442,368 bytes (432KB) で内蔵SRAMに収まっており、SDRAM 配置は不要。初版 pico モデルでは入力サイズが顔認識の3倍 (110KB vs 36KB) のため Arena が 991,872 bytes まで膨らみ内蔵SRAMを超過した経緯がある（5.6節）。将来モデルが大型化し超過する場合の対策:
 
 対策:
 1. `--ospi` オプションでOSPIフラッシュを使用（モデル重みを外部メモリに配置）
@@ -272,8 +284,9 @@ picoモデル (366KB) はArena 432KB以内に収まる見込みだが、入力�
 
 ### suffix問題
 
-`mcu_deploy.py` の `suffix='_net1'` により、関数名が `RunModel_net1()` 等になる場合がある。
-顔認識サンプルとの互換性のため、`mcu_deploy.py` の `suffix` を `''` (空文字)に変更するか、`wrapper.h` で吸収する。
+`mcu_compile.py` の `--suffix _net1` により、関数名が `RunModel_net1()` 等になる。
+顔認識サンプル（サフィックスなし）との互換性が必要な場合は `--suffix ""`（空文字）にするか、`wrapper.h` で吸収する。
+本プロジェクトの統合コードは `_net1` 付きで実装済みのため、再変換時も `--suffix _net1` を維持する。
 
 ---
 
@@ -283,3 +296,5 @@ picoモデル (366KB) はArena 432KB以内に収まる見込みだが、入力�
 |------|-----------|---------|
 | 2026-03-08 | 1.0 | 初版作成（変換手順書・入出力仕様テンプレート） |
 | 2026-03-08 | 1.1 | 変換実行完了。入出力仕様を実測値で更新。Arena超過問題を記録 |
+| 2026-06-05 | 1.2 | RUHMI Framework 更新 (Issue #144) に伴い、MERA 2.6.0 / 統合スクリプト `mcu_compile.py` へ変換手順・引数・バージョン記述を更新 |
+| 2026-06-06 | 1.3 | 変換対象モデルを実体（`yolo_fastest_person_darknet`）に合わせて1章・3章を更新、出力パスを `{model}_NPU_net1` に修正、5章に pico 変換記録である旨を注記（Issue #144 PR #145 レビュー反映） |

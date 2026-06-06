@@ -58,8 +58,8 @@
 extern uint8_t sub_0000_net1_arena[kArenaSize_sub_0000_net1];
 
 // Buffers
-extern int8_t buf_net1_StatefulPartitionedCall_0_70535[648];
-extern int8_t buf_net1_StatefulPartitionedCall_1_70554[2592];
+extern int8_t buf_net1_StatefulPartitionedCall_0_70327[648];
+extern int8_t buf_net1_StatefulPartitionedCall_1_70338[2592];
 
 
 void RunModel_net1(bool clean_outputs);
@@ -68,6 +68,6 @@ void RunModel_net1(bool clean_outputs);
 int8_t* GetModelInputPtr_net1_serving_default_image_input_0();
 
   // Model output pointers
-int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_0_70535();
-int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_1_70554();
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_0_70327();
+int8_t* GetModelOutputPtr_net1_StatefulPartitionedCall_1_70338();
 

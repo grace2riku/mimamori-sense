@@ -44,7 +44,9 @@ static inline int8_t* mera_input_ptr(void) {
  * @return Pointer to INT8 output tensor (648 bytes)
  */
 static inline int8_t* mera_output_ptr_branch0(void) {
-    return GetModelOutputPtr_net1_StatefulPartitionedCall_0_70535();
+    /* 末尾の _NNNNN は MERA 生成時の内部ノードID。モデル再変換で変わるため
+       mera/model_net1.h の関数名と一致させること (Issue #144 で _70535→_70327)。 */
+    return GetModelOutputPtr_net1_StatefulPartitionedCall_0_70327();
 }
 
 /**
@@ -55,7 +57,9 @@ static inline int8_t* mera_output_ptr_branch0(void) {
  * @return Pointer to INT8 output tensor (2592 bytes)
  */
 static inline int8_t* mera_output_ptr_branch1(void) {
-    return GetModelOutputPtr_net1_StatefulPartitionedCall_1_70554();
+    /* 末尾の _NNNNN は MERA 生成時の内部ノードID。モデル再変換で変わるため
+       mera/model_net1.h の関数名と一致させること (Issue #144 で _70554→_70338)。 */
+    return GetModelOutputPtr_net1_StatefulPartitionedCall_1_70338();
 }
 
 /**
