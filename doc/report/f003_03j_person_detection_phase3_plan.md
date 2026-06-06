@@ -226,6 +226,27 @@ cell 13 (手書きテンプレート) と cell 14 (base-cfg patcher) の両方�
 - [ ] CPU0 FLASH 960KB 以内を維持
 - [ ] 実機で人物を安定検出 (Phase 2 同等以上)
 
+### 6.1.1 Phase 3 round1 実測結果 (2026-06)
+
+| 指標 | Phase 2 | **Phase 3 round1** | KPI | 判定 |
+|---|---|---|---|---|
+| mAP@0.50 | 48.89% | **52.22%** | >=50% | ✅ 達成 |
+| Precision | 49% | **68%** | >=60% | ✅ 達成 |
+| Recall | 52% | **49%** | >=60% | ❌ 未達 (低下) |
+| TP/FP/FN | 1909/1994/1744 | 1826/863/1937 | - | FP -57% / FN +11% |
+
+評価条件: `darknet detector map`, conf_thresh=0.25, IoU50%, unique_truth=3763。
+
+**分析**: hard negative mining (max-add-ratio 0.15) が効きすぎ、FP を大幅削減・Precision を 68% まで押し上げた反面、検出を抑制する方向に寄り Recall が低下した。見守り製品では FN (見逃し) が致命的で Recall を最優先すべきため、Precision の余剰 (68% vs 目標60%) を Recall に振り戻す **round2** を実施する。
+
+### 6.1.2 Phase 3 round2 方針 (Recall 改善再学習)
+
+- `--max-add-ratio` 0.15 -> **0.08** (負例を減らし過剰抑制を緩和)
+- `--fp-conf-threshold` 0.3 -> **0.45** (自信のあるFPのみ負例化。境界的な真の人物を負例にしない)
+- mosaic/mixup は 0 維持 (R7 の segfault 回避)
+- 起点は **Phase 2 best** から再 finetune (round1 の抑制学習を引きずらない)。Step 2.6 は冪等化済み (既存 hardneg_* を除去してから再 mining)
+- round1 weights は `*-phase3r1.weights` として退避し、2/3 KPI 達成モデルとして保全
+
 ### 6.2 未達時の分岐
 
 | 状況 | 次アクション |
