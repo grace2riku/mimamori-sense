@@ -139,27 +139,27 @@ void fall_detection_postprocess_init(void)
     s_config.max_detections       = AI_MAX_DETECTION_NUM;
 
     /* Branch 0: 6x6 grid, stride 32, large objects
-     * Anchors from Issue #135 Phase 2 training (cfg mask=3,4,5, indices 3,4,5 of full anchor list)
-     * Full anchors from cfg: 8,20, 25,53, 46,114, 89,66, 106,127, 167,155
+     * Anchors from Issue #137 Phase 3 round1 training (cfg mask=3,4,5, indices 3,4,5 of full anchor list)
+     * Full anchors from round1 cfg: 8,20, 25,55, 81,63, 50,121, 121,109, 155,166
      */
     s_config.branches[0].grid_w     = AI_OUTPUT_BRANCH0_GRID_W;
     s_config.branches[0].grid_h     = AI_OUTPUT_BRANCH0_GRID_H;
     s_config.branches[0].stride     = AI_OUTPUT_BRANCH0_STRIDE;
-    s_config.branches[0].anchors[0][0] =  89.0f;  s_config.branches[0].anchors[0][1] =  66.0f;
-    s_config.branches[0].anchors[1][0] = 106.0f;  s_config.branches[0].anchors[1][1] = 127.0f;
-    s_config.branches[0].anchors[2][0] = 167.0f;  s_config.branches[0].anchors[2][1] = 155.0f;
+    s_config.branches[0].anchors[0][0] =  50.0f;  s_config.branches[0].anchors[0][1] = 121.0f;
+    s_config.branches[0].anchors[1][0] = 121.0f;  s_config.branches[0].anchors[1][1] = 109.0f;
+    s_config.branches[0].anchors[2][0] = 155.0f;  s_config.branches[0].anchors[2][1] = 166.0f;
     s_config.branches[0].scale      = POSTPROC_BRANCH0_SCALE;
     s_config.branches[0].zero_point = POSTPROC_BRANCH0_ZERO_POINT;
 
     /* Branch 1: 12x12 grid, stride 16, small objects
-     * Anchors from Issue #135 Phase 2 training (cfg mask=0,1,2, indices 0,1,2 of full anchor list)
+     * Anchors from Issue #137 Phase 3 round1 training (cfg mask=0,1,2, indices 0,1,2 of full anchor list)
      */
     s_config.branches[1].grid_w     = AI_OUTPUT_BRANCH1_GRID_W;
     s_config.branches[1].grid_h     = AI_OUTPUT_BRANCH1_GRID_H;
     s_config.branches[1].stride     = AI_OUTPUT_BRANCH1_STRIDE;
     s_config.branches[1].anchors[0][0] =  8.0f;  s_config.branches[1].anchors[0][1] =  20.0f;
-    s_config.branches[1].anchors[1][0] = 25.0f;  s_config.branches[1].anchors[1][1] =  53.0f;
-    s_config.branches[1].anchors[2][0] = 46.0f;  s_config.branches[1].anchors[2][1] = 114.0f;
+    s_config.branches[1].anchors[1][0] = 25.0f;  s_config.branches[1].anchors[1][1] =  55.0f;
+    s_config.branches[1].anchors[2][0] = 81.0f;  s_config.branches[1].anchors[2][1] =  63.0f;
     s_config.branches[1].scale      = POSTPROC_BRANCH1_SCALE;
     s_config.branches[1].zero_point = POSTPROC_BRANCH1_ZERO_POINT;
 
