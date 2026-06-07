@@ -247,6 +247,30 @@ cell 13 (手書きテンプレート) と cell 14 (base-cfg patcher) の両方�
 - 起点は **Phase 2 best** から再 finetune (round1 の抑制学習を引きずらない)。Step 2.6 は冪等化済み (既存 hardneg_* を除去してから再 mining)
 - round1 weights は `*-phase3r1.weights` として退避し、2/3 KPI 達成モデルとして保全
 
+### 6.1.3 Phase 3 round2 実測結果と最終結論 (2026-06)
+
+round2 (max-add-ratio 0.08 / fp-conf-threshold 0.45 / Phase 2 起点 finetune) を学習・評価した結果:
+
+| 指標 | Phase 2 | round1 | **round2** | KPI |
+|---|---|---|---|---|
+| mAP@0.50 | 48.9% | 52.2% | **50.9%** | >=50% |
+| Precision | 49% | 68% | **57%** | >=60% |
+| Recall | 52% | 49% | **51%** | >=60% |
+| TP/FP/FN | 1909/1994/1744 | 1826/863/1937 | 2153/1609/2042 | - |
+
+注: round2 評価は runtime リセット後の復旧環境のため val が未クリーニング (unique_truth=4195、round1 は 3763)。完全比較ではないが傾向は明確。round2 の学習時アンカーは `8,20, 25,55, 81,63, 50,121, 121,109, 155,166` (Step4 calc値ではなく cfg 既存値で学習されていた。calc値で評価すると mAP 21% と激減することで確認)。
+
+**最終結論 (Recall 頭打ちの構造的要因)**:
+
+3 回の実測 (Phase2 P49/R52、round1 P68/R49、round2 P57/R51) は、Precision+Recall ≒ 一定 (~107-117) の **同一トレードオフ・フロンティア上を滑っているだけ**で、**Recall は 49-52% で頭打ち**。hard negative は FP (Precision) にしか効かず、Recall の律速要因 (192px 解像度・モデル容量・データ量) に対しては無力。**hard negative 調整の延長では Recall 60% に構造的に到達不能**であることが確定した。
+
+**決定 (2026-06、方針 A)**:
+
+- Issue #137 の**主目標 mAP@0.50 >= 50% は達成**。Precision >= 60% も round1 で達成。**未達は Recall >= 60% のみ**で、現アプローチでは到達不能と判明。
+- **採用モデル = round1** (`*-phase3r1.weights`、mAP 52.2/P68/R49、3 モデル中 KPI 最良の 2/3 達成、最高 mAP)。Phase D (MCU 反映) でデプロイする。高 Precision のため実機側 conf 閾値を下げて Recall を運用回収する余地もある。
+- **Recall >= 60% は別 Issue に切り出す** (フロンティア拡張: 倒れ姿勢を含むデータ拡充を最優先、必要なら解像度 224px / モデル拡大だが**アリーナ 432KB 再設計 = Phase E とセット**)。
+- 本 Issue #137 は「主目標 mAP 達成・Recall 部分達成、Recall 改善は後続 Issue」として区切る。
+
 ### 6.2 未達時の分岐
 
 | 状況 | 次アクション |
