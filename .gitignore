@@ -1,5 +1,15 @@
 .DS_Store
 
+# mtk3_bsp2 (μT-Kernel 3.0 BSP2): 本体ソースはコミットする（vendoring）。
+# 配置先は e2studio_CPU0/mtk3_bsp2/（e2 studio プロジェクト mimamori_sense_CPU0 直下）、
+# ピン版数 v1.00.04（→ doc/migration/mtk3-migration-guide.md 4.1）。
+# BSP2 をプロジェクト内でビルドした場合のビルド生成物のみ除外する。
+e2studio_CPU0/mtk3_bsp2/**/*.o
+e2studio_CPU0/mtk3_bsp2/**/*.obj
+e2studio_CPU0/mtk3_bsp2/**/*.a
+e2studio_CPU0/mtk3_bsp2/**/*.lib
+e2studio_CPU0/mtk3_bsp2/**/*.d
+
 # reference_projects: 自動生成コードとビルド成果物を無視
 reference_projects/**/ra/
 reference_projects/**/ra_cfg/
