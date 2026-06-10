@@ -65,14 +65,22 @@ CLAUDE.md / プロジェクト実態に基づく前提環境。
 | MCU | R7KA8P1KFLCAC | Code Flash 1MB（CPU0 512KB + CPU1 512KB）, RAM 約1.9MB |
 | コア構成 | CPU0: Cortex-M85 @1GHz（ブート担当） / CPU1: Cortex-M33 @250MHz | 本移行は **CPU0 のみ** が対象 |
 
-### BSP2 版数（要確認）
+### BSP2 版数（R-002 で確定）
 
-- 使用する `mtk3_bsp2` のコミット/タグは **R-002 着手時に確定し、本表へ追記する（現時点: 要確認）**。
+| 項目 | 値 |
+|------|-----|
+| `mtk3_bsp2` タグ | **v1.00.04** |
+| `mtk3_bsp2` コミット | `1ab52cc5a9f59450e62ab78e76de11f4dd89eb15` |
+| 内包サブモジュール `mtkernel`（μT-Kernel 3.0 本体） | コミット `435096c96136c847774b5d6de07cc092b1398778` |
+| RA FSP マニュアル版数 | RA FSP 編 Version 01.00.B11（2026.04.27、EK-RA8P1 対応版） |
+| EK-RA8P1 対応状況 | **公式対応済み**（`sysdepend/ra_fsp/lib/libtm/ek_ra8p1/`、`include/sys/sysdepend/ra_fsp/ek_ra8p1/machine.h`） |
+
+- 取得コマンド: `git clone --recursive https://github.com/tron-forum/mtk3_bsp2.git`
 - 参照: TRON Forum `mtk3_bsp2` リポジトリ（EK-RA8P1 対応版）。
   - BSP2 RA FSP 手順: https://github.com/tron-forum/mtk3_bsp2/blob/main/doc/bsp2_ra_fsp_jp.md
   - BSP2 サンプル Start Guide: https://github.com/tron-forum/mtk3bsp2_samples/blob/main/Start_Guide/jp/startguide_ra_jp.md
 - BSP2 公式手順は GNU ARM Embedded 前提。本プロジェクトは LLVM のため読み替えが必要
-  （→ 「4.4 LLVM 読み替え」）。
+  （→ 「4.6 LLVM 読み替え」）。
 
 ---
 
@@ -165,61 +173,174 @@ Grep 実測。各 API は「FreeRTOS → μT-Kernel 3.0 API 対応表」（→ 5
 > この段では `usermain()` への切り替えは行わない。BSP2 を組み込んで「コンパイル・リンクが
 > 成功する」ことだけを確認する。
 
-### 4.1 mtk3_bsp2 の取得・配置
+### 4.1 mtk3_bsp2 の取得・配置（R-002 で確定）
 
-- 取得: `git clone --recursive`（BSP2 はサブモジュールを含むため `--recursive` 必須）。
-- 配置先（案）: リポジトリ直下 `mtk3_bsp2/`、または `e2studio_CPU0/` 配下。
-  - **R-002 着手時に配置先を確定し本節へ記載する（要確認）**。
-- `.gitignore` 方針:
-  - 既存 `.gitignore` は `reference_projects/**` の生成物のみ除外している。
-  - `mtk3_bsp2` を**サブモジュールとして取り込む**か、**本体をコミットする**かを R-002 で決定する。
-    本体コミットする場合、BSP2 のビルド生成物（`*.o` `*.a` 等）を `.gitignore` へ追加する。
+- 取得: `git clone --recursive https://github.com/tron-forum/mtk3_bsp2.git`
+  （BSP2 は μT-Kernel 3.0 本体をサブモジュール `mtkernel` として内包するため `--recursive` 必須）。
+- **配置先（確定）**: **`e2studio_CPU0/mtk3_bsp2/`**
+  - e2 studio プロジェクト `mimamori_sense_CPU0` のルートは `e2studio_CPU0/` であり、
+    公式手順の include path 表記 `${workspace_loc:/${ProjName}/mtk3_bsp2}` をそのまま使うには
+    BSP2 がプロジェクト（=`e2studio_CPU0`）の内側に存在する必要がある。リポジトリ直下ではなく
+    **CPU0 プロジェクト直下**へ置く。
+  - 配置後のディレクトリ構成（主要部）:
+    ```
+    e2studio_CPU0/mtk3_bsp2/
+      ├─ config/            （config.h, config_bsp.h, config_bsp/ra_fsp/config_bsp.h など）
+      ├─ include/           （sys/ tk/ tm/ ― machine.h でターゲット分岐）
+      ├─ sysdepend/ra_fsp/  （CPU コア依存・デバイスドライバ。EK-RA8P1 は armv8m を使用）
+      ├─ etc/linker/mtkernel.ld   （μT-Kernel 用追加リンカスクリプト）
+      └─ mtkernel/          （μT-Kernel 3.0 本体。kernel/knlinc を include path に追加）
+    ```
+- **`.gitignore` 方針（確定）**: **本体ソースをコミットする（vendoring）**。
+  - 理由: ntshell は submodule だが、BSP2 は config 改変（`config_bsp.h` の `DEVCNF_USE_HAL_*` 等）を
+    伴うため、本体を直接コミットして版数を本書 2 章に固定（タグ `v1.00.04`）する方が
+    FSP 再生成・環境移行に強い。
+  - clone 後に **入れ子の `.git`（`mtk3_bsp2/.git` と `mtk3_bsp2/mtkernel/.git`）を削除**して
+    プレーンなソースとして取り込む（submodule 化しない）。
+  - `.gitignore` には BSP2 のビルド生成物のみ追加済み:
+    ```
+    e2studio_CPU0/mtk3_bsp2/**/*.o
+    e2studio_CPU0/mtk3_bsp2/**/*.obj
+    e2studio_CPU0/mtk3_bsp2/**/*.a
+    e2studio_CPU0/mtk3_bsp2/**/*.lib
+    e2studio_CPU0/mtk3_bsp2/**/*.d
+    ```
 
-### 4.2 インクルードパス追加（e2 studio GUI 操作 ― ユーザー手動）
+### 4.2 ビルド対象設定（Exclude resource from build の解除）― ユーザー手動
+
+clone 直後、e2 studio は `mtk3_bsp2/` をビルド対象外（`Exclude resource from build`）に
+している場合がある。**ビルドに含めるため解除する**。
+
+操作: プロジェクト・エクスプローラで `mimamori_sense_CPU0/mtk3_bsp2` を右クリック →
+Properties → C/C++ Build → 「Exclude resource from build」のチェックが入っていれば**外す**
+（全構成 Configuration に対して）。
+
+> 注意（ビルド対象の絞り込み）: `mtk3_bsp2` 配下には他ボード（nxp_mcux / stm32_cube / xmc_mtb）の
+> ソースも含まれるが、各ソースは `machine.h` のターゲットマクロ（`MTKBSP_RAFSP` /
+> `MTKBSP_EK_RA8P1` / `MTKBSP_CPU_CORE_ARMV8M`）で `#if` ガードされており、
+> EK-RA8P1 以外のコードは空コンパイルされる。**ターゲットマクロ（4.4）を必ず先に設定すること。**
+> リンクサイズ・ビルド時間が問題になる場合は、他ボード用ディレクトリ（`sysdepend/nxp_mcux` 等）を
+> 個別に Exclude resource from build してもよい（必須ではない）。
+
+### 4.3 インクルードパス追加（e2 studio GUI 操作 ― ユーザー手動）
 
 > include path / マクロ / リンカの変更は e2 studio のプロジェクト設定（GUI）で行う。
-> `configuration.xml` ではなくビルド設定であり、自動生成で消えない。
+> `configuration.xml` ではなくビルド設定（`.cproject`）であり、FSP 自動生成で消えない。
 > **以下の操作はユーザーが e2 studio 上で実施する。**
 
 e2 studio: プロジェクト `mimamori_sense_CPU0` を右クリック → Properties →
-C/C++ Build → Settings → Tool Settings → (LLVM) Compiler → Includes に追加:
+C/C++ Build → Settings → Tool Settings → **LLVM C Compiler → Includes**（Include paths）に
+以下 4 つを追加する（**既存の include path は変更しない**）:
 
 ```
-mtk3_bsp2
-mtk3_bsp2/config
-mtk3_bsp2/include
-（および BSP2 の RA/FSP 対応ディレクトリ ― bsp2_ra_fsp_jp.md に従い R-002 で確定）
+"${workspace_loc:/${ProjName}/mtk3_bsp2}"
+"${workspace_loc:/${ProjName}/mtk3_bsp2/config}"
+"${workspace_loc:/${ProjName}/mtk3_bsp2/include}"
+"${workspace_loc:/${ProjName}/mtk3_bsp2/mtkernel/kernel/knlinc}"
 ```
 
-### 4.3 プリプロセッサ定義（ターゲット定義マクロ）
+> 公式手順（4 パス）と同一。4 番目 `mtkernel/kernel/knlinc` は μT-Kernel 本体の内部ヘッダ
+> （`kernel.h` 等）用で、これが欠けると `sys_start.c` 等のビルドが失敗する。
+>
+> **アセンブラにも同じ include path を設定する。** BSP2 は `dispatch.S`（ARMv8-M）等の
+> アセンブリを含むため、**LLVM Assembler → Includes** にも上記 4 パスを同様に追加する。
 
-EK-RA8P1 / FSP 向けのターゲット定義マクロを Compiler → Preprocessor → Defined symbols に追加:
+### 4.4 プリプロセッサ定義（ターゲット定義マクロ）
+
+EK-RA8P1 のターゲット定義マクロを **LLVM C Compiler → Preprocessor → Defined symbols**
+に追加する（**既存の定義は変更しない**）:
 
 ```
-_RAFSP_   （BSP2 の RA-FSP ターゲットを示すマクロ。正確な名称は bsp2_ra_fsp_jp.md で確定 ― 要確認）
+_RAFSP_EK_RA8P1_
 ```
 
-> マクロ名は BSP2 のバージョンにより異なるため、R-002 で公式手順を参照して確定し本節を更新する。
+- このマクロ 1 つで BSP2 内部の `include/sys/machine.h` が
+  `include/sys/sysdepend/ra_fsp/ek_ra8p1/machine.h` を取り込み、以下が自動で有効になる:
+  - `MTKBSP_RAFSP`（RA FSP ターゲット）
+  - `MTKBSP_EK_RA8P1`（EK-RA8P1 ボード。`tm_com.c` の SCI8 シリアル選択等に使用）
+  - `MTKBSP_CPU_CORE_ARMV8M`（Cortex-M85 = ARMv8-M。`sysdepend/ra_fsp/cpu/core/armv8m/` を選択）
+  - `TARGET_DIR = ra_fsp/ek_ra8p1` / `TARGET_GRP_DIR = ra_fsp`（config_bsp 等のパス解決）
+- **アセンブラにも同じ定義を設定する**（LLVM Assembler → Preprocessor。`dispatch.S` 等のため）。
+- 他ボード用の `_RAFSP_*_` マクロは定義しないこと（重複定義はビルドエラーの原因）。
 
-### 4.4 リンカスクリプトの LLVM 整合
+> 注意: T-Monitor シリアル出力は **SCI8（PD02=TXD8 / PD03=RXD8）, 115200/8N1** を直接レジスタ
+> 操作で使用する（`sysdepend/ra_fsp/lib/libtm/ek_ra8p1/tm_com.c`）。本プロジェクトの既存
+> J-Link コンソール（`jlink_console.c`）が使う UART と物理ポートが競合しないか R-003 で確認する。
+
+### 4.5 リンカスクリプトの LLVM 整合
 
 実態:
 - 本プロジェクトのリンカは `e2studio_CPU0/script/fsp.lld`（LLVM lld 形式）。
   内容は `memory_regions.lld` と `fsp_gen.lld` を `INCLUDE` する FSP 標準構成。
-- BSP2 公式は GNU ld 用 `mtkernel.ld` 相当を提供（GNU ARM Embedded 前提）。
+  `fsp_gen.lld` が `MEMORY{ RAM ... }` と各セクションを定義する。
+- BSP2 が要求する追加リンカスクリプトは `mtk3_bsp2/etc/linker/mtkernel.ld`。内容は以下のみ:
+  ```
+  SECTIONS
+  {
+      .mtk_bsp2 (NOLOAD) :
+      {
+          *(.mtk_exctbl)
+          __mtk3_SYSMEM_START = .;
+      }>RAM
+  }
+  ```
+  - `.mtk_exctbl`: 例外/割り込みハンドラテーブル（`sys_start.c` の `knl_exctbl[]` を RAM に配置）。
+  - `__mtk3_SYSMEM_START`: μT-Kernel のシステムメモリ（動的確保プール）の開始アドレス。
+    既存 RAM セクションの**後ろ**（空き RAM 先頭）を指す必要がある。
 
-方針:
-- **既存の `fsp.lld`（LLVM lld）をベースに維持**し、μT-Kernel が要求するセクション
-  （カーネルスタック・タスク管理領域等）を追記する形で整合させる。
-  BSP2 の `mtkernel.ld` を丸ごと差し替えるのではなく、必要なセクション定義を移植する。
-- 具体的な追記内容は R-002 で BSP2 リンカ要件を確認して確定し、本節へ記載する。
+方針（確定）:
+- **既存 `fsp.lld` を維持し、BSP2 の `mtkernel.ld` を追加リンカスクリプトとして「後ろに」連結する**。
+  `mtkernel.ld` を丸写し・改変せず、**そのまま追加スクリプトとして渡す**。
+  - lld は複数の `-T`（Script files）を順に処理し、`.mtk_bsp2` の `>RAM` は
+    `fsp_gen.lld` が定義した `RAM` 領域へ割り付けられる。`mtkernel.ld` を fsp.lld の**後**に
+    処理させることで、`__mtk3_SYSMEM_START` が FSP 割り当て済み RAM の末尾（空き領域の先頭）を指す。
+  - GNU ld 前提の公式は GUI の「Script files」末尾に追加するが、LLVM lld でも**スクリプトの
+    指定順を fsp.lld の後**にすれば同じ効果になる。
+- e2 studio GUI 操作（**確定方式 ― 2026-06-11 実機ビルド成功**）:
+  - Properties → C/C++ Build → Settings → Tool Settings → **LLVM Linker → General →
+    Script files (-T)** の**末尾**に以下を追加する（既存の `fsp.lld` 指定はそのまま、その後ろに置く）。
+    **本方式で LLVM ビルド（コンパイル＋リンク）が成功することを確認済み**:
+    ```
+    "${workspace_loc:/${ProjName}/mtk3_bsp2/etc/linker/mtkernel.ld}"
+    ```
+  - 参考（未採用の代替案）: e2 studio の LLVM リンカ設定が `fsp.lld` を 1 本だけ指定する形で
+    スクリプト追加欄が無い場合は、**`e2studio_CPU0/script/fsp.lld` の末尾に
+    `INCLUDE etc/linker/mtkernel.ld` 相当を追記**して連結する方法もある（`fsp.lld` は
+    FSP 自動生成対象外の `script/` 配下ユーザー管理ファイル）。本プロジェクトでは Script files 欄
+    への追加で通ったため、この代替は使用していない。
+- **R-002 段階の注意**: μT-Kernel をまだ起動しない（`knl_start_mtkernel()` を呼ばない）ため、
+  `.mtk_bsp2` セクションや BSP2 のシンボルは**リンクされるが実行時には未使用**。リンクが通れば
+  この段階の目的（ビルド確立）は達成。実行時挙動の確認は R-003 で行う。
 
-### 4.5 R-002 完了条件
+### 4.6 LLVM 読み替え（GNU ARM Embedded → LLVM）
 
-- [ ] `mtk3_bsp2` が配置され、`.gitignore` 方針が決まっている
-- [ ] include path / マクロ / リンカが LLVM 向けに設定されている
-- [ ] **FreeRTOS のまま** LLVM でビルド（コンパイル＋リンク）が成功する
-- [ ] 本書 2 章「BSP2 版数」、4.1〜4.4 の「要確認」が確定値で埋まっている
+公式手順（`bsp2_ra_fsp_jp.md` 4.2.2）は GNU ARM Embedded の GUI ラベルで記述されている。
+LLVM ツールチェインでは以下のように読み替える（設定する**値**は同一、設定する**場所**が異なる）。
+
+| 公式（GNU ARM Embedded）の設定場所 | 本プロジェクト（LLVM）の設定場所 | 設定値 |
+|----------------------------------|--------------------------------|--------|
+| GNU Arm Cross C Compiler → Preprocessor → Define symbols | LLVM C Compiler → Preprocessor → Defined symbols | `_RAFSP_EK_RA8P1_` |
+| GNU Arm Cross C Compiler → Includes → Include paths | LLVM C Compiler → Includes → Include paths | 4.3 の 4 パス |
+| GNU Arm Cross Assembler → Preprocessor | LLVM Assembler → Preprocessor | `_RAFSP_EK_RA8P1_` |
+| GNU Arm Cross Assembler → Includes | LLVM Assembler → Includes | 4.3 の 4 パス |
+| GNU Arm Cross Linker → General → Script files | LLVM Linker → General → Script files (-T) | `mtkernel.ld` を末尾に追加（4.5） |
+
+- 設定 GUI のラベル名は e2 studio の LLVM ツールチェイン表示に依存する。
+  「LLVM C Compiler」「LLVM Assembler」「LLVM Linker」が見当たらない場合は、
+  Tool Settings 内の Compiler / Assembler / Linker の各 Includes・Preprocessor・General を探す。
+- BSP2 の C ソースは GNU 拡張（`__attribute__((section(...)))`、インライン asm 等）を使うが、
+  LLVM/clang は GNU 拡張互換のため通常そのままビルドできる。万一警告/エラーが出た場合は
+  該当箇所を R-002 実機ビルドで切り分ける。
+
+### 4.7 R-002 完了条件（2026-06-11 実機ビルド成功で全項目達成）
+
+- [x] `mtk3_bsp2`（タグ v1.00.04）が `e2studio_CPU0/mtk3_bsp2/` に配置され、`.gitignore` 方針
+      （vendoring + ビルド生成物除外）が決定・反映されている
+- [x] include path（4 パス）/ マクロ（`_RAFSP_EK_RA8P1_`）/ リンカ（`mtkernel.ld` 連結）が
+      LLVM 向けに設定されている（ユーザーが e2 studio で手動設定済み）
+- [x] Exclude resource from build が解除され、BSP2 ソースがビルド対象になっている
+- [x] **FreeRTOS のまま**（`knl_start_mtkernel()` は呼ばない）LLVM でビルド
+      （コンパイル＋リンク）が成功する
 
 ---
 
@@ -308,9 +429,9 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 - [ ] `ra_gen/main.c` の `vTaskStartScheduler()` 経路が、フック（`hal_warmstart.c` 等）で
       μT-Kernel 起動へ橋渡しされる構成のまま動くか（橋渡しは `src/` 側にあるので残るはず）
-- [ ] e2 studio ビルド設定の include path（`mtk3_bsp2`, `/config`, `/include`）が残っているか
-- [ ] プリプロセッサ定義（BSP2 ターゲットマクロ）が残っているか
-- [ ] リンカスクリプト（`script/fsp.lld` への μT-Kernel セクション追記）が残っているか
+- [ ] e2 studio ビルド設定の include path（`mtk3_bsp2`, `/config`, `/include`, `/mtkernel/kernel/knlinc`）が残っているか
+- [ ] プリプロセッサ定義（BSP2 ターゲットマクロ `_RAFSP_EK_RA8P1_`、C/アセンブラ両方）が残っているか
+- [ ] リンカスクリプト（`mtkernel.ld` を `fsp.lld` の後ろに連結する設定 ― 4.5）が残っているか
 - [ ] `ra_gen/*_thread.c` の FreeRTOS スレッド生成が復活しても、μT-Kernel 側のタスク生成と
       二重起動・競合しない構成になっているか（→ 7.1 の橋渡し方式で吸収）
 - [ ] `src/` 配下の μT-Kernel 化したファイルが上書きされていないか（`ra_gen/` のみ再生成対象だが念のため）
@@ -474,3 +595,5 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-10 | R-001 | 初版作成（全体像・前提環境・FreeRTOS 依存棚卸し・API 対応表・再適用チェックリスト・ステップ別差分ポイント） |
 | 2026-06-10 | R-001 | レビュー反映: `jlink_console.c` のクリティカルセクションは ISR と共有状態を保護するため、`tk_dis_dsp()` ではなく割り込みマスク（`DI`/`EI`・`tk_dis_int`/`tk_ena_int`）が必要な旨を 3.3 / 5 / 7.2 に明記 |
 | 2026-06-10 | R-001 | レビュー反映: 5.1 節を追加し、割り込みハンドラ（ISR）から呼べる μT-Kernel API の制約（待ち系は禁止／通知・参照系は可）を対応表化 |
+| 2026-06-10 | R-002 | BSP2 組み込み確定: タグ **v1.00.04**（mtkernel サブモジュール `435096c`）を `e2studio_CPU0/mtk3_bsp2/` へ vendoring 配置（入れ子 `.git` 削除・submodule 化せず）。`.gitignore` に BSP2 ビルド生成物除外を追加。2 章「BSP2 版数」を確定値で更新。4 章を全面改訂: 配置先・Exclude 解除（4.2）・include path 4 パス確定（4.3、`mtkernel/kernel/knlinc` を含む）・ターゲットマクロ確定 `_RAFSP_EK_RA8P1_`（4.4、1 つで RAFSP/EK_RA8P1/ARMV8M を自動有効化）・リンカ `mtkernel.ld` を `fsp.lld` の後ろに連結する LLVM 整合方針（4.5）・GNU→LLVM 読み替え表（4.6）・完了条件（4.7）を追記 |
+| 2026-06-11 | R-002 | **実機 LLVM ビルド成功を確認**（FreeRTOS のまま・コンパイル＋リンク成功）。リンカは **Script files (-T) 欄末尾に `mtkernel.ld` を追加**する方式で通ることを確定（4.5）。`fsp.lld` への INCLUDE 追記は未採用の代替として記載。4.7 完了条件を全項目達成（チェック済み）に更新 |
