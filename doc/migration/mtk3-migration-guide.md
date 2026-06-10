@@ -260,6 +260,27 @@ FreeRTOS の tick（`pdMS_TO_TICKS` / `configTICK_RATE_HZ`）とは単位系が�
 > レースが残る。**ISR と共有するデータは必ず割り込みマスク（`DI`/`EI` または `tk_dis_int`/`tk_ena_int`）
 > で保護する**こと（→ 7.2 の `jlink_console.c` が該当）。`tk_dis_dsp()` はタスク間のみの排他に限る。
 
+### 5.1 割り込みハンドラ（ISR）から呼べる API の制約
+
+FreeRTOS は ISR 用に別 API（`...FromISR` 系）を持つが、μT-Kernel 3.0 は**同じシステムコールを
+タスク／割り込みハンドラ双方から呼ぶ**設計である。ただし以下の制約があるため、上記の対応表で
+`...FromISR` を置換する際は ISR から呼んでよい API かを必ず確認する。
+
+| 分類 | 割り込みハンドラからの可否 | 該当 API（本プロジェクトの置換対象） |
+|------|---------------------------|--------------------------------------|
+| **自タスクを待ち状態にしうる API（禁止）** | ❌ 呼べない | `tk_wai_flg` / `tk_wai_sem` / `tk_loc_mtx`、`tmo > 0` の `tk_dly_tsk` 等 |
+| 通知・セット系（許可） | ✅ 呼べる | `tk_set_flg` / `tk_sig_sem` |
+| 参照・時刻取得系（許可） | ✅ 呼べる | `tk_ref_flg` / `tk_get_tim` / `tk_get_otm` |
+
+- μT-Kernel ではシステムコールが直接ディスパッチを起こさず、割り込みハンドラからの通知は
+  **遅延ディスパッチ**として割り込み出口で処理される。FreeRTOS の `xHigherPriorityTaskWoken` +
+  `portYIELD_FROM_ISR()` のような明示的なコンテキストスイッチ要求は不要。
+- 本プロジェクトの該当箇所:
+  - `camera_framebuffer.c` の `xTaskGetTickCountFromISR()` → `tk_get_tim`/`tk_get_otm`（参照系・ISR 可）
+  - `camera_display.c` / `camera_thread_entry.c` の ISR からのイベント set → `tk_set_flg`（通知系・ISR 可）
+  - **待ち（`tk_wai_flg` 等）は ISR から呼ばない**こと。待つのはタスク側のみ。
+- API ごとの正確な ISR 可否は使用する `mtk3_bsp2` のバージョン仕様で必ず確認する（→ R-005 で確定）。
+
 実装規約:
 - ヘッダは `<tk/tkernel.h>` 系。
 - 戻り値は `ER` 型。`E_OK` 以外は必ずエラーとしてハンドリングする。
@@ -452,3 +473,4 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 |------|----------|----------|
 | 2026-06-10 | R-001 | 初版作成（全体像・前提環境・FreeRTOS 依存棚卸し・API 対応表・再適用チェックリスト・ステップ別差分ポイント） |
 | 2026-06-10 | R-001 | レビュー反映: `jlink_console.c` のクリティカルセクションは ISR と共有状態を保護するため、`tk_dis_dsp()` ではなく割り込みマスク（`DI`/`EI`・`tk_dis_int`/`tk_ena_int`）が必要な旨を 3.3 / 5 / 7.2 に明記 |
+| 2026-06-10 | R-001 | レビュー反映: 5.1 節を追加し、割り込みハンドラ（ISR）から呼べる μT-Kernel API の制約（待ち系は禁止／通知・参照系は可）を対応表化 |
