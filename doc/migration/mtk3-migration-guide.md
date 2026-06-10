@@ -143,6 +143,11 @@ Grep 実測。各 API は「FreeRTOS → μT-Kernel 3.0 API 対応表」（→ 5
 > - `camera_framebuffer.c` / `camera_display.c` の `*FromISR` / イベント set は
 >   **割り込みコンテキスト**から呼ばれる。μT-Kernel API を割り込みハンドラから呼ぶ際の
 >   制約（割り込みコンテキスト対応）に注意（→ R-005）。
+> - `jlink_console.c` の `taskENTER_CRITICAL()` は、UART RX ISR（`jlink_console_callback()`）と
+>   共有する `s_out_of_band_received[]` / `s_g_out_of_band_index` を保護している。
+>   FreeRTOS のクリティカルセクションは**割り込みマスク**を伴うため、μT-Kernel では
+>   `tk_dis_dsp()`（ディスパッチ禁止のみ）に置換してはならず、**割り込みマスク**で守ること
+>   （→ 5 章の注意・7.2）。
 
 ### 3.4 LVGL OSAL（`ra/lvgl/` ― FSP 管理 / 編集回避）
 
@@ -242,9 +247,18 @@ FreeRTOS の tick（`pdMS_TO_TICKS` / `configTICK_RATE_HZ`）とは単位系が�
 | キュー生成 | `xQueueCreate` | `tk_cre_mbf`（メッセージバッファ）/ `tk_cre_mbx`（メールボックス） |
 | キュー送受信 | `xQueueSend` / `xQueueReceive` | `tk_snd_mbf` / `tk_rcv_mbf` |
 | ソフトウェアタイマ | `xTimerCreate` / `xTimerStart` / `xTimerStop` | `tk_cre_cyc` / `tk_sta_cyc` / `tk_stp_cyc`（周期）または `tk_cre_alm`（アラーム） |
-| クリティカルセクション | `taskENTER_CRITICAL` / `EXIT` | `tk_dis_dsp` / `tk_ena_dsp`（ディスパッチ禁止）または `DI`/`EI` |
+| クリティカルセクション（タスク間のみの排他） | `taskENTER_CRITICAL` / `EXIT` | `tk_dis_dsp` / `tk_ena_dsp`（ディスパッチ禁止） |
+| クリティカルセクション（**ISR と共有する状態の保護**） | `taskENTER_CRITICAL` / `EXIT` | **割り込みマスクが必須**: `DI(intsts)` / `EI(intsts)`（全割り込み禁止）または `tk_dis_int(intno)` / `tk_ena_int(intno)`（当該割り込みのみマスク）。`tk_dis_dsp` は**不可** |
 | ISR 判定/遅延処理 | `xHigherPriorityTaskWoken` | μT-Kernel はシステムコールが直接ディスパッチを起こす（不要） |
 | 起動時間取得 | `xTaskGetTickCount` / `xTaskGetTickCountFromISR` | `tk_get_otm` / `tk_get_tim` |
+
+> 重要（クリティカルセクションの落とし穴）: FreeRTOS の `taskENTER_CRITICAL()` は
+> **割り込みマスク**を伴う（`configMAX_SYSCALL_INTERRUPT_PRIORITY` 以下の割り込みを禁止する）。
+> 一方 μT-Kernel の `tk_dis_dsp()` は**ディスパッチ（タスク切替）を禁止するだけで割り込みは止まらない**。
+> そのため **ISR（割り込みハンドラ）とタスクで共有する状態**を `taskENTER_CRITICAL()` で
+> 守っている箇所を `tk_dis_dsp()` に置換すると、保護中に当該 ISR が走ってデータを破壊する
+> レースが残る。**ISR と共有するデータは必ず割り込みマスク（`DI`/`EI` または `tk_dis_int`/`tk_ena_int`）
+> で保護する**こと（→ 7.2 の `jlink_console.c` が該当）。`tk_dis_dsp()` はタスク間のみの排他に限る。
 
 実装規約:
 - ヘッダは `<tk/tkernel.h>` 系。
@@ -326,8 +340,15 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 `src/ntshell/`, `src/led_ctrl.c`。
 
 差し替えポイント（実測）:
-- `jlink_console.c`: `vTaskDelay(1)` → `tk_dly_tsk(1)`。`taskENTER_CRITICAL()`（3 箇所）→
-  `tk_dis_dsp()`/`tk_ena_dsp()`（UART 送受信のシリアライズ）。
+- `jlink_console.c`: `vTaskDelay(1)` → `tk_dly_tsk(1)`。
+  `taskENTER_CRITICAL()`/`taskEXIT_CRITICAL()`（260/280/391 行の 3 箇所）は、UART RX ISR
+  （`jlink_console_callback()`）が更新する共有状態 `s_out_of_band_received[]` /
+  `s_g_out_of_band_index` を、タスク側の pop/copy 中に保護している。
+  **これは ISR と競合するため `tk_dis_dsp()`/`tk_ena_dsp()`（ディスパッチ禁止のみ）では不十分**
+  （ディスパッチ禁止では ISR が走り続け、NT-Shell 入力文字の取りこぼし・破損が起きる）。
+  → **割り込みマスク**（`DI()`/`EI()`、または当該 UART 割り込みのみ `tk_dis_int()`/`tk_ena_int()`）で
+  置換する。代替として、ISR セーフな同期設計（リングバッファ化し ISR からは `tk_set_flg` 等で
+  通知のみ行う）へ作り替えてもよい。**`tk_dis_dsp()` への単純置換は禁止**。
 - `usrcmd.c`: `vTaskDelay(pdMS_TO_TICKS(100))` → `tk_dly_tsk(100)`。
 - `led_ctrl.c`: FreeRTOS ソフトウェアタイマ（`xTimerCreate/Start/Stop`）→ μT-Kernel 周期ハンドラ
   （`tk_cre_cyc`/`tk_sta_cyc`/`tk_stp_cyc`）。**LED 点滅の駆動方式が変わるため要注意**。
@@ -430,3 +451,4 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 日付 | ステップ | 更新内容 |
 |------|----------|----------|
 | 2026-06-10 | R-001 | 初版作成（全体像・前提環境・FreeRTOS 依存棚卸し・API 対応表・再適用チェックリスト・ステップ別差分ポイント） |
+| 2026-06-10 | R-001 | レビュー反映: `jlink_console.c` のクリティカルセクションは ISR と共有状態を保護するため、`tk_dis_dsp()` ではなく割り込みマスク（`DI`/`EI`・`tk_dis_int`/`tk_ena_int`）が必要な旨を 3.3 / 5 / 7.2 に明記 |
