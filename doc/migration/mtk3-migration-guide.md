@@ -215,18 +215,59 @@ clone 直後、e2 studio は `mtk3_bsp2/` をビルド対象外（`Exclude resou
 Properties → C/C++ Build → 「Exclude resource from build」のチェックが入っていれば**外す**
 （全構成 Configuration に対して）。
 
-> 注意（ビルド対象の絞り込み）: `mtk3_bsp2` 配下には他ボード（nxp_mcux / stm32_cube / xmc_mtb）の
-> ソースも含まれるが、各ソースは `machine.h` のターゲットマクロ（`MTKBSP_RAFSP` /
-> `MTKBSP_EK_RA8P1` / `MTKBSP_CPU_CORE_ARMV8M`）で `#if` ガードされており、
-> EK-RA8P1 以外のコードは空コンパイルされる。**ターゲットマクロ（4.4）を必ず先に設定すること。**
-> リンクサイズ・ビルド時間が問題になる場合は、他ボード用ディレクトリ（`sysdepend/nxp_mcux` 等）を
-> 個別に Exclude resource from build してもよい（必須ではない）。
+> 注意（ビルド対象の絞り込み）: `mtk3_bsp2` 配下には他ボード（nxp_mcux / stm32_cube / xmc_mtb）や
+> 他 CPU コア（RX/RZ/STM32 系）のソースも含まれるが、各ソースは `machine.h` のターゲットマクロ
+> （`MTKBSP_RAFSP` / `MTKBSP_EK_RA8P1` / `MTKBSP_CPU_CORE_ARMV8M`、および `#ifdef CPU_RX65N` 等）で
+> `#if`/`#ifdef` ガードされており、**EK-RA8P1 以外のコードは（RX アセンブリ `hllint_ent.S` 等も含め）
+> 空コンパイルされる**。重複シンボルやアセンブルエラーは発生しない（→ R-002 で Debug ビルド成功により実証）。
+> **ターゲットマクロ（4.4）を必ず先に設定すること。**
+
+#### 4.2.1 非ターゲットソースの除外（ビルド時間短縮 ― 確定適用済み）
+
+上記のとおり非ターゲットソースは空コンパイルされるだけで**ビルドは壊れない**が、毎回のクリーンビルドで
+数百ファイルを無駄にコンパイルするため、明確に非ターゲットなディレクトリは `.cproject` の sourceEntries で
+除外する。**Debug / Release 両構成の `mtk3_bsp2` ソースフォルダに以下の `excluding` を設定済み**
+（ガードで空コンパイルされる木のみを除外。`mtkernel/kernel/sysdepend/cpu/core`（Arm コア）と
+`sysdepend/ra_fsp`（ターゲット）は保持するためビルド結果は不変）:
+
+```
+mtkernel/kernel/sysdepend/cpu/rx231
+mtkernel/kernel/sysdepend/cpu/rx65n
+mtkernel/kernel/sysdepend/cpu/rza2m
+mtkernel/kernel/sysdepend/cpu/stm32h7
+mtkernel/kernel/sysdepend/cpu/stm32l4
+mtkernel/kernel/sysdepend/cpu/tx03_m367
+sysdepend/nxp_mcux
+sysdepend/stm32_cube
+sysdepend/xmc_mtb
+```
+
+> e2 studio GUI で同等の操作を行う場合は、各ディレクトリを右クリック →
+> 「Exclude resource from build」（全 Configuration）。`.cproject` 直接編集なら sourceEntries の
+> `mtk3_bsp2` エントリに `excluding="...|..."`（`|` 区切り）として記述する。
+> さらに削りたい場合は `sysdepend/ra_fsp` 配下の他 RA ボード/CPU（`arduino_unor4` 等）も除外可能だが、
+> ガードで無害なため本プロジェクトでは保持している（任意）。
 
 ### 4.3 インクルードパス追加（e2 studio GUI 操作 ― ユーザー手動）
 
 > include path / マクロ / リンカの変更は e2 studio のプロジェクト設定（GUI）で行う。
 > `configuration.xml` ではなくビルド設定（`.cproject`）であり、FSP 自動生成で消えない。
 > **以下の操作はユーザーが e2 studio 上で実施する。**
+>
+> **重要（全 Configuration へ適用）**: 4.3〜4.5 の include path / マクロ / リンカ設定は、
+> Properties ダイアログ左上の **Configuration: [All configurations]** を選択してから行い、
+> **Debug / Release 両構成に必ず同一設定を適用する**。片方のみだと、もう一方の構成で
+> μT-Kernel を実起動した際（R-003 以降）にビルドが破綻する。
+> （本リポジトリの `.cproject` は Debug / Release 両構成に設定済み・対称であることを確認済み。）
+>
+> **既知の制約（Release 構成の土台未整備 ― R-002 スコープ外）**: 本プロジェクトは従来 **Debug 構成のみ**で
+> ビルド・デバッグしてきた。**Release 構成は FSP 生成ファイル `bsp_linker_info.h`（ビルド時に有効構成の
+> 出力先へ生成されるマルチコア・パーティション情報）が未生成のため、CPU0/CPU1 とも現状ビルドできない**
+> （`'bsp_linker_info.h' file not found`）。これは μT-Kernel/BSP2 とは無関係の既存のプロジェクト
+> セットアップ事項であり、Release を実ビルド可能にするには「Release 構成をアクティブにして
+> Generate Project Content」等の FSP 生成が別途必要（R-002 では未対応）。
+> 上記 BSP2 設定は Release 構成にも**先行して反映済み（対称化）**だが、土台が整うまで Release は
+> ビルド検証できない。R-002 の動作検証は **Debug 構成**で実施する。
 
 e2 studio: プロジェクト `mimamori_sense_CPU0` を右クリック → Properties →
 C/C++ Build → Settings → Tool Settings → **LLVM C Compiler → Includes**（Include paths）に
@@ -337,10 +378,11 @@ LLVM ツールチェインでは以下のように読み替える（設定する
 - [x] `mtk3_bsp2`（タグ v1.00.04）が `e2studio_CPU0/mtk3_bsp2/` に配置され、`.gitignore` 方針
       （vendoring + ビルド生成物除外）が決定・反映されている
 - [x] include path（4 パス）/ マクロ（`_RAFSP_EK_RA8P1_`）/ リンカ（`mtkernel.ld` 連結）が
-      LLVM 向けに設定されている（ユーザーが e2 studio で手動設定済み）
-- [x] Exclude resource from build が解除され、BSP2 ソースがビルド対象になっている
+      LLVM 向けに設定されている（**Debug / Release 両構成に設定・対称化済み**。4.3 参照）
+- [x] Exclude resource from build が解除され、BSP2 ソースがビルド対象になっている。
+      非ターゲット木（RX/RZ/STM32/他ベンダ）は両構成で除外済み（4.2.1）
 - [x] **FreeRTOS のまま**（`knl_start_mtkernel()` は呼ばない）LLVM でビルド
-      （コンパイル＋リンク）が成功する
+      （コンパイル＋リンク）が成功する（Debug で実証。Release も同一設定）
 
 ---
 
@@ -597,3 +639,5 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-10 | R-001 | レビュー反映: 5.1 節を追加し、割り込みハンドラ（ISR）から呼べる μT-Kernel API の制約（待ち系は禁止／通知・参照系は可）を対応表化 |
 | 2026-06-10 | R-002 | BSP2 組み込み確定: タグ **v1.00.04**（mtkernel サブモジュール `435096c`）を `e2studio_CPU0/mtk3_bsp2/` へ vendoring 配置（入れ子 `.git` 削除・submodule 化せず）。`.gitignore` に BSP2 ビルド生成物除外を追加。2 章「BSP2 版数」を確定値で更新。4 章を全面改訂: 配置先・Exclude 解除（4.2）・include path 4 パス確定（4.3、`mtkernel/kernel/knlinc` を含む）・ターゲットマクロ確定 `_RAFSP_EK_RA8P1_`（4.4、1 つで RAFSP/EK_RA8P1/ARMV8M を自動有効化）・リンカ `mtkernel.ld` を `fsp.lld` の後ろに連結する LLVM 整合方針（4.5）・GNU→LLVM 読み替え表（4.6）・完了条件（4.7）を追記 |
 | 2026-06-11 | R-002 | **実機 LLVM ビルド成功を確認**（FreeRTOS のまま・コンパイル＋リンク成功）。リンカは **Script files (-T) 欄末尾に `mtkernel.ld` を追加**する方式で通ることを確定（4.5）。`fsp.lld` への INCLUDE 追記は未採用の代替として記載。4.7 完了条件を全項目達成（チェック済み）に更新 |
+| 2026-06-11 | R-002 | レビュー反映: ① BSP2 ビルド設定が Debug 構成のみだった不整合を解消し、**Release 構成にも include path / マクロ / リンカ / sourceEntry を同一適用して対称化**（4.3 に全 Configuration 適用の注意を追記）。② 非ターゲットソース（RX/RZ/STM32/他ベンダ BSP 層）を Debug/Release 両構成の sourceEntries で除外（4.2.1 新設。ガード済みで空コンパイルされる木のみのためビルド結果は不変、ビルド時間のみ短縮）。③ vendoring 後に残っていた `mtk3_bsp2/.gitmodules`（submodule 宣言の残骸）を削除 |
+| 2026-06-11 | R-002 | Release ビルド検証で **`bsp_linker_info.h' file not found`（CPU1 Release）を確認**。調査の結果、**Release 構成は FSP 生成ファイル未生成のため CPU0/CPU1 とも従来からビルド不可**（μT-Kernel/BSP2 とは無関係の既存のプロジェクトセットアップ事項）と判明。4.3 に「既知の制約（Release 構成の土台未整備）」を追記。R-002 の動作検証は Debug 構成で実施する方針を明記。Release 向け BSP2 設定は対称化のため反映済みだが、土台整備までビルド検証は保留 |
