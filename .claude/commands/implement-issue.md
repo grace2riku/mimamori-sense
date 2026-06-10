@@ -22,6 +22,10 @@ Issue #$ARGUMENTS を実装してください。
 - `gh issue view $ARGUMENTS` でIssue内容を確認してください
   - 失敗した場合（Issue番号の誤り等）はユーザーに報告し、処理を中断してください
 - Issue内容に基づき、以下から最適なサブエージェントを選択して実装してください:
+  - **FreeRTOS→μT-Kernel 3.0 RTOS移植（R-000〜R-008）** → `.claude/agents/rtos-migration.md` を使用
+    - 対象: Issueタイトルが `R-` で始まるもの（R-001移行手順書、R-002 BSP2組込/LLVM対応、R-003ブート・OS起動、R-004 NT-Shell、R-005カメラ、R-006a LVGL OSAL技術検討、R-006 LCD、R-007 AI推論、R-008統合）
+    - FreeRTOS設定（configuration.xml）は維持したまま、ユーザーコード側でμT-Kernel 3.0へ置換する
+    - **この振り分けを最優先で判定する**（Issueタイトルが `R-` で始まる場合は以下の他エージェントより優先）
   - **FSP設定が必要なIssue** → `.claude/agents/fsp-config-guide.md` を使用
     - 対象: Issueタイトルに「FSPプロジェクト設定」を含むもの（S-001-1, S-005-1, S-007-1等）
     - configuration.xmlの変更手順書を生成し、ユーザーに手動操作を依頼する
