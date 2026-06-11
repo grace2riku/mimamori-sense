@@ -477,6 +477,19 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 - [ ] `ra_gen/*_thread.c` の FreeRTOS スレッド生成が復活しても、μT-Kernel 側のタスク生成と
       二重起動・競合しない構成になっているか（→ 7.1 の橋渡し方式で吸収）
 - [ ] `src/` 配下の μT-Kernel 化したファイルが上書きされていないか（`ra_gen/` のみ再生成対象だが念のため）
+- [ ] `mtk3_bsp2/mtkernel/config/config_func.h` の機能トリミング（R-003 のフラッシュ対策）が維持されているか。
+      移行で未使用の `USE_MAILBOX` / `USE_MESSAGEBUFFER` / `USE_RENDEZVOUS` / `USE_MEMORYPOOL` /
+      `USE_FIX_MEMORYPOOL` / `USE_DEVICE` を `0`（他は既定値のまま）。**FSP 再生成では消えないが、BSP2 を
+      再 vendoring すると既定値 `1` に戻る**ため要再適用（→ 7.1 末尾「コードフラッシュ・オーバーフロー」参照）
+- [ ] コードフラッシュ区画の再配分（R-003 で実施。CPU0 約 992KB / CPU1 約 32KB）が `solution.xml` の Memories
+      タブに維持されているか。`memory_regions.lld` の `FLASH_LENGTH`（CPU0 ≒ `0x000f8000`）で確認できる。
+      区画は FSP 管理のため、環境移行・再インポート時は再設定が必要
+- [ ] `mtk3_bsp2/include/sys/sysdepend/ra_fsp/ek_ra8p1/sysdef.h` が `cpu/ra8p1/sysdef.h` を include しているか
+      （BSP2 v1.00.04 のベンダ不具合で既定は誤って `cpu/ra8m1/sysdef.h`。誤値だと `INTERNAL_RAM_END` が 896KB 相当に
+      なり初期タスク生成が `!ERROR! Initial Task can not creat` で失敗）。再 vendoring 時は再適用必須（→ 7.1）
+- [ ] `mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END = 0x221B0000`（CPU0 RAM 末尾）が維持されているか。
+      既定値 `0` だとシステムメモリプールが CPU1 RAM 区画へはみ出して破壊される（→ 7.1）。**RAM 区画を変更したら
+      追従させる**。再 vendoring 時も再適用要
 - [ ] LLVM でビルドが通り、実機で μT-Kernel が起動するか（最低限 R-003 の LED + `tm_printf`）
 
 > 補足: e2 studio のビルド設定（include / マクロ / リンカ）は `.cproject` に保存され
@@ -513,10 +526,178 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 確認: 実機で LED 点滅・シリアル出力 → 起動経路の確定内容を本節へ追記。
 
-実装メモ（R-003 完了時に記入）:
-- 採用方式（A/B）と橋渡しファイル:
-- `usermain()` の配置ファイル:
-- HAL 初期化の一度きり保証の実装:
+実装メモ（R-003 / 2026-06-11 実装。実機確認はユーザー実施）:
+
+- **採用方式: 方式A**（静的コンストラクタ（`__init_array`）から `knl_start_mtkernel()` を呼び、
+  FreeRTOS の `main()` / `vTaskStartScheduler()` には到達させない）。
+  - 橋渡しファイル: **`src/hal_warmstart.c`**（`src/` 配下・FSP 再生成で消えない）。POST_C フックと
+    起動用コンストラクタの双方を本ファイルに置く。
+  - 実装位置（**当初の POST_C 末尾から静的コンストラクタへ移設 ― PR #163 codex 指摘 P2 への対応**）:
+    - **`R_BSP_WarmStart(BSP_WARM_START_POST_C)`**: ピン設定（`R_IOPORT_Open`）と SDRAM コントローラ起動
+      （`R_BSP_SdramInit`/`sdram_port_init`）**のみ**行う。ここでは μT-Kernel を起動しない。
+    - **`__attribute__((constructor)) static void mimamori_start_mtkernel(void)`**: `knl_start_mtkernel()` を呼ぶ。
+      同関数は戻らない（`knl_main()` → 初期タスク → `usermain()`）。万一戻った場合に備え無限ループでトラップ。
+      コンストラクタへのポインタは `fsp_gen.lld` の `KEEP(*(.init_array))` で保持され `gc-sections` で消えない。
+  - **POST_C 末尾から起動位置を移した理由（codex P2）**: `SystemInit()`（`system.c`）は
+    `R_BSP_WarmStart(POST_C)`（同:471）の**直後**に、戻らないジャンプではスキップされてしまう以下の C ランタイム
+    初期化を実行する ―
+    `SystemRuntimeInit(1)`（同:476。外部メモリ SDRAM の `.sdram` ゼロクリア / `.sdram_from_flash`・`.sdram_ospi_data`
+    コピー）、TLS 初期化（同:481）、静的コンストラクタ `__init_array[]`（同:512-516）、`bsp_irq_cfg()`（同:525）。
+    本リポジトリは `BSP_CFG_C_RUNTIME_INIT=1` / `BSP_CFG_SDRAM_ENABLED=1` で、`.sdram` 配置バッファ
+    （例: `ai_inference_thread_entry.c` の `model_buffer_int8`）が存在する。POST_C 末尾で抜けると、後続の
+    μT-Kernel タスクがこれらを**未初期化のまま**使う潜在バグになる（R-003 最小構成では `.sdram`/コンストラクタを
+    使わないため実機では顕在化しないが、カメラ/AI 等の SDRAM 利用タスクを移行した段階で問題化する）。
+  - **`bsp_init()` ではなくコンストラクタを使う理由**: 当初は `SystemInit` 最終段の FSP weak フック `bsp_init()` を
+    上書きする案だったが、**本ボードでは `ra/board/ra8p1_ek/board_init.c` が `bsp_init()` を強いシンボルで定義済み**で
+    （`ra/` は編集禁止）、二重定義（`ld.lld: error: duplicate symbol: bsp_init`）となり使用できない。
+    そこで上書き不要な静的コンストラクタを使う。`__init_array` は `SystemRuntimeInit(1)` の**後**（同:512-516）に
+    実行されるため、外部メモリ初期化・TLS 初期化が完了した状態でカーネルへ入れる。無印 `.init_array`（優先度なし）は
+    `SORT(.init_array.*)`（優先度付き）の後に並ぶ（`fsp_gen.lld`）。
+    SDRAM コントローラ起動（`R_BSP_SdramInit`）は引き続き POST_C で行うため、
+    **「SDRAM 起動(POST_C) → `.sdram` セクション初期化(`SystemRuntimeInit`) → カーネル(コンストラクタ)」**の順序が保たれる。
+    なお `bsp_irq_cfg()`（ELC/NVIC 設定）はコンストラクタの後・`main()` 前に呼ばれるため本方式でも未実行だが、
+    これは当初の POST_C 方式でも同様で、R-003 は ELC 起動の割り込みを使わないため影響しない。
+  - 切り戻し: `hal_warmstart.c` の `#define MIMAMORI_USE_MTKERNEL_BOOT (1)` を `0` にすると橋渡し
+    （起動コンストラクタ含む）を無効化し、従来の FreeRTOS 起動（`ra_gen/main.c` → `vTaskStartScheduler()`）に戻せる。
+
+- **方式 B を採らなかった理由**: 本プロジェクトは FreeRTOS 構成のため、BSP2 公式手順の橋渡し先である
+  `hal_entry.c` が FSP により生成されない（代わりに `ra_gen/main.c` が `vTaskStartScheduler()` を呼ぶ）。
+  方式 B（最初の FreeRTOS タスク blinky から橋渡し）は、FreeRTOS スケジューラとカーネル構造を一旦起動してから
+  μT-Kernel へ移ることになり、二重 RTOS 初期化・スタック/ベクタ競合のリスクが高い。
+  方式 A は `main()` に到達しないため FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）が
+  そもそも生成・起動されず、**最もクリーンに既存 FreeRTOS スレッドを無効化**できる（`ra_gen/` は無編集）。
+
+- **`usermain()` の配置ファイル: `src/usermain.c`**（新規作成）。
+  - BSP2 の WEAK 定義（`mtk3_bsp2/mtkernel/kernel/usermain/usermain.c`、`return 0` のみ）を**強い定義で上書き**。
+    `inittask.c:127` の初期タスクから呼ばれる。`usermain()` は最小タスク（LED 点滅）を `tk_cre_tsk` + `tk_sta_tsk`
+    で生成・起動し、自身は `tk_slp_tsk(TMO_FEVR)` で待ち状態に入る（`usermain()` が return すると μT-Kernel は
+    シャットダウンするため終了させない ― 公式手順 4.3.2）。
+  - LED 点滅タスク `blink_task(INT stacd, void *exinf)`: FreeRTOS `blinky_thread_entry.c` の最小相当。
+    `g_bsp_leds` / `R_BSP_PinWrite` で LED 制御し、`vTaskDelay(configTICK_RATE_HZ/2)` → **`tk_dly_tsk(500)`**（ms 系）。
+    タスク生成情報 `T_CTSK` は `TA_HLNG | TA_RNG3`、`itskpri=10`、`stksz=1024`、`bufptr=NULL`
+    （`USE_IMALLOC=1` によりスタック自動確保）。**`USE_OBJECT_NAME=0`（config.h:114）のため `T_CTSK` に
+    `dsname` メンバは無く、初期化子に含めてはならない**（含めるとコンパイルエラー）。
+  - **CPU1（セカンダリコア）起動 ― マルチコア・デバッグ整合のため `usermain()` で実施**:
+    - 当初は「最小構成優先で CPU1 起動（`R_BSP_SecondaryCoreStart`）を行わない」方針としたが、**実機デバッグで
+      問題が顕在化**した。RA8P1 では CPU1 はリセット保持で立ち上がり、CPU0 が `R_BSP_SecondaryCoreStart()` を
+      呼ぶまで解除されない。元の FreeRTOS では `blinky_thread_entry.c` 先頭で呼んでいたが、**方式A は
+      `main()`/スケジューラに到達しない**ためこの経路が実行されず、CPU1 がリセット保持のままになる。
+    - 結果、**マルチコア・デバッグ（`Debug_Multicore Launch Group`）の CPU1 接続が
+      `Command 'monitor enable_stopped_notify_on_connect' is timed out` でタイムアウト**し、デバッグ開始に
+      失敗する（区画変更とは無関係）。
+    - 対処: `usermain()` の起動ログ直後に、元 blinky と同一ガード
+      `#if (0 == _RA_CORE) && (1 == BSP_MULTICORE_PROJECT) && !BSP_TZ_NONSECURE_BUILD` で
+      `R_BSP_SecondaryCoreStart()` を呼び、CPU1 を解除する（元の挙動の復元）。これでマルチコア・デバッグの
+      CPU1 接続が通る。CPU1 は自プロジェクトのイメージを独立実行する（R-003 の CPU0 受け入れ条件には不干渉）。
+    - 代替（CPU1 をあえて止めたままにする場合）: マルチコア Launch Group ではなく **CPU0 単体のデバッグ構成**で
+      起動する。
+
+- **HAL 初期化の一度きり保証**:
+  - 方式 A では `ra_gen/main.c` の `main()` に到達しないため `g_hal_init()`（FSP モジュール初期化）は実行されない。
+    R-003 の最小構成は LED が `R_BSP_PinWrite`（BSP 直接・モジュール不要）、`tm_printf` が SCI8 直接レジスタ操作
+    （`tm_com.c`・FSP モジュール不要）であり、**FSP モジュール初期化に依存しないため `g_hal_init()` は不要**。
+  - LED 制御に必要な IOPORT は、`R_BSP_WarmStart(POST_C)` 先頭の `R_IOPORT_Open()` で構成済み。
+    POST_C フックは BSP から **main() より前に一度だけ**呼ばれることが保証されるため、一度きり初期化が成立する。
+  - 後続ステップ（R-004 NT-Shell 以降）で FSP モジュール（UART/I2C/MIPI 等）が必要になった時点で、
+    FreeRTOS の `rtos_startup_common_init()` が担っていた `g_hal_init()` 相当の一度きり初期化を
+    **`usermain()` の先頭**（初期タスク内・他タスク生成前）へ移設する。`usermain()` は初期タスクから
+    1 回だけ呼ばれるため一度きりが自然に保証される。
+
+- **T-Monitor シリアル初期化**: `libtm_init()`（SCI8 を 115200/8N1 に直接レジスタ初期化）は μT-Kernel の
+  カーネル初期化シーケンス `sysinit.c:38` で呼ばれる。よって `usermain()` 到達時点で `tm_printf`/`tm_putstring`
+  が使用可能。`knl_startup_hw()`（`hw_setting.c`）は実質空で、システムタイマ初期化は `knl_main()` 側で行う。
+
+- **SCI8 と jlink_console UART の競合確認結果（手順書 4.4 注記の確定）**:
+  - `tm_com.c`（T-Monitor）は **SCI8**（`SCI8_BASE=0x40358800`、PD02=TXD8/PD03=RXD8）を直接レジスタ操作で
+    115200/8N1 に初期化・使用する。
+  - 既存 J-Link コンソール `jlink_console.c` も FSP UART（`g_jlink_console_cfg.channel = 8` ― `ra_gen/hal_data.c:206`）
+    で **同じ SCI8** を使用する（物理ポートは J-Link 上の VCOM で共通）。**両者は同一 SCI8 を共有する**。
+  - R-003 では jlink_console を含む ntshell スレッドを起動しない（方式 A により FreeRTOS スレッド未生成）ため、
+    SCI8 を初期化・使用するのは T-Monitor 側のみで**競合は発生しない**。
+  - **R-004（NT-Shell 移行）での注意**: ntshell の `R_SCI_B_UART_Open(g_jlink_console_ctrl)` と T-Monitor の
+    SCI8 直接初期化が**同一 SCI8 を二重に初期化・送受信して競合する**。R-004 では「T-Monitor 出力を
+    ntshell/jlink_console（FSP UART 経由）に一本化する」か「どちらか一方に SCI8 を専有させる」方針を決める必要がある。
+    最小構成 R-003 の段階ではこの競合は顕在化しない。
+
+- **コードフラッシュ・オーバーフローと対処（R-003 実機ビルドで顕在化・確定）**:
+  - 症状: `knl_start_mtkernel()` を**実際に呼ぶ**ようにした R-003 のリンクで、CPU0 のコードフラッシュ領域が
+    **約 5.6KB オーバーフロー**した（`ld.lld: section '__flash_readonly$$' ... overflowed by 5598 bytes` 等）。
+    コンパイルは全ソース成功し、**リンク段階のみ**失敗。
+  - 原因: R-002（`knl_start_mtkernel()` 未呼び出し）では μT-Kernel 本体は**未参照**のため `gc-sections` で
+    大半が除去されていた。R-003 で実呼び出しすると `knl_main` → 各サブシステム init が参照され、μT-Kernel が
+    リンクに取り込まれる。一方、方式 A でも **FreeRTOS / LVGL / カメラ / AI（Ethos-U）のコードは `ra_gen/main.c`
+    経由で依然リンクされ続ける**（移行期は 2 つの RTOS とアプリ全体が同居し、フラッシュ使用がピークになる）。
+  - **根本原因はコードフラッシュ区画の偏り**: 当初 CPU0=**960KB**（`FLASH_LENGTH = 0x000f0000`）/ CPU1=**64KB**
+    （`0x00010000`、`FLASH_START = 0x020f0000`）。ところが **CPU1 の実イメージは約 11KB**（`llvm-size` 実測:
+    text 11,206 / bss 3,696）に過ぎず、**64KB 区画の大半（約 53KB）が遊んでいる**。一方 CPU0 は移行中 2 つの
+    RTOS とアプリ全体を抱えて区画上限に達している。総コードフラッシュは 1MB（0x100000）。
+  - **対処（2段構え。確定）**:
+    1. **使い捨てサブシステムのトリミング（`mtk3_bsp2/mtkernel/config/config_func.h`）**:
+       移行で**一度も使わない**サブシステムだけを機能選択スイッチで無効化し、`knl_init_object()`（常時リンクされる
+       初期化経路）からの参照を断って `gc-sections` に除去させる:
+       - 恒久 0: `USE_MAILBOX` / `USE_MESSAGEBUFFER` / `USE_RENDEZVOUS` / `USE_MEMORYPOOL` /
+         `USE_FIX_MEMORYPOOL` / `USE_DEVICE`（API 置換表 5 章はメールボックス／メモリプール等を使わない）。
+       - **保持（1）**: `USE_SEMAPHORE` / `USE_EVENTFLAG` / `USE_MUTEX` / `USE_CYCLICHANDLER` /
+         `USE_ALARMHANDLER`（R-004〜R-007 で使用。**段階的な再有効化の手間を避けるため最初から有効**）。
+       - 効果（`llvm-size` 実測）: 5,598 → **約 1,662 byte 超過**まで縮小（実効削減 約 3.9KB。`gc-sections` は
+         関数単位で動くため、各サブシステムの未使用関数は元々除去済みで、削減はおもに `knl_init_object` から
+         参照される初期化・制御ブロック分に留まる ― これ以上の機能トリミングは**実コードを削るしかなく頭打ち**）。
+    2. **コードフラッシュ区画の再配分（構造的な確定対処）**: 遊んでいる CPU1 区画から CPU0 へフラッシュを移す。
+       残り約 1.7KB の超過に対し十分なマージンを確保し、**かつ R-004 以降で μT-Kernel 機能が増えても耐える**
+       ため、**CPU0 を 960KB → 約 992KB（+32KB）、CPU1 を 64KB → 約 32KB** へ変更する（CPU1 実使用 約 11KB に
+       対し 32KB は十分）。**この操作は solution.xml の Memories タブで行い、ユーザーが手動で実施**（→ 下記手順）。
+  - **ユーザー手動操作（FSP / 区画変更）**:
+    1. `e2studio/solution.xml`（マルチコア・ソリューション）を開き、**Memories タブ**を選択。
+    2. CPU0（Cortex-M85）側のコードフラッシュ割当を **960KB → 992KB** に増やし、CPU1（Cortex-M33）側を
+       **64KB → 32KB** に減らす（合計 1MB を維持。FSP がブロック境界へ整合させる）。
+    3. **Generate Project Content** を実行（`ra_gen/`・`memory_regions.lld` が新区画で再生成される。`src/` の
+       変更と `mtk3_bsp2/` の設定は影響を受けない）。
+    4. CPU0・CPU1 を Debug 構成で再ビルド。
+  - 安全性: トリミングした各サブシステム本体（`mailbox.c` 等）と `tkinit.c` の `knl_init_object()` 内 init 呼び出しは
+    すべて同名の `USE_*` ガードで囲まれており（確認済み）、スイッチ 0 で本体・初期化・制御ブロックテーブルが
+    まとめて外れる。RA FSP の `knl_init_device()` は `sysdepend/ra_fsp/devinit.c` で**無条件かつ実体は
+    `return E_OK`** のため `USE_DEVICE=0` でも未定義参照は発生しない。`config_bsp.h` の `DEVCNF_USE_HAL_*` は
+    元から全て 0（HAL ドライバ未リンク）。CPU1 区画縮小は実使用 11KB << 32KB のため安全。
+  - 編集ファイル（トリミング）は vendored の `config_func.h`（BSP2 公式の「機能選択」設定ファイル）。変更箇所に
+    `[mimamori-sense R-003]` コメント。**FSP 再生成では消えないが、BSP2 を再 vendoring した場合は再適用が必要**
+    （→ 6.2 再適用チェックリスト）。区画再配分は `solution.xml`（FSP 管理）側の設定で、`configuration.xml` 同様
+    ユーザーが GUI で管理する。
+  - 将来: 各ステップで FreeRTOS コードを μT-Kernel へ置換し終えると CPU0 フラッシュに余裕が出るため、移行完了後
+    （R-008）に区画を見直して CPU1 へ戻す余地がある。
+
+- **初期タスク生成失敗（`!ERROR! Initial Task can not creat`） ― 2 つの RAM 不具合
+  （R-003 実機ランタイムで顕在化・確定）**:
+  - 症状: ビルド・書込・μT-Kernel 起動後、シリアルに **`!ERROR! Initial Task can not creat`** が出力され、
+    `usermain()`（バナー）に到達せず LED も点滅しない。`sysinit.c` がカーネル初期タスク（`usermain` を呼ぶタスク）の
+    `tk_cre_tsk()` に失敗（`task_manage.c` の `knl_Imalloc()` が NULL → `E_NOMEM`）。
+  - 切り分け方法: `sys_start.o` を `llvm-objdump -d` で逆アセンブルし、`knl_lowmem_limit` へ格納する即値を確認したところ
+    **`0x220E0000`** だった（`movt r3,#0x220e; str r3,[&knl_lowmem_limit]`）。`__mtk3_SYSMEM_START`（実 RAM 使用末尾）
+    は `0x2211e100` で、**プール上限 < プール先頭**となり領域が空/負 → `knl_init_Imalloc` の領域計算が破綻していた。
+  - **原因① BSP2 ベンダ不具合（主因）**: `include/sys/sysdepend/ra_fsp/ek_ra8p1/sysdef.h` が CPU 定義として
+    **誤って `cpu/ra8m1/sysdef.h` を include**していた（ek_ra8m1 からのコピー時の取り違え。mtk3_bsp2 v1.00.04）。
+    RA8M1 は `INTERNAL_RAM_SIZE = 0x000E0000`（896KB）で、RA8P1 の正値 `0x001D4000`（1872KB）と異なる。
+    このため `INTERNAL_RAM_END = 0x22000000 + 0xE0000 = 0x220E0000` となり、実 RAM 使用末尾より低位を指していた。
+    **対処: `ek_ra8p1/sysdef.h` の include を `cpu/ra8p1/sysdef.h` に修正**（INTERNAL_RAM、N_INTVEC 等が RA8P1 の
+    正値になる）。修正箇所に `[mimamori-sense R-003]` コメント。
+  - **原因② マルチコア RAM 区画はみ出し（①修正後に顕在化する 2 つ目）**: ①を直すと
+    `INTERNAL_RAM_END = 0x221D4000`（SRAM 全 1872KB を**単一コア占有前提**）になる。しかし本機はマルチコアで、
+    FSP は CPU0 の RAM 区画を `0x22000000..0x221B0000`（1728KB ― `memory_regions.lld` の `RAM_START` +
+    `RAM_LENGTH = 0x1b0000`）に制限。`0x221B0000..0x221D4000`（144KB）は **CPU1 区画**で CPU0 は所有しない。
+    既定（`CNF_SYSTEMAREA_END = 0`）だとプールが `[__mtk3_SYSMEM_START, 0x221D4000]` となり、`knl_init_Imalloc()`
+    が高位エリア境界（AreaQue 終端、`knl_lowmem_limit` 近傍）の QUEUE 構造を CPU1 区画へ書いてプールが壊れる。
+    **対処: `mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END = 0x221B0000`（CPU0 RAM 末尾）**。`sys_start.c` の
+    `if((SYSTEMAREA_END != 0) && (INTERNAL_RAM_END > CNF_SYSTEMAREA_END)) knl_lowmem_limit = SYSTEMAREA_END - EXC_STACK_SIZE;`
+    が効き、`knl_lowmem_limit = 0x221B0000`（`EXC_STACK_SIZE=0`）。
+  - 結果（①＋②）: プール = `[__mtk3_SYSMEM_START(≒0x2211e100), 0x221B0000]` ≒ 585KB、全て CPU0 RAM 内で有効。
+    `g_heap`/`g_main_stack` は RAM 低位 `0x220000e0` 付近にあり、この空きと重ならないことを map で確認済み。
+    **両方の修正が必要**（①だけだとプールが空/負、②だけ＝①未修正だと `INTERNAL_RAM_END=0x220E0000<CNF_SYSTEMAREA_END`
+    で条件不成立となり cap が効かない）。
+  - 代替案（不採用）: `USE_STATIC_SYS_MEM=1`（`config_bsp.h`）で固定長 `knl_system_mem[]` を使う方法。確実だが
+    `.mtk_sysmem` セクションがどのリンカスクリプトにも配置定義が無く（orphan 配置依存）、固定サイズが移行後半で
+    不足し得るため見送り。原因①は sysdef のターゲット取り違えという明確なベンダ不具合のため、CPU 定義の修正で対応。
+  - **注意（再 vendoring / RAM 区画変更時）**: ①`ek_ra8p1/sysdef.h` の RA8P1 include 修正、②`CNF_SYSTEMAREA_END`
+    の CPU0 RAM 末尾値 ― いずれも BSP2 を再 vendoring すると失われるため再適用必須。RAM 区画（CPU0/CPU1 の SRAM 配分）を
+    変更した場合は②の値を新しい CPU0 RAM 末尾へ追従させること（コードフラッシュ区画とは別物。今回は RAM 区画は既定のまま）。
 
 ### 7.2 NT-Shell（R-004）
 
@@ -641,3 +822,10 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-11 | R-002 | **実機 LLVM ビルド成功を確認**（FreeRTOS のまま・コンパイル＋リンク成功）。リンカは **Script files (-T) 欄末尾に `mtkernel.ld` を追加**する方式で通ることを確定（4.5）。`fsp.lld` への INCLUDE 追記は未採用の代替として記載。4.7 完了条件を全項目達成（チェック済み）に更新 |
 | 2026-06-11 | R-002 | レビュー反映: ① BSP2 ビルド設定が Debug 構成のみだった不整合を解消し、**Release 構成にも include path / マクロ / リンカ / sourceEntry を同一適用して対称化**（4.3 に全 Configuration 適用の注意を追記）。② 非ターゲットソース（RX/RZ/STM32/他ベンダ BSP 層）を Debug/Release 両構成の sourceEntries で除外（4.2.1 新設。ガード済みで空コンパイルされる木のみのためビルド結果は不変、ビルド時間のみ短縮）。③ vendoring 後に残っていた `mtk3_bsp2/.gitmodules`（submodule 宣言の残骸）を削除 |
 | 2026-06-11 | R-002 | Release ビルド検証で **`bsp_linker_info.h' file not found`（CPU1 Release）を確認**。調査の結果、**Release 構成は FSP 生成ファイル未生成のため CPU0/CPU1 とも従来からビルド不可**（μT-Kernel/BSP2 とは無関係の既存のプロジェクトセットアップ事項）と判明。4.3 に「既知の制約（Release 構成の土台未整備）」を追記。R-002 の動作検証は Debug 構成で実施する方針を明記。Release 向け BSP2 設定は対称化のため反映済みだが、土台整備までビルド検証は保留 |
+| 2026-06-11 | R-003 | **実機ビルドでコードフラッシュ・オーバーフロー（約 5.6KB 超過）を確認・対処**。`knl_start_mtkernel()` 実呼び出しで μT-Kernel 本体がリンクに取り込まれる一方、方式 A でも FreeRTOS/LVGL/カメラ/AI が `ra_gen/main.c` 経由で同居リンクされ（移行期のフラッシュピーク）、CPU0 の 960KB 区画を超過。**根本原因は区画の偏り**: CPU1 の実イメージは約 11KB（`llvm-size` 実測 text 11,206/bss 3,696）に過ぎず 64KB 区画の約 53KB が遊休だった。**対処は 2 段構え**: ①`config_func.h` の機能スイッチで移行が一度も使わない IPC・ハンドラ系（mbx/mbf/por/mpl/mpf/device）のみ `gc-sections` 除去（5,598→約1,662 byte 超過まで縮小、実効約 3.9KB。`gc-sections` は関数単位のため未使用関数は元々除去済みで頭打ち）。sem/flg/mtx/cyc/alm は R-004 以降で使うため**有効のまま保持**（段階的再有効化の手間を排除）。②遊休 CPU1 区画から CPU0 へフラッシュを再配分（**CPU0 960→約992KB / CPU1 64→約32KB**、`solution.xml` Memories タブでユーザー手動 + Generate Project Content）。`tkinit.c` の init 呼び出し・各サブシステム本体は同名 `USE_*` ガードで保護、RA FSP の `knl_init_device()` は無条件 `return E_OK` のため安全。7.1 末尾に詳細（区画変更手順含む）・6.2 再適用チェックリストに 2 項目追加 |
+| 2026-06-12 | R-003 | **実機動作確認 完了（受け入れ条件 全達成）**。EK-RA8P1 で μT-Kernel 3.0 起動・`usermain()` 到達（バナー `microT-Kernel Version 3.00` / `LED count = 3` / `secondary core (CPU1) started.` / `blink_task created & started.`）、**LED 3 個が約1秒周期で点滅**、`tm_printf` シリアル出力（115200/8N1）を確認。FreeRTOS 設定（configuration.xml）は維持したまま方式A で実現。R-003 クローズ |
+| 2026-06-12 | R-003 | **PR #163 codex レビュー反映（P2）: カーネル起動を POST_C 末尾から静的コンストラクタへ移設**。当初 `R_BSP_WarmStart(BSP_WARM_START_POST_C)` 末尾で `knl_start_mtkernel()`（戻らない）を呼んでいたが、その直後に `SystemInit()` が実行する **`SystemRuntimeInit(1)`（外部 SDRAM `.sdram` ゼロクリア / `.sdram_from_flash`・`.sdram_ospi_data` コピー）・TLS 初期化等をスキップ**してしまう問題。本リポジトリは `BSP_CFG_C_RUNTIME_INIT=1`/`BSP_CFG_SDRAM_ENABLED=1` で `.sdram` 配置バッファ（`ai_inference` の `model_buffer_int8`）が存在し、将来 SDRAM 利用タスク移行時に未初期化となる潜在バグ（R-003 最小構成は `.sdram`/コンストラクタ未使用のため実機は非顕在）。**対処（初回 `bsp_init()` 上書き案は失敗→コンストラクタへ）**: 当初は `SystemInit` 最終段の FSP weak フック `bsp_init()` を `src/hal_warmstart.c` で上書きする案だったが、**本ボードは `ra/board/ra8p1_ek/board_init.c` が `bsp_init()` を強いシンボルで定義済み**（`ra/` 編集禁止）のため `ld.lld: duplicate symbol: bsp_init` でビルド失敗。上書き不要な **`__attribute__((constructor)) static void mimamori_start_mtkernel(void)`** から `knl_start_mtkernel()` を呼ぶ方式に変更。`__init_array` は `SystemRuntimeInit(1)`（system.c:476）の後（同:512-516）に実行されるため C ランタイム初期化完了後にカーネルへ入る。POST_C はピン設定（`R_IOPORT_Open`）と SDRAM コントローラ起動（`R_BSP_SdramInit`）のみに変更し、「SDRAM 起動(POST_C)→`.sdram` 初期化(`SystemRuntimeInit`)→カーネル(コンストラクタ)」の順序を保つ。コンストラクタは `fsp_gen.lld` の `KEEP(*(.init_array))` で `gc-sections` から保護。7.1 実装メモを更新。**実機再検証はユーザー実施待ち** |
+| 2026-06-12 | R-003 | **初期タスク生成失敗（`!ERROR! Initial Task can not creat`）を修正 ― RAM 不具合 2 件**。`sys_start.o` 逆アセンブルで `knl_lowmem_limit=0x220E0000`（実 RAM 使用末尾 `__mtk3_SYSMEM_START≒0x2211e100` より低位 → プール空/負 → `knl_Imalloc` NULL → `tk_cre_tsk` E_NOMEM）と判明。**原因①（主因・ベンダ不具合）**: `include/sys/sysdepend/ra_fsp/ek_ra8p1/sysdef.h` が誤って `cpu/ra8m1/sysdef.h`（`INTERNAL_RAM_SIZE=0xE0000`=896KB）を include していた（mtk3_bsp2 v1.00.04、ek_ra8m1 からのコピー取り違え）。`cpu/ra8p1/sysdef.h`（正値 `0x1D4000`=1872KB）へ修正。**原因②（①修正後に顕在化）**: 正しい `INTERNAL_RAM_END=0x221D4000` は SRAM 全域＝単一コア前提だが、本機マルチコアで CPU0 RAM 区画は `0x221B0000` まで。既定 `CNF_SYSTEMAREA_END=0` だとプールが CPU1 区画へはみ出し `knl_init_Imalloc` が高位境界を CPU0 非所有領域へ書いて破壊。`mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END=0x221B0000` で cap。両修正でプール `[≒0x2211e100,0x221B0000]`≒585KB が CPU0 RAM 内に収まる。7.1 に詳細・切り分け手順、6.2 にチェック 2 項目追加（再 vendoring 時 再適用要） |
+| 2026-06-12 | R-003 | **マルチコア・デバッグ起動失敗を修正**。`Debug_Multicore Launch Group` の CPU1 接続が `'monitor enable_stopped_notify_on_connect' is timed out` で失敗（区画変更とは無関係）。原因は方式A が `main()`/スケジューラ未到達で、元 FreeRTOS の `blinky_thread_entry.c` 先頭にあった `R_BSP_SecondaryCoreStart()` が実行されず CPU1 がリセット保持のままになり、CPU1 デバッガ接続がタイムアウトしていたこと。`src/usermain.c` の起動ログ直後に元と同一ガードで `R_BSP_SecondaryCoreStart()` を移設して CPU1 を解除（元挙動の復元）。7.1 実装メモに記録。代替は CPU0 単体デバッグ構成 |
+| 2026-06-12 | R-003 | **区画再配分で LLVM ビルド成功を確認**（Debug 構成・コンパイル＋リンク成功）。`solution.xml` Memories タブで `FLASH_CPU0_CPU0_S` を `0xF0000`（960KB）→ `0xF8000`（992KB）、CPU1 フラッシュを `0x10000`（64KB）→ `0x8000`（32KB）へ変更（合計 `0x100000`=1MB 維持）し Generate Project Content。これで R-003 のコードフラッシュ・オーバーフローが解消。実機 LED 点滅・シリアル出力確認はユーザー実施待ち |
+| 2026-06-11 | R-003 | **ブート・OS 起動を μT-Kernel 3.0 へ移行（最小構成）**。採用方式を**方式A**に確定（`src/hal_warmstart.c` の `R_BSP_WarmStart(POST_C)` 末尾で `knl_start_mtkernel()` を呼び、FreeRTOS `main()`/`vTaskStartScheduler()` に到達させない。切替マクロ `MIMAMORI_USE_MTKERNEL_BOOT` で切り戻し可）。`src/usermain.c` を新規作成し、BSP2 の WEAK `usermain()` を強い定義で上書き ― LED 点滅タスク（`tk_cre_tsk`+`tk_sta_tsk`、`vTaskDelay`→`tk_dly_tsk(500)`）生成と `tm_printf` 起動ログ、自身は `tk_slp_tsk(TMO_FEVR)`。`ra_gen/` 無編集で既存 FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）を `main()` 未到達により無効化。`g_hal_init()` は最小構成で不要（LED=BSP 直接 / `tm_printf`=SCI8 直接）。7.1 実装メモに方式 A 選定理由・`usermain` 配置・HAL 一度きり保証の移設方針・`USE_OBJECT_NAME=0` による `T_CTSK.dsname` 不在の注意・**SCI8 競合確認結果**（`tm_com.c` と `jlink_console.c`(`channel=8`) が同一 SCI8 を共有。R-003 は ntshell 未起動で非競合、R-004 で一本化方針が必要）を記録。実機 LED 点滅・シリアル出力確認はユーザー実施 |

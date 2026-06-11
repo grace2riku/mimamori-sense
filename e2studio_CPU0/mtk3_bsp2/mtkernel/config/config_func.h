@@ -19,18 +19,35 @@
 #ifndef _CONFIG_FUNC_H_
 #define _CONFIG_FUNC_H_
 
+/* [mimamori-sense R-003] FreeRTOS->uT-Kernel 3.0 migration footprint trim.
+ * During migration BOTH RTOSes + the whole app (FreeRTOS/LVGL/camera/AI) stay
+ * linked via ra_gen/main.c, and once knl_start_mtkernel() is actually called
+ * the uT-Kernel objects are pulled in too, tightening CPU0's code-flash use.
+ * Each USE_* switch is gated the same way in tkinit.c knl_init_object() and in
+ * the subsystem's own .c file, so turning it 0 lets gc-sections drop that code.
+ *
+ * Only the subsystems the planned migration NEVER uses are disabled here
+ * (the API replacement table in doc/migration/mtk3-migration-guide.md ch.5 uses
+ * task / eventflag / semaphore / mutex / cyclic-alarm only):
+ *   MAILBOX / MESSAGEBUFFER / RENDEZVOUS / MEMORYPOOL / FIX_MEMORYPOOL / DEVICE.
+ * SEMAPHORE / EVENTFLAG / MUTEX / CYCLICHANDLER / ALARMHANDLER are kept ENABLED
+ * (used in R-004..R-007) so no per-step re-enabling is required.
+ *
+ * NOTE: this trim alone does not fit R-003 in the old 960KB CPU0 partition; the
+ * structural fix is rebalancing flash from the idle CPU1 (uses ~11KB of 64KB)
+ * to CPU0 in solution.xml -> Memories. See guide 7.1 "code-flash overflow". */
 #define USE_SEMAPHORE		(1)
 #define	USE_MUTEX		(1)
 #define	USE_EVENTFLAG		(1)
-#define	USE_MAILBOX		(1)
-#define	USE_MESSAGEBUFFER	(1)
-#define USE_RENDEZVOUS		(1)
-#define USE_MEMORYPOOL		(1)
-#define	USE_FIX_MEMORYPOOL	(1)
+#define	USE_MAILBOX		(0)
+#define	USE_MESSAGEBUFFER	(0)
+#define USE_RENDEZVOUS		(0)
+#define USE_MEMORYPOOL		(0)
+#define	USE_FIX_MEMORYPOOL	(0)
 #define	USE_TIMEMANAGEMENT	(1)
 #define	USE_CYCLICHANDLER	(1)
 #define USE_ALARMHANDLER	(1)
-#define USE_DEVICE		(1)
+#define USE_DEVICE		(0)
 #define USE_FAST_LOCK		(1)
 #define USE_MULTI_LOCK		(1)
 
