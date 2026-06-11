@@ -22,7 +22,17 @@
  */
 
 #define	CNF_SYSTEMAREA_TOP	0	/* 0: Use system default address */
-#define CNF_SYSTEMAREA_END	0	/* 0: Use system default address */
+/* [mimamori-sense R-003] System memory pool upper bound = CPU0 RAM end.
+ * BSP2 の ra8p1/sysdef.h は INTERNAL_RAM_END = 0x221D4000（SRAM 全 1872KB を単一コアが
+ * 占有する前提）だが、本機はマルチコアで FSP が CPU0 の RAM 区画を 0x22000000..0x221B0000
+ * （1792KB, memory_regions.lld: RAM_START+RAM_LENGTH=0x1b0000）に制限している。
+ * 既定（CNF_SYSTEMAREA_END=0）だと Imalloc プールが INTERNAL_RAM_END まで広がり、
+ * knl_init_Imalloc() が高位側のエリア境界（AreaQue 終端）を CPU0 が所有しない
+ * 0x221B0000..0x221D4000（CPU1 区画）へ書き込んでプールが壊れ、初期タスクのスタック確保が
+ * E_NOMEM で失敗する（"!ERROR! Initial Task can not creat"）。
+ * プール上限を CPU0 RAM 末尾に固定して回避する（プールは約585KB確保される）。
+ * 注意: RAM 区画を変更したらこの値も追従させること（→ migration guide 7.1）。 */
+#define CNF_SYSTEMAREA_END	0x221B0000	/* CPU0 RAM end (RAM_START 0x22000000 + RAM_LENGTH 0x1b0000) */
 
 #define	CNF_MAX_TSKPRI		32	/* Task Max priority */
 

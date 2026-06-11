@@ -22,7 +22,14 @@
 #define _MTKBSP_SYS_SYSDEF_DEPEND_H_
 
 /* CPU-dependent definition */
-#include <sys/sysdepend/ra_fsp/cpu/ra8m1/sysdef.h>
+/* [mimamori-sense R-003] BSP2 v1.00.04 のベンダ不具合修正: EK-RA8P1 の sysdef が
+ * 誤って RA8M1 の CPU 定義（INTERNAL_RAM_SIZE=0xE0000=896KB）を include していた。
+ * RA8P1 は SRAM 1872KB（INTERNAL_RAM_SIZE=0x1D4000）。誤値だと INTERNAL_RAM_END=
+ * 0x220E0000 となり、実 RAM 使用末尾（__mtk3_SYSMEM_START≒0x2211e100）より低くなって
+ * μT-Kernel システムメモリプールが空/負になり、初期タスク生成が E_NOMEM で失敗する
+ * （"!ERROR! Initial Task can not creat"）。正しい RA8P1 定義を include する。
+ * （→ migration guide 7.1） */
+#include <sys/sysdepend/ra_fsp/cpu/ra8p1/sysdef.h>
 
 
 /* ------------------------------------------------------------------------ */
