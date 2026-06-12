@@ -282,7 +282,8 @@ void lvgl_task(INT stacd, void *exinf)
  * lvgl_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
  * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
  * uT-Kernel タスク lvgl_task() へ委譲する薄いラッパとして残す
- * （実行されないが、将来 FreeRTOS へ切り戻した場合も動作する）。
+ * （実行されない。FreeRTOS ブートへ切り戻した場合もリンクのみ通る ― タスク本体が
+ *   tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
  * ntshell_thread_entry.c / camera_thread_entry.c 末尾のラッパと同一パターン。
  *
  * @param pvParameters FreeRTOSタスクパラメータ（未使用）

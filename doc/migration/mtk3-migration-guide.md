@@ -760,7 +760,8 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
     へ委譲する薄いラッパとして残置。理由: `ra_gen/ntshell_thread.c`（編集禁止）の
     `ntshell_thread_func()` が `ntshell_thread_entry` を参照し、その参照鎖は startup が参照する
     `main()` から辿れる（方式A で `main()` は実行されないが**リンク時には解決が必要**）。
-    `#if 0` で消すと未解決シンボルになるため、リンク可能なまま残す（FreeRTOS へ切り戻しても動作）。
+    `#if 0` で消すと未解決シンボルになるため、リンク可能なまま残す（切り戻し時はリンクのみ通る ―
+    タスク本体が tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
 - **SCI8 一本化（T-Monitor と FSP UART の競合解決）**:
   - 方針: 起動バナー（`usermain()` 序盤）までは T-Monitor（`tm_printf`/`tm_putstring`, SCI8 直接
     レジスタ）を使用。NT-Shell タスクが `jlink_console_init()`（`R_SCI_B_UART_Open`, channel=8）で
