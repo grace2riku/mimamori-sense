@@ -58,10 +58,9 @@
 /* R-006 (Issue #156): FreeRTOS headers removed.
  *   xTaskGetTickCount()                 -> tk_get_otm (operating time, ms)
  *   g_ai_app_event (FreeRTOS EventGroup) -> g_ai_app_flgid (uT-Kernel event
- *     flag ID; created by the AI inference task in R-007. 0 = not created,
- *     in which case the AI pipeline blocks below are skipped - this follows
- *     the former NULL guard, since g_ai_app_event was also never created
- *     under boot method A). */
+ *     flag ID; R-007 で ai_inference_task が tk_cre_flg で生成・定義も同タスク側へ
+ *     移動。0 = not created (AI タスク起動前) の間は AI パイプラインのブロックを
+ *     スキップする - 旧 NULL ガード相当)。 */
 #include <tk/tkernel.h>
 
 #include "bsp_api.h"
@@ -122,21 +121,14 @@ static uint32_t s_time_total_ms = 0;
  Exported global variables
  *********************************************************************************************************************/
 
-/**
- * uT-Kernel event flag ID for the AI application events (R-006/R-007).
- *
- * Replaces the FreeRTOS g_ai_app_event (ai_inference_thread_entry.c), using
- * the same bit assignments from common_util.h (SOFTWARE_AI_INFERENCE_INIT_DONE,
- * AI_INFERENCE_INPUT_IMAGE_READY, AI_INFERENCE_RESULT_UPDATED, ...).
- *
- * Ownership: the AI inference task (R-007, not yet migrated) will create the
- * flag with tk_cre_flg() and store the ID here (declare `extern ID
- * g_ai_app_flgid;` on its side). Until then the ID stays 0 ("not created")
- * and all AI pipeline blocks below are skipped - the same behavior as the
- * former `g_ai_app_event != NULL` guard (the FreeRTOS event group was never
- * created under boot method A either, because g_hal_init() does not run).
+/*
+ * g_ai_app_flgid（AI アプリ用 uT-Kernel イベントフラグ ID）の定義は、R-007 で
+ * 本来の所有者である src/ai_inference_thread_entry.c へ移動した（R-006 時点は
+ * AI タスク未移行のため暫定的に本ファイルで定義していた）。
+ * extern 宣言は ai_inference_thread_api.h。フラグは ai_inference_task() の先頭で
+ * tk_cre_flg() により生成され、本ファイルは tk_ref_flg / tk_set_flg / tk_clr_flg で
+ * 参照のみ行う（ID が 0 の間＝AI タスク起動前は各ブロックをスキップ）。
  */
-ID g_ai_app_flgid = 0;
 
 /**********************************************************************************************************************
  Private (static) function prototypes
@@ -398,10 +390,9 @@ static void camera_display_timer_cb(lv_timer_t *timer)
     /* ---- AI inference pipeline: preprocess + notify (F-003-12) ----
      *
      * R-006: g_ai_app_event (FreeRTOS event group, NULL guard) ->
-     * g_ai_app_flgid (uT-Kernel event flag ID, <=0 guard). The flag is
-     * created by the AI inference task (R-007, not yet migrated), so the
-     * blocks are currently skipped - same as before, when g_ai_app_event
-     * stayed NULL under boot method A.
+     * g_ai_app_flgid (uT-Kernel event flag ID, <=0 guard). R-007 で
+     * ai_inference_task がフラグを生成するようになったため、AI タスク起動後は
+     * 本ブロックが実行される（起動前は従来どおりスキップ）。
      *   xEventGroupGetBits  -> tk_ref_flg (reference call, returns flgptn)
      *   xEventGroupSetBits  -> tk_set_flg
      */

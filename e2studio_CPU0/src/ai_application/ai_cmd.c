@@ -22,6 +22,10 @@
 #include <math.h>
 #include "ntlibc.h"
 #include "jlink_console.h"
+
+/* R-007 (Issue #157): xEventGroupGetBits(g_ai_app_event) ->
+ * tk_ref_flg(g_ai_app_flgid)（uT-Kernel イベントフラグの参照系 API）。 */
+#include <tk/tkernel.h>
 #include "ai_application_config.h"
 #include "ai_cmd.h"
 #include "camera_layer/camera_utils.h"
@@ -280,10 +284,14 @@ static void ai_cmd_status(void)
              (unsigned long)ai_inference_get_count());
     print_to_console(buf);
 
-    /* Show event group bits if g_ai_app_event has been created */
-    if (g_ai_app_event != NULL)
+    /* Show event flag bits if g_ai_app_flgid has been created.
+     * R-007: g_ai_app_event (FreeRTOS EventGroup, NULL ガード) ->
+     * g_ai_app_flgid (uT-Kernel イベントフラグ ID, <=0 ガード)。
+     * xEventGroupGetBits -> tk_ref_flg（参照系。flgptn に現在パターンが返る）。 */
+    T_RFLG rflg;
+    if ((g_ai_app_flgid > 0) && (E_OK == tk_ref_flg(g_ai_app_flgid, &rflg)))
     {
-        EventBits_t bits = xEventGroupGetBits(g_ai_app_event);
+        UINT bits = rflg.flgptn;
         snprintf(buf, sizeof(buf), "Event bits     : 0x%04lX\r\n",
                  (unsigned long)bits);
         print_to_console(buf);
@@ -306,7 +314,7 @@ static void ai_cmd_status(void)
     }
     else
     {
-        print_to_console("Event group    : (not yet created)\r\n");
+        print_to_console("Event flag     : (not yet created)\r\n");
     }
 
     snprintf(buf, sizeof(buf), "Input buffer   : 0x%08lX (%lu bytes)\r\n",
