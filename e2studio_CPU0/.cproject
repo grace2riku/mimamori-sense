@@ -747,7 +747,7 @@
 					</folderInfo>
 					<sourceEntries>
 						<entry excluding="mtkernel/kernel/sysdepend/cpu/rx231|mtkernel/kernel/sysdepend/cpu/rx65n|mtkernel/kernel/sysdepend/cpu/rza2m|mtkernel/kernel/sysdepend/cpu/stm32h7|mtkernel/kernel/sysdepend/cpu/stm32l4|mtkernel/kernel/sysdepend/cpu/tx03_m367|sysdepend/nxp_mcux|sysdepend/stm32_cube|sysdepend/xmc_mtb" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="mtk3_bsp2"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra"/>
+						<entry excluding="fsp/src/r_drw/r_drw_irq.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="ra_gen"/>
 						<entry excluding="ntshell/src/sample" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="src"/>
 					</sourceEntries>

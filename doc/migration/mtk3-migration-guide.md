@@ -1050,10 +1050,20 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 - **割り込み優先度の確認**: DRW_INT_IPL=2 / GLCDC・ICU19・IIC1=12。BSP2 ARMv8-M は
   カーネルクリティカルセクションを BASEPRI=INTPRI_MAX_EXTINT_PRI(1) でマスクするため、
   優先度 2〜12 の ISR から通知系 API（`tk_sig_sem`/`tk_set_flg`）を呼んでよい。
-- **実機確認（ユーザー実施待ち）**: ①起動ログ（lvgl_task created）→②LCD メイン画面表示（カラーバー/
-  ステータスバー + PERF_MONITOR FPS）→③タッチ（`touch status`/`touch mon`）→④カメラ映像表示
-  （レターボックス・FPS）→⑤NT-Shell `lvgl`/`display`/`touch` コマンド → ⑥FPS 計測
-  （`display dbuf` / PERF_MONITOR。30fps KPI、必要なら `CNF_TIMER_PERIOD=1` を試行）。
+- **実機確認結果（2026-06-12 ユーザー実施・全項目 OK）**:
+  ①起動ログ: blink/ntshell/camera/lvgl 全タスク起動（`lvgl_task created & started.`）。
+  ②LCD メイン画面表示 OK（`display status`: Vsync Count 増加・58.58Hz 出力）。
+  ③タッチ OK（`touch status`: Read count 増加・座標取得）。
+  ④カメラ映像表示 OK（キャプチャ 65fps・エラー 0）。
+  ⑤NT-Shell `lvgl`/`display`/`touch`/`camera` コマンド OK（lv_lock 経由の別タスクアクセス）。
+  ⑥**FPS 実測: PERF_MONITOR 表示 30fps / CPU 40%（変動あり）→ KPI 30fps 充足**。
+  `CNF_TIMER_PERIOD=10` 据え置きで確定（フル幅カメラ領域 768x450 の再描画負荷と 10ms 量子化の
+  組み合わせとして妥当。さらに引き上げたい場合のみ `CNF_TIMER_PERIOD=1` を試行）。
+- **既知の仕様（不具合ではない）**: `lvgl testpat` はカメラライブ表示開始後は**無効**。
+  カメラ初回フレームで `camera_display_update()` がウィジェットのソースをゼロコピー記述子
+  （VIN フレーム直接参照）へ差し替えるため（`camera_display.c:251-258`）、以降テストパターンを
+  描く静的バッファ `camera_buf` はウィジェットから参照されない。テストパターンは画面作成直後
+  〜カメラ初回フレームまでの間のみ表示される（FreeRTOS 時代から同一のロジック）。
 
 ### 7.5 AI 推論（R-007）
 
