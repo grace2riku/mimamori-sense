@@ -1,6 +1,6 @@
 /**
  * @file ai_inference_thread_entry.c
- * @brief Fall detection AI inference FreeRTOS thread (F-003-7)
+ * @brief Fall detection AI inference task (F-003-7)
  * @details
  * Implements the AI inference pipeline on the Ethos-U55 NPU:
  *   1. NPU initialization via RM_ETHOSU_Open()
@@ -11,10 +11,32 @@
  *      - Measure inference time via DWT cycle counter
  *      - Signal AI_INFERENCE_RESULT_UPDATED to display thread
  *
- * Event flow:
- *   camera_display_thread -> SetBits(IMAGE_READY)
- *     -> ai_inference_thread -> memcpy -> mera_invoke() -> post-process
- *       -> SetBits(RESULT_UPDATED) -> camera_display_thread
+ * Event flow (uT-Kernel event flag g_ai_app_flgid):
+ *   camera_display (LVGL timer cb) -> tk_set_flg(IMAGE_READY)
+ *     -> ai_inference_task -> memcpy -> mera_invoke() -> post-process
+ *       -> tk_set_flg(RESULT_UPDATED) -> camera_display (tk_ref_flg/tk_clr_flg)
+ *
+ * R-007 / Issue #157（FreeRTOS -> uT-Kernel 3.0 移行）:
+ *   本タスクは src/usermain.c の usermain() から tk_cre_tsk + tk_sta_tsk で
+ *   生成・起動される（方式A: ra_gen/main.c の FreeRTOS スレッド生成経路は未到達）。
+ *   - エントリ関数は uT-Kernel タスク形式 ai_inference_task(INT stacd, void *exinf) へ移植。
+ *   - 同期オブジェクトを FreeRTOS イベントグループ g_ai_app_event
+ *     （xEventGroupCreateStatic / WaitBits / SetBits）から uT-Kernel イベントフラグ
+ *     g_ai_app_flgid（tk_cre_flg / tk_wai_flg / tk_set_flg）へ置換。
+ *     ビット割り当ては common_util.h のまま（HARDWARE_ETHOSU_INIT_DONE 等）。
+ *   - vTaskDelay -> tk_dly_tsk（configTICK_RATE_HZ=1000 のため値は ms のまま等価）。
+ *   - Ethos-U コアドライバの RTOS フック（ethosu_mutex_* / ethosu_semaphore_*）は
+ *     本プロジェクトでは weak のベアメタル実装（__WFE/__SEV）のまま使用しており、
+ *     FreeRTOS 実装での上書きは元々存在しない（ethosu_driver.c:165-232）。NPU 完了
+ *     割り込み（rm_ethosu_isr -> ethosu_irq_handler -> ethosu_semaphore_give = __SEV）
+ *     はカーネル API を呼ばないため uT-Kernel 下でも無変更で動作する。
+ *   旧 FreeRTOS エントリ ai_inference_thread_entry() は対応関係の追跡用に末尾へ残置
+ *   （方式A では未使用だが ra_gen/ai_inference_thread.c のリンク解決に必要）。
+ *   詳細は doc/migration/mtk3-migration-guide.md 7.5。
+ *
+ * uT-Kernel タスク設定（usermain.c で生成）:
+ *   Stack size: 16384 bytes（FreeRTOS 版 ra_gen/ai_inference_thread.c の 0x4000 と同値）
+ *   Priority  : itskpri=15（描画スレッド 13 / lvgl 14 より低い最下位グループ）
  *
  * Reference: reference_projects/ruhmi-framework-mcu/application_examples/
  *            face_detection/src/ai_inference_thread_entry.c
@@ -55,20 +77,29 @@
 #include "ai_application/fall_detection/fall_detection_postprocess.h"
 #include "fall_detection_logic.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-#include "event_groups.h"
+/* R-007 (Issue #157): FreeRTOS headers (FreeRTOS.h / task.h / event_groups.h)
+ * removed. 対応関係:
+ *   xEventGroupCreateStatic -> tk_cre_flg（TA_TFIFO|TA_WMUL ― ov5640.c と同一属性）
+ *   xEventGroupWaitBits     -> tk_wai_flg（TWF_ANDW|TWF_BITCLR, TMO_FEVR）
+ *   xEventGroupSetBits      -> tk_set_flg
+ *   vTaskDelay(n)           -> tk_dly_tsk(n)（n は ms。tick=1ms のため値は不変） */
+#include <tk/tkernel.h>
+
+#include "ai_inference_thread_api.h"
 
 /**********************************************************************************************************************
  Macro definitions
  *********************************************************************************************************************/
 
 /**
- * AI thread yield delay (ticks) after each inference cycle.
+ * AI task yield delay (ms) after each inference cycle.
  *
- * This prevents the AI thread from starving lower-priority threads.
+ * This prevents the AI task from starving lower-priority tasks.
  * The value should not be too low; otherwise, the display thread
  * performance is negatively impacted.
+ *
+ * R-007: 単位を tick -> ms へ読み替え（FreeRTOS 版は configTICK_RATE_HZ=1000 の
+ * tick 数 25 = 25ms。tk_dly_tsk は ms 指定のため値は 25 のまま等価）。
  *
  * Reference: face_detection/src/ai_inference_thread_entry.c line 28
  */
@@ -102,23 +133,29 @@
  *********************************************************************************************************************/
 
 /**
- * AI application event group for inter-thread synchronization.
+ * AI application uT-Kernel event flag ID for inter-task synchronization (R-007).
  *
- * This event group is created in ai_inference_thread_entry() because the
- * FSP-generated code does not include an event group for AI synchronization.
- * The reference project (face_detection) uses g_ai_app_event which was
- * FSP-generated in that project's configuration.
+ * R-007: FreeRTOS イベントグループ g_ai_app_event（+ StaticEventGroup_t）を
+ * uT-Kernel イベントフラグ ID へ置換した。ビット割り当ては common_util.h のまま。
+ * フラグ本体は ai_inference_task() の先頭で tk_cre_flg() により生成する
+ * （FSP 構成に AI 同期用イベントグループが無く、従来も本ファイルで生成していた）。
+ * 0 のままなら「未生成」を意味し、参照側（camera_display.c / ai_cmd.c）は
+ * `g_ai_app_flgid > 0` ガードでスキップする（旧 `g_ai_app_event != NULL` ガード相当）。
  *
  * Used by:
- *   - ai_inference_thread: waits on IMAGE_READY, sets ETHOSU_INIT_DONE,
- *     AI_INFERENCE_INIT_DONE, RESULT_UPDATED
- *   - camera_display_thread: sets IMAGE_READY, waits on RESULT_UPDATED
- *   - Other threads: wait on ETHOSU_INIT_DONE / AI_INFERENCE_INIT_DONE
+ *   - ai_inference_task: waits on IMAGE_READY (tk_wai_flg), sets
+ *     ETHOSU_INIT_DONE / AI_INFERENCE_INIT_DONE / RESULT_UPDATED (tk_set_flg)
+ *   - camera_display (LVGL timer cb): sets IMAGE_READY (tk_set_flg), checks
+ *     AI_INFERENCE_INIT_DONE / RESULT_UPDATED (tk_ref_flg) and clears
+ *     RESULT_UPDATED (tk_clr_flg)
+ *   - ai_cmd.c "ai status": reads flag pattern (tk_ref_flg)
+ *
+ * extern 宣言は ai_inference_thread_api.h（R-006 時点の暫定定義は
+ * camera_display.c に置かれていたが、R-007 で本来の所有者である本ファイルへ移動）。
  *
  * Reference: face_detection common_data.h (FSP-generated EventGroupHandle_t)
  */
-EventGroupHandle_t g_ai_app_event;
-static StaticEventGroup_t s_ai_app_event_memory;
+ID g_ai_app_flgid = 0;
 
 /**
  * AI model input buffer (preprocessed image, INT8)
@@ -262,7 +299,7 @@ uint32_t ai_inference_get_total_time_ms(void)
  *********************************************************************************************************************/
 
 /**
- * AI inference thread entry function (F-003-7)
+ * AI inference task entry function (F-003-7)
  *
  * @details
  * Initializes Ethos-U55 NPU, then runs the inference loop:
@@ -276,29 +313,61 @@ uint32_t ai_inference_get_total_time_ms(void)
  *
  * Reference: face_detection/src/ai_inference_thread_entry.c lines 95-145
  *
- * @param pvParameters FreeRTOS task parameter (unused)
+ * R-007: uT-Kernel タスク本体（usermain() から tk_cre_tsk + tk_sta_tsk で生成・起動）。
+ *
+ * @param stacd タスク起動コード（未使用）
+ * @param exinf 拡張情報（未使用）
  */
-void ai_inference_thread_entry(void *pvParameters)
+void ai_inference_task(INT stacd, void *exinf)
 {
-    FSP_PARAMETER_NOT_USED(pvParameters);
+    (void)stacd;
+    (void)exinf;
 
     char buf[AI_PRINT_BUF_SIZE];
 
     s_ai_state = AI_STATE_INITIALIZING;
 
+    /*
+     * Wait for JLink console to be ready so we can log initialization progress.
+     * The ntshell task initializes the UART console (jlink_console_init);
+     * waiting here avoids a concurrent double-open of SCI8 from
+     * print_to_console()'s internal init loop (camera_task と同一パターン)。
+     */
+    while (!jlink_configured())
+    {
+        tk_dly_tsk(100);
+    }
+
     /* ======================================================================
-     * Step 0: Create the AI application event group
+     * Step 0: Create the AI application event flag (uT-Kernel)
      *
      * The reference project (face_detection) has g_ai_app_event as an
-     * FSP-generated event group. This project does not have it in the FSP
-     * configuration, so we create it here in user code.
+     * FSP-generated FreeRTOS event group. This project creates the
+     * synchronization object in user code instead.
+     * R-007: xEventGroupCreateStatic -> tk_cre_flg。属性は ov5640.c の
+     * I2C 完了フラグと同一（TA_TFIFO | TA_WMUL、初期パターン 0）。
+     * USE_OBJECT_NAME = 0 のため dsname は初期化子に含めない。
      * ====================================================================== */
-    g_ai_app_event = xEventGroupCreateStatic(&s_ai_app_event_memory);
-    if (NULL == g_ai_app_event)
+    if (g_ai_app_flgid <= 0)
     {
-        ai_thread_log("ERROR: Failed to create g_ai_app_event.\r\n");
-        s_ai_state = AI_STATE_ERROR;
-        while (1) { vTaskDelay(1000); }
+        T_CFLG cflg = {
+            .exinf   = NULL,
+            .flgatr  = TA_TFIFO | TA_WMUL,
+            .iflgptn = 0,
+        };
+
+        ID flgid = tk_cre_flg(&cflg);
+        if (flgid <= E_OK)
+        {
+            snprintf(buf, sizeof(buf),
+                     "ERROR: tk_cre_flg(g_ai_app_flgid) failed (ercd=%d).\r\n", (int)flgid);
+            ai_thread_log(buf);
+            s_ai_state = AI_STATE_ERROR;
+            while (1) { tk_dly_tsk(1000); }   /* R-007: vTaskDelay(1000) -> tk_dly_tsk(1000) */
+        }
+
+        /* ID を公開（camera_display.c / ai_cmd.c は >0 ガードで参照開始する） */
+        g_ai_app_flgid = flgid;
     }
 
     ai_thread_log("AI inference thread started.\r\n");
@@ -315,7 +384,7 @@ void ai_inference_thread_entry(void *pvParameters)
      * ====================================================================== */
     ai_thread_log("  Waiting for camera initialization...\r\n");
 
-    /* Poll for camera readiness (camera thread does not use g_ai_app_event) */
+    /* Poll for camera readiness (camera task does not use g_ai_app_flgid) */
     while (!camera_thread_is_initialized())
     {
         if (camera_thread_has_error())
@@ -323,7 +392,7 @@ void ai_inference_thread_entry(void *pvParameters)
             ai_thread_log("  WARNING: Camera init failed. Continuing NPU init.\r\n");
             break;
         }
-        vTaskDelay(100);
+        tk_dly_tsk(100);    /* R-007: vTaskDelay(100) -> tk_dly_tsk(100) */
     }
 
     ai_thread_log("  Camera ready. Initializing Ethos-U55 NPU...\r\n");
@@ -358,7 +427,16 @@ void ai_inference_thread_entry(void *pvParameters)
         }
     }
 
-    xEventGroupSetBits(g_ai_app_event, HARDWARE_ETHOSU_INIT_DONE);
+    /* R-007: xEventGroupSetBits -> tk_set_flg */
+    {
+        ER ercd = tk_set_flg(g_ai_app_flgid, HARDWARE_ETHOSU_INIT_DONE);
+        if (E_OK != ercd)
+        {
+            snprintf(buf, sizeof(buf),
+                     "  ERROR: tk_set_flg(ETHOSU_INIT_DONE) failed (ercd=%d)\r\n", (int)ercd);
+            ai_thread_log(buf);
+        }
+    }
 
 #if YOLO_FASTEST_MODEL
     snprintf(buf, sizeof(buf), "  NPU initialized. Arena sub0=%lu bytes (YOLO-Fastest V1)\r\n",
@@ -372,7 +450,16 @@ void ai_inference_thread_entry(void *pvParameters)
 #endif
 #else
     /* Stub: Skip NPU init to avoid linking MERA model data (~307KB) */
-    xEventGroupSetBits(g_ai_app_event, HARDWARE_ETHOSU_INIT_DONE);
+    /* R-007: xEventGroupSetBits -> tk_set_flg */
+    {
+        ER ercd = tk_set_flg(g_ai_app_flgid, HARDWARE_ETHOSU_INIT_DONE);
+        if (E_OK != ercd)
+        {
+            snprintf(buf, sizeof(buf),
+                     "  ERROR: tk_set_flg(ETHOSU_INIT_DONE) failed (ercd=%d)\r\n", (int)ercd);
+            ai_thread_log(buf);
+        }
+    }
     ai_thread_log("  NPU init SKIPPED (MERA_INFERENCE_ENABLED=0)\r\n");
 #endif
 
@@ -402,9 +489,21 @@ void ai_inference_thread_entry(void *pvParameters)
     /* ======================================================================
      * Step 4: Signal AI inference initialization complete
      *
+     * camera_display.c の LVGL タイマコールバックが本ビットを tk_ref_flg で
+     * 確認後、前処理 + IMAGE_READY 通知を開始する（camera_display.c:399-422）。
+     *
      * Reference: face_detection/src/ai_inference_thread_entry.c line 115
      * ====================================================================== */
-    xEventGroupSetBits(g_ai_app_event, SOFTWARE_AI_INFERENCE_INIT_DONE);
+    /* R-007: xEventGroupSetBits -> tk_set_flg */
+    {
+        ER ercd = tk_set_flg(g_ai_app_flgid, SOFTWARE_AI_INFERENCE_INIT_DONE);
+        if (E_OK != ercd)
+        {
+            snprintf(buf, sizeof(buf),
+                     "  ERROR: tk_set_flg(AI_INFERENCE_INIT_DONE) failed (ercd=%d)\r\n", (int)ercd);
+            ai_thread_log(buf);
+        }
+    }
 
     ai_thread_log("  AI inference initialization complete. Entering inference loop.\r\n");
 
@@ -417,12 +516,33 @@ void ai_inference_thread_entry(void *pvParameters)
      * ====================================================================== */
     while (true)
     {
-        /* Wait for preprocessed image to be ready */
-        xEventGroupWaitBits(g_ai_app_event,
-                            AI_INFERENCE_INPUT_IMAGE_READY,
-                            pdTRUE,         /* Clear on exit */
-                            pdTRUE,         /* Wait for all */
-                            portMAX_DELAY);
+        /* Wait for preprocessed image to be ready.
+         *
+         * R-007: xEventGroupWaitBits(..., pdTRUE, pdTRUE, portMAX_DELAY)
+         *        -> tk_wai_flg(..., TWF_ANDW | TWF_BITCLR, ..., TMO_FEVR)。
+         *   - TWF_ANDW   : 待ちビット全成立で解除（xWaitForAllBits=pdTRUE 相当。
+         *                  待ちビットは IMAGE_READY の 1 ビットのみ）
+         *   - TWF_BITCLR : 解除時に「待ちビットのみ」クリア（xClearOnExit=pdTRUE 相当。
+         *                  TWF_CLR は全ビットクリアのため不可 ― ETHOSU_INIT_DONE /
+         *                  AI_INFERENCE_INIT_DONE が消えると camera_display.c の
+         *                  init 確認や ai status 表示が壊れる）
+         *   - TMO_FEVR   : 無限待ち（portMAX_DELAY 相当）
+         */
+        UINT flgptn = 0;
+        ER ercd = tk_wai_flg(g_ai_app_flgid,
+                             AI_INFERENCE_INPUT_IMAGE_READY,
+                             TWF_ANDW | TWF_BITCLR,
+                             &flgptn,
+                             TMO_FEVR);
+        if (E_OK != ercd)
+        {
+            snprintf(buf, sizeof(buf),
+                     "ERROR: tk_wai_flg(IMAGE_READY) failed (ercd=%d)\r\n", (int)ercd);
+            ai_thread_log(buf);
+            s_ai_state = AI_STATE_ERROR;
+            tk_dly_tsk(1000);
+            continue;
+        }
 
         uint32_t t_total_start = dwt_get_cycles();
 
@@ -502,20 +622,32 @@ void ai_inference_thread_entry(void *pvParameters)
 
         s_inference_count++;
 
-        /* Signal that inference result is available */
-        xEventGroupSetBits(g_ai_app_event, AI_INFERENCE_RESULT_UPDATED);
+        /* Signal that inference result is available.
+         * R-007: xEventGroupSetBits -> tk_set_flg。camera_display.c の LVGL
+         * タイマコールバックが tk_ref_flg で本ビットを確認し tk_clr_flg で
+         * クリアして転倒検出オーバーレイを更新する（camera_display.c:439-451）。 */
+        ercd = tk_set_flg(g_ai_app_flgid, AI_INFERENCE_RESULT_UPDATED);
+        if (E_OK != ercd)
+        {
+            snprintf(buf, sizeof(buf),
+                     "ERROR: tk_set_flg(RESULT_UPDATED) failed (ercd=%d)\r\n", (int)ercd);
+            ai_thread_log(buf);
+        }
 
         s_ai_state = AI_STATE_IDLE;
 
         /*
-         * Yield to the display thread. The AI thread does not need to run
+         * Yield to the display thread. The AI task does not need to run
          * faster than human reaction/response time, so a relatively larger
          * delay is used. This value should not be too low; otherwise, the
          * display thread performance is negatively influenced.
          *
+         * R-007: vTaskDelay(AI_THREAD_YIELD) -> tk_dly_tsk(AI_THREAD_YIELD)
+         * （25 tick @1000Hz = 25ms で値は等価）。
+         *
          * Reference: face_detection/src/ai_inference_thread_entry.c lines 138-144
          */
-        vTaskDelay(AI_THREAD_YIELD);
+        tk_dly_tsk(AI_THREAD_YIELD);
     }
 }
 
@@ -547,4 +679,26 @@ void update_detection_result(uint16_t index, signed short x, signed short y,
         g_ai_detection[index].m_w = w;
         g_ai_detection[index].m_h = h;
     }
+}
+
+/**
+ * 旧 FreeRTOS スレッドエントリ（R-007 移行前の名残り。対応関係追跡用に残置）。
+ *
+ * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
+ * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
+ * 実行時には呼ばれない。しかし ra_gen/ai_inference_thread.c（編集禁止）の
+ * ai_inference_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
+ * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
+ * uT-Kernel タスク ai_inference_task() へ委譲する薄いラッパとして残す
+ * （実行されないが、将来 FreeRTOS へ切り戻した場合も動作する）。
+ * ntshell_thread_entry.c / camera_thread_entry.c / lvgl_thread_entry.c 末尾の
+ * ラッパと同一パターン。
+ *
+ * @param pvParameters FreeRTOSタスクパラメータ（未使用）
+ */
+void ai_inference_thread_entry(void *pvParameters)
+{
+    FSP_PARAMETER_NOT_USED(pvParameters);
+    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
+    ai_inference_task(0, NULL);
 }

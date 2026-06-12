@@ -20,18 +20,22 @@
  *********************************************************************************************************************/
 #include <stdint.h>
 
-#include "FreeRTOS.h"
-#include "event_groups.h"
+/* R-007 (Issue #157): FreeRTOS.h / event_groups.h removed.
+ * g_ai_app_event (FreeRTOS EventGroupHandle_t) -> g_ai_app_flgid
+ * (uT-Kernel event flag ID). */
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Exported global variables
  *********************************************************************************************************************/
 
 /**
- * AI application event group for inter-thread synchronization.
+ * AI application uT-Kernel event flag ID for inter-task synchronization.
  *
- * Created in ai_inference_thread_entry(). Must not be used before
- * the AI inference thread has started.
+ * Defined and created (tk_cre_flg) in ai_inference_thread_entry.c
+ * (ai_inference_task). 0 means "not yet created" - readers must guard
+ * with `g_ai_app_flgid > 0` before tk_ref_flg/tk_set_flg/tk_clr_flg
+ * (replaces the former `g_ai_app_event != NULL` guard).
  *
  * Event bits defined in common_util.h:
  *   HARDWARE_ETHOSU_INIT_DONE      (bit 2)
@@ -39,7 +43,7 @@
  *   AI_INFERENCE_INPUT_IMAGE_READY  (bit 13)
  *   AI_INFERENCE_RESULT_UPDATED     (bit 14)
  */
-extern EventGroupHandle_t g_ai_app_event;
+extern ID g_ai_app_flgid;
 
 /**
  * AI model input buffer (preprocessed image, INT8).

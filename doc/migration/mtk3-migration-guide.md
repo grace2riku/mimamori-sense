@@ -136,12 +136,12 @@ Grep 実測。各 API は「FreeRTOS → μT-Kernel 3.0 API 対応表」（→ 5
 | `src/usrcmd.c` | `vTaskDelay(pdMS_TO_TICKS(100))` | R-004 |
 | `src/camera_thread_entry.c` | `vTaskDelay`, `pdMS_TO_TICKS`, `xEventGroupWaitBits`（I2C 完了待ち） | R-005 ✅ |
 | `src/camera_framebuffer.c` | `xTaskGetTickCountFromISR()`（ISR 内 FPS 計測） | R-005 ✅ |
-| `src/camera_display.c` | `xEventGroupGetBits/SetBits/ClearBits`（AI アプリ連携イベント） | **R-006（LVGL）へ繰り越し** ／ R-007（R-005 では未実行・未変更） |
+| `src/camera_display.c` | `xEventGroupGetBits/SetBits/ClearBits`（AI アプリ連携イベント） | R-006 ✅（tick/イベント API 置換）／ R-007 ✅（`g_ai_app_flgid` 生成側の移行で AI 連携経路が有効化。定義は ai_inference_thread_entry.c へ移動） |
 | `src/ov5640.c` | I2C 完了割り込み→タスク同期（旧 `g_i2c_event_group`。方式A 未生成のため uT-Kernel イベントフラグ新設） | R-005 ✅ |
 | `src/led_ctrl.c` | **FreeRTOS ソフトウェアタイマ** `xTimerCreate/Start/Stop`（LED 点滅） | R-003/R-004（→ `tk_cre_cyc` 周期ハンドラへ） |
-| `src/ai_inference_thread_entry.c` | `xEventGroupCreateStatic`, `xEventGroupWaitBits/SetBits`, `vTaskDelay`（推論同期） | R-007 |
+| `src/ai_inference_thread_entry.c` | `xEventGroupCreateStatic`, `xEventGroupWaitBits/SetBits`, `vTaskDelay`（推論同期） | R-007 ✅ |
 | `src/lvgl_thread_entry.c` | `vTaskDelay(1)`（`lv_timer_handler` 駆動） | R-006 |
-| `src/ai_application/ai_cmd.c` | FreeRTOS 依存（要精査） | R-007 |
+| `src/ai_application/ai_cmd.c` | `xEventGroupGetBits`（`ai status` の表示のみ。精査の結果これ 1 箇所） | R-007 ✅ |
 | `src/port/lv_port_indev.c`, `glcdc_port.c`, `dave2d_port.c`, `sdram_port.c`, `camera_test.c`, `dave2d_cache_management.c` | LVGL/描画ポート層の FreeRTOS 依存 | R-006 |
 | `src/ui/fall_detection_screen.c` | UI 層の FreeRTOS 依存 | R-006 / R-007 |
 
@@ -1083,7 +1083,92 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 確認: 推論時間 KPI（5ms 以内）。
 
-実装メモ（R-007 完了時に記入）:
+実装メモ（R-007 / 2026-06-12 実装。実機確認はユーザー実施）:
+
+- **タスク化**: `src/ai_inference_thread_entry.c` のスレッド本体を uT-Kernel タスク
+  `ai_inference_task(INT, void*)` へ移植。`src/usermain.c` に `T_CTSK ctsk_ai_inference`
+  （**itskpri=15 / stksz=16384**＝FreeRTOS 版 `ra_gen/ai_inference_thread.c` の
+  `ai_inference_thread_stack[0x4000]` と同値）を追加し、lvgl の後に `tk_cre_tsk`+`tk_sta_tsk`
+  で生成・起動（移行前の `ra_gen/main.c` でも ai_inference_thread_create() は最後）。
+  旧 `ai_inference_thread_entry(void*)` は `ra_gen/ai_inference_thread.c`（編集禁止）の
+  参照鎖が `main()` 経由でリンクに残るため**削除せず** `ai_inference_task` へ委譲する
+  薄いラッパとして残置（ntshell/camera/lvgl と同一パターン）。
+  - 優先度の確定値: blink=10 / camera=11 / ntshell=12 / dave2d・swdraw=13 / lvgl=14 /
+    **ai_inference=15**。FreeRTOS では ai(2)=lvgl(2) と同列だったが、AI は 1 サイクル
+    ごとに 25ms 譲る設計のため、描画パイプライン（13/14）を妨げない最下位とした。
+  - タスク先頭で `jlink_configured()` 待ち（`tk_dly_tsk(100)` ポーリング、camera_task と
+    同一パターン）。`print_to_console` 内部の `jlink_console_init()` ループによる
+    SCI8 二重オープン競合を回避するため。
+- **同期オブジェクト（カメラ→前処理→推論パイプライン）**: FreeRTOS イベントグループ
+  `g_ai_app_event`（`xEventGroupCreateStatic` で本ファイル生成）→ uT-Kernel イベントフラグ
+  **`g_ai_app_flgid`**。R-006 で camera_display.c に暫定定義していた ID 変数を、本来の
+  所有者である `ai_inference_thread_entry.c` の定義へ移動（extern 宣言は
+  `ai_inference_thread_api.h` ― FreeRTOS include も同ヘッダから除去）。生成は
+  `ai_inference_task` 先頭で `tk_cre_flg`（`TA_TFIFO|TA_WMUL`、ov5640.c と同一属性・冪等）。
+  ビット割り当て（common_util.h）は不変。ID が 0 の間（AI タスク起動前）は参照側が
+  `>0` ガードでスキップ（旧 `g_ai_app_event != NULL` ガード相当）。
+  - 推論要求の待ち: `xEventGroupWaitBits(IMAGE_READY, pdTRUE, pdTRUE, portMAX_DELAY)` →
+    `tk_wai_flg(g_ai_app_flgid, AI_INFERENCE_INPUT_IMAGE_READY, TWF_ANDW|TWF_BITCLR,
+    &flgptn, TMO_FEVR)`。**`TWF_BITCLR`（待ちビットのみクリア）が必須** ― `TWF_CLR` は
+    全ビットクリアのため `ETHOSU_INIT_DONE`/`AI_INFERENCE_INIT_DONE` まで消え、
+    camera_display.c の init 確認（`tk_ref_flg` ポーリング、camera_display.c:399-409）と
+    `ai status` 表示が壊れる（I2C の単発完了待ちと違い、本フラグは状態ビット同居型）。
+  - 通知: `xEventGroupSetBits` → `tk_set_flg`（ETHOSU_INIT_DONE / AI_INFERENCE_INIT_DONE /
+    RESULT_UPDATED の 3 箇所 + スタブ側 1 箇所。全て ER 戻り値チェック付き）。
+  - パイプライン全体（R-006 で受け側は準備済み・R-007 のフラグ生成で有効化）:
+    camera_display.c の LVGL タイマ cb が前処理（RGB565→INT8）+
+    `tk_set_flg(IMAGE_READY)`（camera_display.c:411-422）→ ai_inference_task が
+    `tk_wai_flg` で受けて memcpy → `mera_invoke()` → 後処理 → `fall_detection_update()` →
+    `tk_set_flg(RESULT_UPDATED)` → camera_display.c が `tk_ref_flg`+`tk_clr_flg(~bit)` で
+    受けてオーバーレイ更新（camera_display.c:439-451）。
+  - `vTaskDelay` → `tk_dly_tsk`: カメラ初期化ポーリング 100ms / エラー停止ループ 1000ms /
+    サイクル末尾の `AI_THREAD_YIELD`（25 tick @1000Hz = 25ms で値は不変）。
+- **Ethos-U55 ドライバと RTOS の連携箇所（調査結果: 置換不要）**: Ethos-U コアドライバの
+  RTOS フック `ethosu_mutex_create/lock/unlock`・`ethosu_semaphore_create/take/give` は
+  weak のベアメタル実装（`__WFE`/`__SEV`、`ra/npu/ethos-u-core-driver/src/ethosu_driver.c:157-232`）
+  のままで、**本プロジェクトに FreeRTOS 上書き実装は元々存在しない**（grep 実測:
+  当該シンボルの定義・参照は ethosu_driver.c/h のみ）。よって FreeRTOS 時と挙動同一で
+  uT-Kernel 下でも無変更で動作する。NPU 完了割り込み `rm_ethosu_isr`（ipl=12、
+  callback=NULL ― ra_gen/common_data.c:13）→ `ethosu_irq_handler` →
+  `ethosu_semaphore_give`＝count++ と `__SEV` のみ（ethosu_driver.c:383-395, 226-232）で
+  **カーネル API を一切呼ばない**ため 5.1 の ISR 制約に非該当。`FSP_CONTEXT_SAVE/RESTORE`
+  （rm_ethosu.c:251/266）は ThreadX 以外では空マクロ（bsp_common.h:60-65）。
+  推論中の `ethosu_semaphore_take` の `__WFE` ループ（同:205-223）は「実行状態のまま
+  CPU を眠らせる」busy-wait だが、ai タスクは最下位優先度（15）のため、割り込みで
+  起きた高優先度タスクに即プリエンプトされ他タスクの飢餓は起きない。
+- **`ai_cmd.c`（`ai status`）**: `xEventGroupGetBits(g_ai_app_event)` →
+  `tk_ref_flg(g_ai_app_flgid, &rflg)` の `rflg.flgptn`（参照系・`>0` ガード）。
+  表示ラベルを `Event group` → `Event flag` へ変更。FreeRTOS 依存はこの 1 箇所のみ
+  （要精査だった本ファイルの精査完了）。
+- **`fall_detection_logic.c` / `fall_detection_cmd.c`（連携確認結果: 無変更）**:
+  両ファイルとも RTOS API 非依存（grep 実測ゼロ。転倒判定はフレームカウントベースの
+  ステートマシンで時刻 API も不使用）。`fall_detection_update()` は ai_inference_task の
+  推論ループ内から従来どおり呼ばれる（呼び出し位置不変）。
+- **カーネル資源**: イベントフラグは 3 個目（ov5640 I2C / touch I2C / AI）で
+  `CNF_MAX_FLGID=16` 内、タスクは 8 個目（init/blink/ntshell/camera/lvgl/dave2d/swdraw/ai）で
+  `CNF_MAX_TSKID=32` 内。`mtk3_bsp2/config/config.h` の変更は不要。
+- **実機確認結果（2026-06-12 ユーザー実施・合格）**:
+  - ①起動ログ: `ai_inference_task created & started.` と AI 初期化シーケンス
+    （`Camera ready. Initializing Ethos-U55 NPU...` → `NPU initialized. Arena
+    sub0=442368 bytes (YOLO-Fastest V1)` → `AI inference initialization complete.`）を確認。
+  - ②`ai status`: Thread state=IDLE、Inference count 増加（2681→2998→…）、
+    ETHOSU_INIT(bit2)/AI_INIT(bit3) SET、IMAGE_READY/RESULT_UPD がパイプライン
+    進行に応じて遷移することを確認。
+  - ③`ai time`: **NPU inference (mera_invoke) = 5 ms ― KPI（5ms 以内）達成**。
+    Preprocessing 6ms / Input memcpy 3ms / Total cycle 10〜18ms / End-to-end 16〜24ms。
+  - ④`ai detect`: 人物検出 OK（score=0.86〜0.88, class=0）、LCD バウンディング
+    ボックス表示 OK。
+  - ⑤`fall status`: ステートマシンが NORMAL → SUSPECTED → COOLDOWN → NORMAL と
+    遷移、転倒姿勢で Confirmed total 増加（aspect ratio 1.36 / score 0.87 /
+    Position hint LOWER）を確認。
+  - ⑥カメラ表示は AI 並走時 **20 FPS（CPU 60%）**。R-006 単体時の実効 ~50fps から
+    低下（前処理 6ms + memcpy 3ms が LVGL タイマ cb 内で実行されるため）。
+    KPI 30fps との照合・チューニングは R-008（統合 KPI 検証）で扱う。
+  - 回帰確認: LED 制御・NT-Shell コマンド・タッチ（read count 増加・座標取得）OK。
+  - 既知の軽微事象: 起動ログで usermain の `ai_inference_task created & started.`
+    直後に AI タスク初回ログとの混線による文字化け（`]H�`）が 1 箇所出る
+    （usermain=T-Monitor と AI タスク=jlink_console の SCI8 共有による表示上の
+    競合。機能影響なし。R-005 の SCI8 一本化と同種の事象）。
 
 ---
 
@@ -1133,4 +1218,5 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-12 | R-005 | **実機動作確認でフレームキャプチャ成功を確認**（`camera status` で Frame Complete が増加・FPS≒65・HW State=IN_PROGRESS・各種エラー 0、LED コマンド動作）。**SCI8 一本化の取りこぼしを修正**: `usermain.c` のカメラ生成ログのみ `print_to_console`（jlink_console）を使っていたため、NT-Shell が `jlink_console_init()` で SCI8 を開く前に呼ばれて `jlink_configured()` 待ち→`tk_dly_tsk(1)` 譲り→NT-Shell バナーと SCI8 出力が競合し**文字化け（`m□`）＋カメラ生成ログ消失**が発生。blink/ntshell と同じ **T-Monitor（`tm_putstring`/`tm_printf`）** へ統一し、不要化した `jlink_console.h` include を除去。7.3 実装メモを修正。**修正後の実機再確認はユーザー実施待ち** |
 | 2026-06-11 | R-003 | **ブート・OS 起動を μT-Kernel 3.0 へ移行（最小構成）**。採用方式を**方式A**に確定（`src/hal_warmstart.c` の `R_BSP_WarmStart(POST_C)` 末尾で `knl_start_mtkernel()` を呼び、FreeRTOS `main()`/`vTaskStartScheduler()` に到達させない。切替マクロ `MIMAMORI_USE_MTKERNEL_BOOT` で切り戻し可）。`src/usermain.c` を新規作成し、BSP2 の WEAK `usermain()` を強い定義で上書き ― LED 点滅タスク（`tk_cre_tsk`+`tk_sta_tsk`、`vTaskDelay`→`tk_dly_tsk(500)`）生成と `tm_printf` 起動ログ、自身は `tk_slp_tsk(TMO_FEVR)`。`ra_gen/` 無編集で既存 FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）を `main()` 未到達により無効化。`g_hal_init()` は最小構成で不要（LED=BSP 直接 / `tm_printf`=SCI8 直接）。7.1 実装メモに方式 A 選定理由・`usermain` 配置・HAL 一度きり保証の移設方針・`USE_OBJECT_NAME=0` による `T_CTSK.dsname` 不在の注意・**SCI8 競合確認結果**（`tm_com.c` と `jlink_console.c`(`channel=8`) が同一 SCI8 を共有。R-003 は ntshell 未起動で非競合、R-004 で一本化方針が必要）を記録。実機 LED 点滅・シリアル出力確認はユーザー実施 |
 | 2026-06-12 | R-006 | **LCD 画面（LVGL）を μT-Kernel 3.0 へ移行**（R-006a 案A の実装）。新規: `src/lv_os_mtkernel.{h,c}`（LVGL カスタム OSAL ― tk_cre_tsk/tk_cre_mtx(TA_INHERIT)+再帰ラッパ/カウンティングセマフォ。優先度マップ HIGH=13）、`src/port/lvgl_port_mtk3.{c,h}`（RM_LVGL_PORT バイパス ― display cfg コピー+callback 差し替えで R_GLCDC_Open、Vsync=tk_sem(maxsem=1)、tick=tk_get_otm。rm_lvgl_port.c:82-171 と 1:1）、`src/port/r_drw_irq_mtk3.c`（`r_drw_irq.c` ビルド除外（**ユーザー手動・全 Configuration**）+ 全 4 シンボル `d1_initirq_intern`/`d1_shutdownirq_intern`/`d1_queryirq`/`drw_int_isr` を uT-Kernel セマフォで再実装）。変更: `lv_conf_user.h`（`LV_USE_OS LV_OS_CUSTOM` 切替・`LV_SYSMON_GET_IDLE` override 削除）、`User_FreeRTOSConfig.h`（trace フック削除 ― lv_freertos.c 空化による未定義シンボル回避）、`lv_port_indev.c`（rm_comms_i2c コールバックモード化＝bus cfg の semaphore/mutex 実行時 NULL 化 + uT-Kernel フラグ/セマフォ + tk_dly_tsk）、`lvgl_thread_entry.c`（`lvgl_task(INT,void*)` 化・`lv_timer_handler` 戻り値駆動 `tk_dly_tsk`・旧エントリはラッパ残置）、`usermain.c`（`ctsk_lvgl` itskpri=14/stksz=8192 を camera 後に生成・起動）、`camera_display.c`（tick→tk_get_otm、AI 連携 `g_ai_app_event`→`g_ai_app_flgid`(R-007 で生成・未生成スキップ)）、`glcdc_port.c`（`lvgl_port_mtk3_open` へ差し替え・dbuf の vTaskDelay→tk_dly_tsk）、`camera_test.c`/`sdram_port.c`（tick/遅延の uT-Kernel 化）、`fall_detection_screen.c`/`dave2d_port.c`（未使用 include 削除）、`mtk3_bsp2/config/config.h`（**CNF_MAX_MTXID 4→16**。CNF_TIMER_PERIOD=10 据え置き）。6.2 に再適用 3 項目（r_drw_irq.c 除外 / FSP 更新時の原本差分反映 / CNF_MAX_MTXID）を追加、7.4 実装メモを確定内容で更新。**実機確認（LCD 表示・タッチ・カメラ表示・FPS）はユーザー実施待ち** |
+| 2026-06-12 | R-007 | **転倒検出 AI 推論を μT-Kernel 3.0 へ移行**。`ai_inference_thread_entry.c` のスレッド本体を uT-Kernel タスク `ai_inference_task(INT, void*)` へ移植し、`usermain.c` に `T_CTSK ctsk_ai_inference`（**itskpri=15**（lvgl=14 より低い最下位）/`stksz=16384`＝ra_gen の 0x4000 と同値）を lvgl の後に追加して `tk_cre_tsk`+`tk_sta_tsk` で起動。旧エントリは `ra_gen/ai_inference_thread.c` のリンク解決用ラッパとして残置（ntshell/camera/lvgl と同一パターン）。**同期は FreeRTOS イベントグループ `g_ai_app_event`（xEventGroupCreateStatic/WaitBits/SetBits）→ uT-Kernel イベントフラグ `g_ai_app_flgid`（tk_cre_flg `TA_TFIFO\|TA_WMUL` / tk_wai_flg / tk_set_flg）へ置換**。ID 変数の定義は R-006 暫定の camera_display.c から ai_inference_thread_entry.c へ移動（extern は ai_inference_thread_api.h、同ヘッダの FreeRTOS include 除去）。推論要求待ちは `tk_wai_flg(IMAGE_READY, TWF_ANDW\|TWF_BITCLR, TMO_FEVR)` ― **TWF_BITCLR 必須**（TWF_CLR だと同居する ETHOSU_INIT_DONE/AI_INIT_DONE 状態ビットまで消える）。これにより R-006 で受け側準備済みのカメラ→前処理→推論→オーバーレイのイベント経路（camera_display.c の IMAGE_READY set / RESULT_UPDATED ref+clr）が有効化。`vTaskDelay`→`tk_dly_tsk`（100/1000/25ms）。**Ethos-U ドライバの RTOS フックは置換不要と判明**: `ethosu_mutex_*`/`ethosu_semaphore_*` は weak ベアメタル実装（__WFE/__SEV、ethosu_driver.c:157-232）のままで FreeRTOS 上書きが元々存在せず（grep 実測）、NPU IRQ（ipl=12）→`ethosu_semaphore_give`＝`__SEV` のみでカーネル API 不使用（ISR 制約に非該当）。`ai_cmd.c` の `ai status`: `xEventGroupGetBits`→`tk_ref_flg`。`fall_detection_logic.c`/`fall_detection_cmd.c` は RTOS 非依存（grep ゼロ）で無変更・`fall_detection_update()` の呼び出し位置も不変。カーネル資源は CNF_MAX_FLGID=16/CNF_MAX_TSKID=32 内で config.h 変更不要。7.5 実装メモ・3.3 表を確定内容で更新。**実機確認済み（2026-06-12 ユーザー実施・合格）**: 起動ログ・AI 初期化 OK、`ai status`（Inference count 増加・イベントビット遷移）、`ai time` で **NPU inference 5ms ― KPI 達成**、`ai detect` 人物検出（score 0.86-0.88）+ LCD オーバーレイ、`fall status` ステートマシン遷移（SUSPECTED/COOLDOWN/Confirmed 増加）、LED・タッチ回帰 OK。AI 並走時のカメラ表示は 20 FPS（CPU 60%）― 30fps KPI との照合は R-008 で実施。なお実装時にコメント内の `ethosu_mutex_*/ethosu_semaphore_*` 表記の `*/` がブロックコメント終端と解釈されるビルドエラーが発生し、`* / ` （空白挿入）へ修正した |
 | 2026-06-12 | R-006a | **LVGL OSAL 対応方針を確定（スパイク完了）**。新規 `doc/migration/r006a-lvgl-osal-spike.md` に 3 案比較・決定根拠・R-006 実装方針（変更ファイル一覧・API 対応表・PoC コードスケッチ）を文書化。**結論: 案A「μT-Kernel 向け LVGL OSAL 自作（`LV_USE_OS=LV_OS_CUSTOM` + `src/lv_os_mtkernel.{h,c}`）」を採用**（FSP 生成 lv_conf.h の `#ifndef` ガードにより `src/lv_conf_user.h` のみで切替可能・`ra/lvgl/` 無編集・FSP 再生成耐性が完全・現行 60fps 実績構成（dave2d レンダスレッド + lv_lock 契約）を維持・usrcmd.c 無変更）。案B は μT-Kernel 向け CMSIS-RTOS2 実装が存在せず不採用、案C は lv_lock no-op 化で NT-Shell との排他再設計が必要かつ FSP 層依存の削減効果が無く不採用（`LV_USE_OS=LV_OS_NONE` へのコンパイル時切替によるフォールバックとして温存。実行時の自動退避は不成立 ― PR#166 Codex 指摘で訂正）。**追加発見: OSAL の外側で `ra/fsp/` 読み取り専用コード 3 件（`rm_lvgl_port.c`=Vsync 同期/tick、`r_drw_irq.c`=D/AVE 2D dlist 完了同期、`rm_comms_i2c_driver_ra.c`=タッチ I2C ブロッキング）が `BSP_CFG_RTOS==2` で FreeRTOS ブロッキング API を直接呼んでおり、LV_USE_OS の選択と無関係に方式A（FreeRTOS スケジューラ未起動）で破綻するため R-006 で必須対応**（rm_lvgl_port=バイパス自作ポート `src/port/lvgl_port_mtk3.c` / r_drw_irq=ビルド除外+同名シンボル置換 `src/port/r_drw_irq_mtk3.c` / rm_comms_i2c=ra_gen の非 const cfg を実行時 NULL 化してコールバックモード化）。連動対応も特定: `User_FreeRTOSConfig.h` trace フック削除（`lv_freertos.c` 空化による `lv_freertos_task_switch_in/out` 未定義シンボル化の回避）、`lv_os_get_idle_percent` 自作実装（`LV_SYSMON_GET_IDLE` のデフォルト解決先のため未定義だとリンクエラー）、`CNF_MAX_MTXID 4→16`（LVGL は general+builtin mem+xd2+キャッシュ群で mutex 6 個以上）、`CNF_TIMER_PERIOD=10` のままで実効 ~50fps（KPI 30fps 充足・60fps 狙いは 1ms へ変更を実機で実測判断）。`lv_mutex_lock_isr`/`lv_lock_isr` は μT-Kernel 非対応だが本プロジェクト未使用を確認。3.4 / 7.4 を確定内容で更新。コード変更なし（方針決定・文書化のみ） |

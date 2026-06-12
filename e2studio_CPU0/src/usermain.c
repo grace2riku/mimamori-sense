@@ -12,7 +12,8 @@
  *  - LED 点滅タスク（FreeRTOS blinky_thread_entry の最小相当）を生成する。
  *  - tm_printf による起動ログ（SCI8 / 115200 / 8N1）を出力する。
  *
- * この段階では ntshell / camera / lvgl / ai_inference は起動しない。
+ * （R-003 時点では blink のみ起動。以降のステップで ntshell（R-004）/ camera（R-005）/
+ *  lvgl（R-006）/ ai_inference（R-007）のタスク生成・起動を本ファイルへ追加済み。）
  *
  * 起動経路（方式A）:
  *   R_BSP_WarmStart(BSP_WARM_START_POST_C)   ← src/hal_warmstart.c
@@ -61,6 +62,14 @@ extern void camera_task(INT stacd, void *exinf);
  * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell/camera と同様）。
  */
 extern void lvgl_task(INT stacd, void *exinf);
+
+/*
+ * AI 推論タスク本体（R-007 / src/ai_inference_thread_entry.c）。
+ * uT-Kernel タスク形式 void ai_inference_task(INT stacd, void *exinf)。
+ * ヘッダ ai_inference_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
+ * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell/camera/lvgl と同様）。
+ */
+extern void ai_inference_task(INT stacd, void *exinf);
 
 /* ---------------------------------------------------------------------------
  *  LED 点滅タスク
@@ -205,6 +214,33 @@ LOCAL T_CTSK ctsk_lvgl = {
 };
 
 /* ---------------------------------------------------------------------------
+ *  AI 推論タスクの生成情報（R-007 / Issue #157）
+ *
+ *  本体は src/ai_inference_thread_entry.c の ai_inference_task()。
+ *  - 優先度: itskpri=15。優先度表（R-006 までの確定分 + R-007）:
+ *      blink=10 / camera=11 / ntshell=12 / dave2d・swdraw=13 / lvgl=14 / ai=15
+ *    FreeRTOS では ai_inference(2) は lvgl(2) と同列だったが、AI 推論は
+ *    1 サイクルごとに 25ms 譲る設計（人の反応時間に対して十分な周期）であり、
+ *    描画パイプライン（dave2d=13 / lvgl=14）を妨げないよう lvgl より 1 段
+ *    低い 15 とする。NPU 推論中の CPU 待ち（ethosu_semaphore_take の
+ *    __WFE ループ ― ethosu_driver.c:205-223）はブロックではなく実行状態の
+ *    まま CPU を眠らせるが、割り込みで高優先度タスクが起きれば即座に
+ *    プリエンプトされるため、最下位の本タスクが他タスクを飢えさせることはない。
+ *  - スタック: 16384 バイト（FreeRTOS 版 ai_inference_thread と同値 ―
+ *    ra_gen/ai_inference_thread.c の ai_inference_thread_stack[0x4000]。
+ *    MERA 推論・後処理（NMS/expf）・snprintf ログ整形で消費するため）。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_ai_inference = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = ai_inference_task,
+    .itskpri = 15,            /* lvgl(14) より低い最下位グループ */
+    .stksz   = 16384,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
  *  usermain()
  *
  *  μT-Kernel 3.0 の初期タスクから呼ばれる（mtkernel/kernel/inittask/inittask.c）。
@@ -227,7 +263,7 @@ EXPORT INT usermain(void)
      * （mtk3_bsp2/sysdepend/ra_fsp/lib/libtm/ek_ra8p1/tm_com.c）。 */
     tm_putstring((UB *)"\n");
     tm_putstring((UB *)"==============================================\n");
-    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-006)\n");
+    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-007)\n");
     tm_putstring((UB *)"==============================================\n");
     tm_printf((UB *)"[usermain] uT-Kernel 3.0 started. LED count = %d\n",
               (INT)g_bsp_leds.led_count);
@@ -366,6 +402,31 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] lvgl_task created & started.\n");
+
+    /* ---------------------------------------------------------------------
+     * AI 推論タスクを生成・起動（R-007 / Issue #157）
+     *
+     * lvgl の後に起動する（移行前の ra_gen/main.c でも ai_inference_thread_create()
+     * は最後だった。機能上の起動順制約はなく、AI タスクは内部で
+     * camera_thread_is_initialized() のポーリングと jlink_configured() 待ちで
+     * 依存先の準備を待つ）。AI 同期用イベントフラグ g_ai_app_flgid は
+     * ai_inference_task 自身が先頭で tk_cre_flg により生成し、camera_display
+     * （LVGL タイマ）側は ID が 0 の間は AI 連携ブロックをスキップする。
+     * ログは他タスクと同じく T-Monitor（SCI8 一本化 ― R-005 の注意参照）。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_ai_inference);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(ai_inference) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(ai_inference) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] ai_inference_task created & started.\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */
