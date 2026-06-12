@@ -59,8 +59,12 @@
 #include "ntlibc.h"
 #include "common_data.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+/* R-006 (Issue #156): FreeRTOS.h / task.h removed.
+ *   vTaskDelay(ticks)    -> tk_dly_tsk(ms)
+ *   xTaskGetTickCount()  -> tk_get_otm (operating time, ms)
+ * Tick-based macros were renamed to *_MS (1 tick == 1 ms in the former
+ * configuration, so the values are unchanged). */
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -69,14 +73,14 @@
 /** Console output buffer size */
 #define TEST_PRINT_BUF_SIZE         (128)
 
-/** Timeout for waiting for a single frame capture (in FreeRTOS ticks) */
-#define TEST_CAPTURE_TIMEOUT_TICKS  (pdMS_TO_TICKS(2000))
+/** Timeout for waiting for a single frame capture (ms) */
+#define TEST_CAPTURE_TIMEOUT_MS     (2000)
 
-/** Polling interval while waiting for frame (in FreeRTOS ticks) */
-#define TEST_POLL_INTERVAL_TICKS    (pdMS_TO_TICKS(1))
+/** Polling interval while waiting for frame (ms) */
+#define TEST_POLL_INTERVAL_MS       (1)
 
-/** Streaming display update interval (limit CPU usage) */
-#define TEST_STREAM_UPDATE_TICKS    (pdMS_TO_TICKS(10))
+/** Streaming display update interval (ms, limit CPU usage) */
+#define TEST_STREAM_UPDATE_MS       (10)
 
 /**********************************************************************************************************************
  Private (static) functions prototypes
@@ -94,6 +98,20 @@ static void test_cmd_print_help(void);
 /**********************************************************************************************************************
  Private (static) functions
  *********************************************************************************************************************/
+
+/**
+ * Get the current operating time in milliseconds (R-006).
+ *
+ * tk_get_otm() is a reference-type system call (ms-based). SYSTIM is a
+ * 64-bit hi/lo pair; the lower 32 bits suffice for the second-order deltas
+ * measured here (same technique as camera_framebuffer.c, R-005).
+ */
+static uint32_t test_now_ms(void)
+{
+    SYSTIM now = {0, 0};
+    (void)tk_get_otm(&now);
+    return (uint32_t)now.lo;
+}
 
 /**
  * Ensure VIN capture is initialized and running
@@ -241,15 +259,14 @@ bool camera_test_capture(camera_test_capture_result_t *result)
     vin_port_get_info(&info);
     uint32_t initial_frame_count = info.stats.frame_complete;
 
-    /* Record start time */
-    TickType_t start_tick = xTaskGetTickCount();
-    TickType_t timeout_tick = start_tick + TEST_CAPTURE_TIMEOUT_TICKS;
+    /* Record start time (R-006: tick -> ms) */
+    uint32_t start_ms = test_now_ms();
 
     /* Wait for a new frame */
     uint8_t *frame_ptr = NULL;
     bool frame_received = false;
 
-    while (xTaskGetTickCount() < timeout_tick) {
+    while ((test_now_ms() - start_ms) < TEST_CAPTURE_TIMEOUT_MS) {
         frame_ptr = vin_port_get_last_frame();
         vin_port_get_info(&info);
 
@@ -258,11 +275,10 @@ bool camera_test_capture(camera_test_capture_result_t *result)
             break;
         }
 
-        vTaskDelay(TEST_POLL_INTERVAL_TICKS);
+        tk_dly_tsk(TEST_POLL_INTERVAL_MS);
     }
 
-    TickType_t end_tick = xTaskGetTickCount();
-    local_result.capture_time_ms = (uint32_t)((end_tick - start_tick) * portTICK_PERIOD_MS);
+    local_result.capture_time_ms = test_now_ms() - start_ms;
     local_result.p_frame = frame_ptr;
 
     if (!frame_received || frame_ptr == NULL) {
@@ -327,7 +343,7 @@ bool camera_test_fps(uint32_t duration_ms, camera_test_fps_result_t *result)
     vin_port_reset_stats();
 
     /* Wait a small amount to let the reset take effect */
-    vTaskDelay(pdMS_TO_TICKS(10));
+    tk_dly_tsk(10);     /* R-006: vTaskDelay(pdMS_TO_TICKS(10)) -> tk_dly_tsk(10) ms */
 
     /* Record starting point */
     vin_port_info_t start_info;
@@ -337,12 +353,12 @@ bool camera_test_fps(uint32_t duration_ms, camera_test_fps_result_t *result)
     uint32_t start_errors = start_info.stats.error_event;
     uint32_t start_fifo   = start_info.stats.fifo_overflow;
 
-    TickType_t start_tick = xTaskGetTickCount();
+    uint32_t start_ms = test_now_ms();      /* R-006: tick -> ms */
 
     /* Wait for the measurement duration */
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    tk_dly_tsk((RELTIM)duration_ms);        /* R-006: vTaskDelay -> tk_dly_tsk (ms) */
 
-    TickType_t end_tick = xTaskGetTickCount();
+    uint32_t end_ms = test_now_ms();
 
     /* Record ending point */
     vin_port_info_t end_info;
@@ -353,7 +369,7 @@ bool camera_test_fps(uint32_t duration_ms, camera_test_fps_result_t *result)
     uint32_t end_fifo   = end_info.stats.fifo_overflow;
 
     /* Compute results */
-    uint32_t actual_duration_ms = (uint32_t)((end_tick - start_tick) * portTICK_PERIOD_MS);
+    uint32_t actual_duration_ms = end_ms - start_ms;
     uint32_t frame_count = end_frames - start_frames;
     uint32_t eof_count   = end_eof - start_eof;
 
@@ -511,7 +527,7 @@ bool camera_test_stream(uint32_t duration_ms)
 
     /* Reset statistics for clean measurement */
     vin_port_reset_stats();
-    vTaskDelay(pdMS_TO_TICKS(10));
+    tk_dly_tsk(10);     /* R-006: vTaskDelay(pdMS_TO_TICKS(10)) -> tk_dly_tsk(10) ms */
 
     snprintf(buf, sizeof(buf), "  Streaming for %lu ms...\r\n", (unsigned long)duration_ms);
     print_to_console(buf);
@@ -520,14 +536,13 @@ bool camera_test_stream(uint32_t duration_ms)
     vin_port_get_info(&start_info);
     uint32_t start_frames = start_info.stats.frame_complete;
 
-    TickType_t start_tick = xTaskGetTickCount();
-    TickType_t end_tick   = start_tick + pdMS_TO_TICKS(duration_ms);
+    uint32_t start_ms = test_now_ms();      /* R-006: tick -> ms */
 
     uint32_t display_count = 0;
     uint32_t last_frame_count = start_frames;
 
     /* Streaming loop */
-    while (xTaskGetTickCount() < end_tick) {
+    while ((test_now_ms() - start_ms) < duration_ms) {
         vin_port_info_t info;
         vin_port_get_info(&info);
 
@@ -543,12 +558,11 @@ bool camera_test_stream(uint32_t duration_ms)
             }
         }
 
-        vTaskDelay(TEST_STREAM_UPDATE_TICKS);
+        tk_dly_tsk(TEST_STREAM_UPDATE_MS);
     }
 
     /* Compute results */
-    TickType_t actual_end = xTaskGetTickCount();
-    uint32_t actual_duration_ms = (uint32_t)((actual_end - start_tick) * portTICK_PERIOD_MS);
+    uint32_t actual_duration_ms = test_now_ms() - start_ms;
 
     vin_port_info_t end_info;
     vin_port_get_info(&end_info);

@@ -46,8 +46,9 @@
 #include "cmd_utils.h"
 #include "ntlibc.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+/* R-006 (Issue #156): FreeRTOS.h / task.h removed.
+ * xTaskGetTickCount() -> tk_get_otm (operating time, ms). */
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -443,16 +444,20 @@ static void sdram_cmd_map(void)
 }
 
 /**
- * Get current tick count in milliseconds
+ * Get current time in milliseconds
  *
- * @details Uses FreeRTOS xTaskGetTickCount() for time measurement.
- *          configTICK_RATE_HZ = 1000, so 1 tick = 1 ms.
+ * @details R-006: xTaskGetTickCount() -> tk_get_otm() (operating time, ms).
+ *          SYSTIM is a 64-bit hi/lo pair; the lower 32 bits suffice for the
+ *          throughput-measurement deltas used here (same technique as
+ *          camera_framebuffer.c, R-005).
  *
- * @return Current tick count in milliseconds
+ * @return Current operating time in milliseconds
  */
 static uint32_t sdram_get_tick_ms(void)
 {
-    return (uint32_t)xTaskGetTickCount();
+    SYSTIM now = {0, 0};
+    (void)tk_get_otm(&now);
+    return (uint32_t)now.lo;
 }
 
 /**

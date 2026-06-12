@@ -99,8 +99,8 @@
 #include "cmd_utils.h"
 #include "ntlibc.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+/* R-006 (Issue #156): unused FreeRTOS.h / task.h includes removed
+ * (no FreeRTOS API is called from this file). */
 
 /**********************************************************************************************************************
  Macro definitions

@@ -12,7 +12,8 @@
  *   2. dave2d_port_init() - Verify Dave2D initialization by LVGL (S-004-1)
  *   3. glcdc_port_init() - Initialize GLCDC display subsystem:
  *      a. LCD hardware reset (DISP_RESET pin)
- *      b. RM_LVGL_PORT_Open() -> R_GLCDC_Open() + R_GLCDC_Start()
+ *      b. lvgl_port_mtk3_open() -> R_GLCDC_Open() + R_GLCDC_Start()
+ *         (R-006: uT-Kernel replacement of RM_LVGL_PORT_Open)
  *      c. Register backlight enable callback (after first frame flush)
  *   4. lv_port_indev_init() - Initialize touch panel input device (F-001-5):
  *      a. Create LVGL pointer-type input device
@@ -35,10 +36,26 @@
  *   Unsupported operations (gradients, box shadows, masks) automatically fall
  *   back to the software renderer (LV_USE_DRAW_SW=1).
  *
- * Preconditions (satisfied before this thread starts):
+ * Preconditions (satisfied before this task starts):
  *   - SDRAM initialized by R_BSP_SdramInit() in hal_warmstart.c
  *   - IOPORT opened by R_IOPORT_Open() in hal_warmstart.c
- *   - FreeRTOS scheduler running
+ *   - uT-Kernel 3.0 running (R-003 boot method A)
+ *
+ * R-006 / Issue #156 (FreeRTOS -> uT-Kernel 3.0 migration):
+ *   The thread body was ported to the uT-Kernel task form
+ *   lvgl_task(INT stacd, void *exinf), created and started from
+ *   src/usermain.c (tk_cre_tsk + tk_sta_tsk, itskpri=14 / stksz=8192).
+ *   - LVGL OSAL: LV_USE_OS = LV_OS_CUSTOM -> src/lv_os_mtkernel.c
+ *     (lv_init() creates the dave2d/swdraw render threads through it)
+ *   - Display port: RM_LVGL_PORT bypassed -> src/port/lvgl_port_mtk3.c
+ *     (called from glcdc_port_init())
+ *   - D/AVE 2D dlist sync: ra/fsp/src/r_drw/r_drw_irq.c excluded from build,
+ *     replaced by src/port/r_drw_irq_mtk3.c
+ *   - Main loop: vTaskDelay(1) -> tk_dly_tsk driven by the lv_timer_handler()
+ *     return value (ms until the next timer)
+ *   The old FreeRTOS entry lvgl_thread_entry() remains at the end of this
+ *   file as a thin wrapper (link resolution for ra_gen/lvgl_thread.c - same
+ *   pattern as ntshell/camera). Details: doc/migration/mtk3-migration-guide.md 7.4.
  *
  * Reference:
  *   - Reference project: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c
@@ -65,21 +82,29 @@
 #include "ui/fall_detection_screen.h"
 #include "camera_display.h"
 
+#include <tk/tkernel.h>
+
 /**
- * LVGL thread entry function
+ * LVGL task body (uT-Kernel)
  *
  * @details Initializes the LVGL library and GLCDC display, then enters
  *          the LVGL main loop. The loop calls lv_timer_handler() to
  *          process pending LVGL tasks (rendering, animations, timers)
- *          and yields to other FreeRTOS tasks with a 1ms delay.
+ *          and sleeps with tk_dly_tsk() until the next LVGL timer is due.
+ *
+ * R-006: created and started from usermain() (tk_cre_tsk + tk_sta_tsk,
+ *        itskpri=14 / stksz=8192 - same stack size as the FreeRTOS
+ *        lvgl_thread in ra_gen/lvgl_thread.c).
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c:16-78
  *
- * @param pvParameters  FreeRTOS task parameter (unused)
+ * @param stacd  task start code (unused)
+ * @param exinf  extended information (unused)
  */
-void lvgl_thread_entry(void *pvParameters)
+void lvgl_task(INT stacd, void *exinf)
 {
-    FSP_PARAMETER_NOT_USED(pvParameters);
+    (void)stacd;
+    (void)exinf;
 
     /*
      * Step 1: Initialize LVGL library
@@ -119,8 +144,9 @@ void lvgl_thread_entry(void *pvParameters)
      *
      * This performs:
      *   a. LCD hardware reset (DISP_RESET pin pulse)
-     *   b. RM_LVGL_PORT_Open():
-     *      - R_GLCDC_Open() with g_display0_cfg (timing, layers, format)
+     *   b. lvgl_port_mtk3_open() (R-006: uT-Kernel replacement of
+     *      RM_LVGL_PORT_Open - src/port/lvgl_port_mtk3.c):
+     *      - R_GLCDC_Open() with a copy of g_display0_cfg (callback swapped)
      *      - R_GLCDC_Start() to begin display output
      *      - R_GLCDC_BufferChange() for double buffering setup
      *      - lv_display_create() and flush callback registration
@@ -140,7 +166,8 @@ void lvgl_thread_entry(void *pvParameters)
      * This initializes the GT911/FT5X06-compatible touch controller:
      *   a. Creates LVGL pointer-type input device
      *   b. Opens I2C bus and communication device (slave addr 0x38)
-     *   c. Creates FreeRTOS semaphore/mutex for I2C synchronization
+     *   c. Creates uT-Kernel event flag/semaphore for I2C and IRQ
+     *      synchronization (R-006: bus switched to rm_comms_i2c callback mode)
      *   d. Opens and enables external IRQ (channel 19) for touch events
      *
      * Must be called after glcdc_port_init() because the LCD reset pin
@@ -222,13 +249,47 @@ void lvgl_thread_entry(void *pvParameters)
      *   - Processing input device events
      *   - Executing user-defined timers
      *
-     * The 1ms vTaskDelay matches the LVGL tick resolution (LV_DEF_REFR_PERIOD = 16ms)
-     * and allows other FreeRTOS tasks to run.
+     * R-006: the former `lv_timer_handler(); vTaskDelay(1);` loop is
+     * replaced by a delay driven by the lv_timer_handler() return value
+     * (milliseconds until the next due timer). With the uT-Kernel timer
+     * period CNF_TIMER_PERIOD=10 (ms), tk_dly_tsk is quantized to 10ms,
+     * giving an effective refresh of ~50fps for LV_DEF_REFR_PERIOD=16ms
+     * (KPI 30fps satisfied). Vsync / dlist-completion wake-ups are
+     * event-driven (tk_sig_sem) and NOT quantized. If 60fps is required,
+     * set CNF_TIMER_PERIOD=1 and re-measure (spike report 5.7 / 2.5).
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c:60-77
+     * Reference: doc/migration/r006a-lvgl-osal-spike.md 5.7
      */
     while (1) {
-        lv_timer_handler();
-        vTaskDelay(1);
+        uint32_t wait_ms = lv_timer_handler();  /* ms until the next timer */
+        if (wait_ms == 0) {
+            wait_ms = 1;            /* always yield at least 1ms */
+        }
+        if (wait_ms > 500) {
+            wait_ms = 500;          /* clamp LV_NO_TIMER_READY etc. */
+        }
+        tk_dly_tsk((RELTIM)wait_ms);
     }
+}
+
+/**
+ * 旧 FreeRTOS スレッドエントリ（R-006 移行前の名残り。対応関係追跡用に残置）。
+ *
+ * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
+ * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
+ * 実行時には呼ばれない。しかし ra_gen/lvgl_thread.c（編集禁止）の
+ * lvgl_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
+ * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
+ * uT-Kernel タスク lvgl_task() へ委譲する薄いラッパとして残す
+ * （実行されないが、将来 FreeRTOS へ切り戻した場合も動作する）。
+ * ntshell_thread_entry.c / camera_thread_entry.c 末尾のラッパと同一パターン。
+ *
+ * @param pvParameters FreeRTOSタスクパラメータ（未使用）
+ */
+void lvgl_thread_entry(void *pvParameters)
+{
+    FSP_PARAMETER_NOT_USED(pvParameters);
+    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
+    lvgl_task(0, NULL);
 }

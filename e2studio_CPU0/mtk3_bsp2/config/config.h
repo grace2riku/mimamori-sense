@@ -43,7 +43,12 @@
 #define CNF_MAX_SEMID		16	/* Semaphore */
 #define CNF_MAX_FLGID		16	/* Event flag */
 #define CNF_MAX_MBXID		8	/* Mailbox*/
-#define CNF_MAX_MTXID		4	/* Mutex */
+/* [mimamori-sense R-006] Mutex max count 4 -> 16.
+ * LVGL OSAL（src/lv_os_mtkernel.c）が general(lv_lock) + builtin mem +
+ * Dave2D HW 排他(xd2Semaphore) + 画像/フォントキャッシュ群で 6 個以上の
+ * mutex を生成するため、既定値 4 では tk_cre_mtx が E_LIMIT で失敗する。
+ * 注意: BSP2 を再 vendoring すると既定値 4 に戻る（→ migration guide 6.2）。 */
+#define CNF_MAX_MTXID		16	/* Mutex */
 #define CNF_MAX_MBFID		8	/* Message buffer */
 #define CNF_MAX_MPLID		4	/* Memory pool */
 #define CNF_MAX_MPFID		8	/* Fixed size memory pool */

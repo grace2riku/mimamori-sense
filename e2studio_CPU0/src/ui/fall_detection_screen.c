@@ -57,8 +57,8 @@
 #include "ai_inference_thread_api.h"
 #include "jlink_console.h"
 
-#include "FreeRTOS.h"
-#include "event_groups.h"
+/* R-006 (Issue #156): unused FreeRTOS.h / event_groups.h includes removed
+ * (no FreeRTOS API is called from this file). */
 
 /**********************************************************************************************************************
  Macro definitions

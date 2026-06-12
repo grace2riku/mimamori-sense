@@ -55,9 +55,14 @@
 
 #include "lvgl.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-#include "event_groups.h"
+/* R-006 (Issue #156): FreeRTOS headers removed.
+ *   xTaskGetTickCount()                 -> tk_get_otm (operating time, ms)
+ *   g_ai_app_event (FreeRTOS EventGroup) -> g_ai_app_flgid (uT-Kernel event
+ *     flag ID; created by the AI inference task in R-007. 0 = not created,
+ *     in which case the AI pipeline blocks below are skipped - this follows
+ *     the former NULL guard, since g_ai_app_event was also never created
+ *     under boot method A). */
+#include <tk/tkernel.h>
 
 #include "bsp_api.h"
 
@@ -68,8 +73,10 @@
 /** Console output buffer size for diagnostic messages */
 #define PRINT_BUF_SIZE          (128)
 
-/** FPS measurement interval in FreeRTOS ticks (1 second) */
-#define FPS_INTERVAL_TICKS      (configTICK_RATE_HZ)
+/** FPS measurement interval in milliseconds (1 second).
+ *  R-006: FreeRTOS tick (configTICK_RATE_HZ) -> ms (tk_get_otm is ms-based,
+ *  same change as camera_framebuffer.c in R-005). */
+#define FPS_INTERVAL_MS         (1000)
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -105,17 +112,51 @@ static uint32_t s_fps = 0;
 /** FPS counter: frames in the current measurement window */
 static uint32_t s_fps_frame_count = 0;
 
-/** FPS window start tick */
-static TickType_t s_fps_last_tick = 0;
+/** FPS window start time (ms, tk_get_otm). R-006: TickType_t -> uint32_t ms */
+static uint32_t s_fps_last_ms = 0;
 
 /** Timing: total callback processing time (ms) */
 static uint32_t s_time_total_ms = 0;
+
+/**********************************************************************************************************************
+ Exported global variables
+ *********************************************************************************************************************/
+
+/**
+ * uT-Kernel event flag ID for the AI application events (R-006/R-007).
+ *
+ * Replaces the FreeRTOS g_ai_app_event (ai_inference_thread_entry.c), using
+ * the same bit assignments from common_util.h (SOFTWARE_AI_INFERENCE_INIT_DONE,
+ * AI_INFERENCE_INPUT_IMAGE_READY, AI_INFERENCE_RESULT_UPDATED, ...).
+ *
+ * Ownership: the AI inference task (R-007, not yet migrated) will create the
+ * flag with tk_cre_flg() and store the ID here (declare `extern ID
+ * g_ai_app_flgid;` on its side). Until then the ID stays 0 ("not created")
+ * and all AI pipeline blocks below are skipped - the same behavior as the
+ * former `g_ai_app_event != NULL` guard (the FreeRTOS event group was never
+ * created under boot method A either, because g_hal_init() does not run).
+ */
+ID g_ai_app_flgid = 0;
 
 /**********************************************************************************************************************
  Private (static) function prototypes
  *********************************************************************************************************************/
 
 static void camera_display_timer_cb(lv_timer_t *timer);
+
+/**
+ * Get the current operating time in milliseconds (R-006).
+ *
+ * tk_get_otm() is a reference-type system call (task and ISR safe). SYSTIM
+ * is a 64-bit hi/lo pair; the lower 32 bits suffice for the within-second
+ * deltas used here (same technique as camera_framebuffer.c, R-005).
+ */
+static uint32_t camera_display_now_ms(void)
+{
+    SYSTIM now = {0, 0};
+    (void)tk_get_otm(&now);
+    return (uint32_t)now.lo;
+}
 
 /**********************************************************************************************************************
  Exported global functions
@@ -170,7 +211,7 @@ void camera_display_init(void)
     s_update_count = 0;
     s_fps = 0;
     s_fps_frame_count = 0;
-    s_fps_last_tick = xTaskGetTickCount();
+    s_fps_last_ms = camera_display_now_ms();    /* R-006: xTaskGetTickCount() -> tk_get_otm (ms) */
     s_time_total_ms = 0;
 
     /*
@@ -232,16 +273,16 @@ void camera_display_update(const uint16_t *frame_buf,
     s_active = true;
     s_update_count++;
 
-    /* Display-side FPS measurement */
+    /* Display-side FPS measurement (R-006: tick -> ms, same formula change
+     * as camera_framebuffer.c in R-005: frames * 1000 / elapsed_ms) */
     s_fps_frame_count++;
-    TickType_t now = xTaskGetTickCount();
-    TickType_t elapsed = now - s_fps_last_tick;
+    uint32_t now_ms = camera_display_now_ms();
+    uint32_t elapsed_ms = now_ms - s_fps_last_ms;
 
-    if (elapsed >= FPS_INTERVAL_TICKS) {
-        s_fps = (s_fps_frame_count * (uint32_t)configTICK_RATE_HZ)
-                / (uint32_t)elapsed;
+    if (elapsed_ms >= FPS_INTERVAL_MS) {
+        s_fps = (s_fps_frame_count * 1000u) / elapsed_ms;
         s_fps_frame_count = 0;
-        s_fps_last_tick = now;
+        s_fps_last_ms = now_ms;
     }
 }
 
@@ -334,7 +375,7 @@ static void camera_display_timer_cb(lv_timer_t *timer)
         return;
     }
 
-    TickType_t t_start = xTaskGetTickCount();
+    uint32_t t_start_ms = camera_display_now_ms();  /* R-006: tick -> ms */
 
     /*
      * Cache maintenance for the VIN DMA buffer.
@@ -354,13 +395,24 @@ static void camera_display_timer_cb(lv_timer_t *timer)
                           CAMERA_FRAME_WIDTH,
                           CAMERA_FRAME_HEIGHT);
 
-    /* ---- AI inference pipeline: preprocess + notify (F-003-12) ---- */
+    /* ---- AI inference pipeline: preprocess + notify (F-003-12) ----
+     *
+     * R-006: g_ai_app_event (FreeRTOS event group, NULL guard) ->
+     * g_ai_app_flgid (uT-Kernel event flag ID, <=0 guard). The flag is
+     * created by the AI inference task (R-007, not yet migrated), so the
+     * blocks are currently skipped - same as before, when g_ai_app_event
+     * stayed NULL under boot method A.
+     *   xEventGroupGetBits  -> tk_ref_flg (reference call, returns flgptn)
+     *   xEventGroupSetBits  -> tk_set_flg
+     */
     if (!s_ai_init_done) {
-        /* Check if AI inference thread has completed initialization */
-        if (g_ai_app_event != NULL) {
-            EventBits_t bits = xEventGroupGetBits(g_ai_app_event);
-            if (bits & SOFTWARE_AI_INFERENCE_INIT_DONE) {
-                s_ai_init_done = true;
+        /* Check if AI inference task has completed initialization */
+        if (g_ai_app_flgid > 0) {
+            T_RFLG rflg;
+            if (E_OK == tk_ref_flg(g_ai_app_flgid, &rflg)) {
+                if (rflg.flgptn & SOFTWARE_AI_INFERENCE_INIT_DONE) {
+                    s_ai_init_done = true;
+                }
             }
         }
     }
@@ -375,11 +427,11 @@ static void camera_display_timer_cb(lv_timer_t *timer)
         SCB_CleanDCache_by_Addr((void *)model_buffer_int8,
                                 (int32_t)AI_INPUT_IMAGE_SIZE);
 
-        /* Notify AI inference thread that preprocessed image is ready */
-        xEventGroupSetBits(g_ai_app_event, AI_INFERENCE_INPUT_IMAGE_READY);
+        /* Notify AI inference task that preprocessed image is ready */
+        (void)tk_set_flg(g_ai_app_flgid, AI_INFERENCE_INPUT_IMAGE_READY);
     }
 
-    s_time_total_ms = (uint32_t)(xTaskGetTickCount() - t_start);
+    s_time_total_ms = camera_display_now_ms() - t_start_ms;
 
     /*
      * Update fall detection screen overlay (F-003-10)
@@ -393,13 +445,16 @@ static void camera_display_timer_cb(lv_timer_t *timer)
      * in sync with the display refresh. Even if no new AI results are
      * available, we still call update to keep the info panel (FPS) current.
      */
-    if (g_ai_app_event != NULL)
+    if (g_ai_app_flgid > 0)
     {
-        EventBits_t bits = xEventGroupGetBits(g_ai_app_event);
-        if (bits & AI_INFERENCE_RESULT_UPDATED)
+        T_RFLG rflg;
+        if ((E_OK == tk_ref_flg(g_ai_app_flgid, &rflg)) &&
+            (rflg.flgptn & AI_INFERENCE_RESULT_UPDATED))
         {
-            /* Clear the event bit */
-            xEventGroupClearBits(g_ai_app_event, AI_INFERENCE_RESULT_UPDATED);
+            /* Clear the event bit.
+             * R-006: xEventGroupClearBits(grp, bit) -> tk_clr_flg(id, ~bit)
+             * (tk_clr_flg performs flgptn &= clrptn - eventflag.c:204). */
+            (void)tk_clr_flg(g_ai_app_flgid, (UINT)~AI_INFERENCE_RESULT_UPDATED);
 
             /* Update overlay with latest detection results */
             fall_detection_screen_update();
