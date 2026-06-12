@@ -43,8 +43,7 @@
 #include "common_data.h"
 #include "jlink_console.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -53,8 +52,9 @@
 /** Console output buffer size for diagnostic messages */
 #define FB_PRINT_BUF_SIZE       (128)
 
-/** FPS measurement interval in ticks (1 second) */
-#define FPS_INTERVAL_TICKS      (configTICK_RATE_HZ)
+/** FPS measurement interval in milliseconds (1 second).
+ *  R-005: FreeRTOS tick (configTICK_RATE_HZ) からミリ秒系へ変更（tk_get_otm は ms）。 */
+#define FPS_INTERVAL_MS         (1000)
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -94,11 +94,13 @@ static volatile uint32_t s_frame_count = 0;
  * FPS measurement state.
  *
  * s_fps_frame_count: frames counted in the current 1-second window
- * s_fps_last_tick:   tick count at the start of the current window
+ * s_fps_last_ms:     time (ms) at the start of the current window
  * s_fps:            computed FPS from the most recent complete window
+ *
+ * R-005: s_fps_last_tick(TickType_t) -> s_fps_last_ms(uint32_t, ms 系)。
  */
 static volatile uint32_t s_fps_frame_count = 0;
-static volatile TickType_t s_fps_last_tick = 0;
+static volatile uint32_t s_fps_last_ms = 0;
 static volatile uint32_t s_fps = 0;
 
 /**********************************************************************************************************************
@@ -120,7 +122,15 @@ void camera_framebuffer_init(void)
     s_new_frame_available = false;
     s_frame_count = 0;
     s_fps_frame_count = 0;
-    s_fps_last_tick = xTaskGetTickCount();
+
+    /* R-005: xTaskGetTickCount() -> tk_get_otm() (operating time, ms).
+     * SYSTIM is 64-bit (hi/lo); FPS is a within-second delta so the lower
+     * 32 bits (lo) suffice as a millisecond value. */
+    {
+        SYSTIM now = {0, 0};
+        (void)tk_get_otm(&now);
+        s_fps_last_ms = (uint32_t)now.lo;
+    }
     s_fps = 0;
     s_initialized = true;
 }
@@ -130,11 +140,12 @@ void camera_framebuffer_init(void)
  *
  * @details Updates the latest-frame pointer and increments counters.
  *          Called from vin_port_callback() when a frame_complete interrupt
- *          fires. This function must be ISR-safe (no blocking, no FreeRTOS
+ *          fires. This function must be ISR-safe (no blocking, no RTOS
  *          API calls that require task context).
  *
- *          FPS measurement uses xTaskGetTickCountFromISR() which is safe
- *          in ISR context.
+ *          R-005: FPS measurement uses tk_get_otm() (operating time, ms),
+ *          which is a reference-type system call that may be called from ISR
+ *          context (migration guide 5.1). Replaces xTaskGetTickCountFromISR().
  *
  * Reference:
  *   reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/display_thread_entry.c:157-160
@@ -159,21 +170,27 @@ void camera_framebuffer_set_latest(void *p_buffer)
     /* FPS measurement: count frames in 1-second windows */
     s_fps_frame_count++;
 
-    TickType_t now = xTaskGetTickCountFromISR();
-    TickType_t elapsed = now - s_fps_last_tick;
+    /* R-005: tk_get_otm() (ISR-safe reference call) -> ms.
+     * SYSTIM is 64-bit (hi/lo); the lower 32 bits (lo) are the ms value used
+     * for the within-second FPS delta. */
+    SYSTIM now_systim = {0, 0};
+    (void)tk_get_otm(&now_systim);
+    uint32_t now_ms = (uint32_t)now_systim.lo;
+    uint32_t elapsed_ms = now_ms - s_fps_last_ms;
 
-    if (elapsed >= FPS_INTERVAL_TICKS)
+    if (elapsed_ms >= FPS_INTERVAL_MS)
     {
         /*
          * One second (or more) has elapsed since the window started.
          * Compute FPS for this window and start a new one.
          *
-         * For accuracy: fps = frames * configTICK_RATE_HZ / elapsed_ticks
+         * For accuracy: fps = frames * 1000 / elapsed_ms
+         * (units are ms throughout, so the scale factor is 1000).
          * This accounts for windows that are slightly longer than 1 second.
          */
-        s_fps = (s_fps_frame_count * (uint32_t)configTICK_RATE_HZ) / (uint32_t)elapsed;
+        s_fps = (s_fps_frame_count * 1000U) / elapsed_ms;
         s_fps_frame_count = 0;
-        s_fps_last_tick = now;
+        s_fps_last_ms = now_ms;
     }
 }
 

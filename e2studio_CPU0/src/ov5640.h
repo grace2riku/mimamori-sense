@@ -181,4 +181,28 @@ extern uint32_t ov5640_configure_clocks(void);
  */
 extern void ov5640_set_mipi_virtual_channel(uint32_t vchannel);
 
+/**
+ * Create the uT-Kernel event flag for I2C completion synchronization (R-005)
+ *
+ * @details Must be called once (from the camera task, at startup) before any
+ *          camera I2C operation. Replaces the FreeRTOS g_i2c_event_group which
+ *          is not created at runtime under method A (g_hal_init() never runs).
+ *          Idempotent: re-creation is skipped if already created.
+ */
+extern void ov5640_i2c_sync_init(void);
+
+/**
+ * Wait for an I2C transfer to complete (R-005)
+ *
+ * @details Blocks on the uT-Kernel event flag until the I2C completion
+ *          interrupt (i2c_camera_callback) signals completion or abort,
+ *          or the timeout (1000 ms) elapses. Public so camera_thread_entry.c
+ *          can use it for board switch / GreenPAK I2C waits.
+ *
+ * @return FSP_SUCCESS on transfer complete,
+ *         FSP_ERR_ABORTED on transfer abort (or flag error),
+ *         FSP_ERR_TIMEOUT on timeout.
+ */
+extern fsp_err_t ov5640_i2c_wait_complete(void);
+
 #endif /* OV5640_H */
