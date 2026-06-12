@@ -1015,7 +1015,8 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
      `rm_lvgl_port.c:82-171` と 1:1。Vsync は `tk_cre_sem(maxsem=1)` / ISR `tk_sig_sem`（E_QOVR 無視）/
      flush_wait は二段取り `tk_wai_sem(TMO_POL)`→`tk_wai_sem(TMO_FEVR)`。既存の Vsync/underflow 統計
      コールバック（`lvgl_glcdc_callback`）へのイベント変換・転送も原本と同一に維持。
-  2. `src/port/r_drw_irq_mtk3.c`（新規）+ **`ra/fsp/src/r_drw/r_drw_irq.c` をビルド除外（ユーザー手動）**。
+  2. `src/port/r_drw_irq_mtk3.c`（新規）+ **`ra/fsp/src/r_drw/r_drw_irq.c` をビルド除外（ユーザー手動・
+     Debug 構成のみ。Release 構成は他にも未整備の設定があり本プロジェクトでは未使用のため対象外）**。
      除外ファイルの全シンボル 4 つ（`d1_initirq_intern` / `d1_shutdownirq_intern`（`r_drw_base.c:99`
      参照・欠落でリンクエラー）/ `d1_queryirq` / `drw_int_isr`（`ra_gen/vector_data.c:17` のベクタが
      同名参照））を実装。OS 部のみ置換（binary sem → `tk_cre_sem(maxsem=1)`、
