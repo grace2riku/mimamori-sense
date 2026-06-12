@@ -156,9 +156,18 @@ FreeRTOS のブロッキング API（`xSemaphoreTake` 等）は待ちに入る�
    （ISR からの signal も `tk_sig_sem` で許可される ― 手順書 5.1 の制約に適合）。
 
 フォールバック: 案A の実装で予期せぬ問題（描画スレッドの同期不全等）が出た場合は、
-同じ自作 OSAL ファイル内で「スレッド生成を失敗させる」と LVGL は自動的に同期描画へ
-退避するため、**案C 相当へ段階的に縮退できる**（`lv_thread_init` が `LV_RESULT_INVALID` を
-返すと lv_draw_dave2d は同期モードで動作）。完全な作り直しは不要。
+`lv_conf_user.h` の `LV_USE_OS` を `LV_OS_NONE` へ**コンパイル時に切り替える**ことで
+案C（同期描画）へ縮退できる（`#if LV_USE_OS` の `#else` パスで `execute_drawing` が
+ディスパッチ内で同期実行される）。OSAL 以外の成果物（表示ポート・r_drw 置換・タッチ）は
+全案共通のためそのまま流用でき、完全な作り直しは不要。ただし `LV_OS_NONE` では
+`lv_lock` が no-op 化するため、縮退時は usrcmd.c の `lvgl` コマンドを一時無効化するか
+自前排他を併設する（3 章 案C の評価どおり）。
+**注意**: 「`lv_thread_init` を失敗させれば実行時に同期描画へ自動退避する」は**不成立**。
+`lv_draw_dave2d.c:104` / `lv_draw_sw.c:98` は `lv_thread_init` の戻り値を無視し、
+ディスパッチは `#if LV_USE_OS` のコンパイル時分岐で `lv_thread_sync_signal` を呼び続ける
+（さらに sync 自体がレンダスレッド内 `lv_draw_dave2d.c:446` で初期化されるため、
+スレッド未生成では未初期化 sync への signal となり描画が停止する）。
+フォールバックは必ず `LV_OS_NONE` への明示的な切り替えで行うこと。
 
 ---
 
