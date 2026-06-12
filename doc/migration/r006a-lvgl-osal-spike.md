@@ -481,6 +481,16 @@ d1_int_t d1_initirq_intern(d1_device_flex *handle)
     return (s_d1_semid > 0) ? 1 : 0;
 }
 
+d1_int_t d1_shutdownirq_intern(d1_device_flex *handle)   /* r_drw_base.c:99 (d1_closedevice 経路) から呼ばれる。欠けるとリンクエラー */
+{
+    (void)handle;
+    NVIC_DisableIRQ((IRQn_Type)DRW_CFG_INT_IRQ);
+    R_DRW->IRQCTL = DRW_PRV_IRQCTL_ALLIRQ_DISABLE_AND_CLEAR;
+    tk_del_sem(s_d1_semid);             /* vSemaphoreDelete の置換 */
+    s_d1_semid = 0;
+    return 1;
+}
+
 d1_int_t d1_queryirq(d1_device *handle, d1_int_t irqmask, d1_int_t timeout)
 {
     /* d1_to_wait_forever(-1) == TMO_FEVR(-1)。0 は TMO_POL。それ以外は ms とみなす

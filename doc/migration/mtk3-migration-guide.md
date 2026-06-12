@@ -942,7 +942,7 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | FSP ファイル | 依存内容 | 対処 |
 |------|------|------|
 | `rm_lvgl_port.c` | Vsync セマフォ（ISR Give / flush 待ち `xSemaphoreTake(portMAX_DELAY)`）・LVGL tick | **バイパス**: `RM_LVGL_PORT_Open` を呼ばず、`src/port/lvgl_port_mtk3.c`（新規）で display cfg をコピーし callback を差し替えて `R_GLCDC_Open`。Vsync は `tk_cre_sem`/`tk_sig_sem`(ISR)/`tk_wai_sem`、tick は `tk_get_otm` |
-| `r_drw_irq.c`（D/AVE 2D） | `d1_queryirq` が `xSemaphoreTake` ブロック（d2 ライブラリ内部から呼ばれるためバイパス不可） | **ビルド除外 + 同名シンボル置換**: `ra/fsp/src/r_drw/r_drw_irq.c` を Exclude from Build（ユーザー手動・`.cproject` 保存で再生成耐性あり）し、`src/port/r_drw_irq_mtk3.c` で `d1_initirq_intern`/`d1_queryirq`/`drw_int_isr` を μT-Kernel セマフォで再実装 |
+| `r_drw_irq.c`（D/AVE 2D） | `d1_queryirq` が `xSemaphoreTake` ブロック（d2 ライブラリ内部から呼ばれるためバイパス不可） | **ビルド除外 + 同名シンボル置換**: `ra/fsp/src/r_drw/r_drw_irq.c` を Exclude from Build（ユーザー手動・`.cproject` 保存で再生成耐性あり）し、`src/port/r_drw_irq_mtk3.c` で `d1_initirq_intern`/`d1_shutdownirq_intern`/`d1_queryirq`/`drw_int_isr` の **4 シンボル全部**を μT-Kernel セマフォで再実装（`d1_shutdownirq_intern` は `r_drw_base.c:99` から呼ばれており、欠けるとリンクエラー） |
 | `rm_comms_i2c_driver_ra.c`（タッチ I2C） | バス排他/完了ブロッキングに FreeRTOS セマフォ | **コールバックモード化**: `g_comms_i2c_bus0_extended_cfg`（ra_gen・非 const）の `p_blocking_semaphore`/`p_bus_recursive_mutex` を open 前に実行時 NULL 化（両方 NULL は driver の正規サポート）。完了待ちは ov5640 と同じ uT-Kernel イベントフラグ |
 
 対象（変更ファイル一覧の確定版はスパイク報告書 5.1）:
