@@ -490,6 +490,11 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 - [ ] `mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END = 0x221B0000`（CPU0 RAM 末尾）が維持されているか。
       既定値 `0` だとシステムメモリプールが CPU1 RAM 区画へはみ出して破壊される（→ 7.1）。**RAM 区画を変更したら
       追従させる**。再 vendoring 時も再適用要
+- [ ] （R-004）`usermain()` 先頭の `bsp_irq_cfg()` 呼び出しが維持され、SCI8（NT-Shell）割り込みが結線されるか。
+      `bsp_irq_cfg()` は FSP の **内部 API**（`ra/fsp/src/bsp/mcu/all/bsp_irq.h` で `// Used internally by BSP`）であり、
+      方式A で `SystemInit()` の `bsp_irq_cfg()`（`system.c:525`）が未実行になる代替として src 側から呼んでいる（→ 7.2）。
+      **FSP バージョンアップ時はシグネチャ/挙動（IELSR 設定内容・`g_interrupt_event_link_select[]` 形式）が
+      変わっていないかを確認**すること。未結線だと `jlink_console_write` がハングする
 - [ ] LLVM でビルドが通り、実機で μT-Kernel が起動するか（最低限 R-003 の LED + `tm_printf`）
 
 > 補足: e2 studio のビルド設定（include / マクロ / リンカ）は `.cproject` に保存され
