@@ -925,7 +925,7 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
   - 案B（不採用）: CMSIS-RTOS2 抽象層経由 ― μT-Kernel 向け CMSIS-RTOS2 実装が存在せず、
     自作するなら案A を直接作る方が層が少なく合理的（二重抽象の保守・性能劣化）
   - 案C（不採用・フォールバック）: `LV_OS_NONE` ― `lv_lock` が no-op 化し NT-Shell
-    （usrcmd.c の `lvgl` コマンド×6 箇所）との排他を自前再設計する必要が生じる上、
+    （usrcmd.c の lv_lock 区間×4 箇所）との排他を自前再設計する必要が生じる上、
     後述の **FSP 層 FreeRTOS 依存は `LV_USE_OS` と無関係に残る**ため削減効果が小さい
 - 採用根拠の要点:
   1. FSP 生成 `lv_conf.h` の `LV_USE_OS` は `#ifndef` ガード付き → **`src/lv_conf_user.h`

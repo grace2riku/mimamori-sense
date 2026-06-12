@@ -83,7 +83,7 @@ LVGL 内部（`ra/lvgl/` ― 編集しない。OSAL 差し替えでそのまま�
 
 | ファイル | 利用内容 |
 |----------|----------|
-| `src/usrcmd.c` | `lv_lock()`/`lv_unlock()` × 6 箇所（NT-Shell `lvgl` コマンド群。**別タスクから LVGL API を呼ぶ排他の要**） |
+| `src/usrcmd.c` | `lv_lock()` × 4 箇所・`lv_unlock()` × 6 箇所（エラーパス分岐含む。NT-Shell `lvgl` コマンド群。**別タスクから LVGL API を呼ぶ排他の要**） |
 | `src/lvgl_thread_entry.c` | `lv_timer_handler()` ループ + `vTaskDelay(1)` |
 | `src/camera_display.c` / `src/ui/*.h` | 「LVGL スレッドまたは lv_lock 区間から呼ぶこと」の契約をヘッダで明文化（lv_lock 契約に依存した設計） |
 | `src/User_FreeRTOSConfig.h` | `traceTASK_SWITCHED_IN/OUT` → `lv_freertos_task_switch_in/out`（lv_freertos.c の関数）をフック（CPU 使用率統計用） |
@@ -126,7 +126,7 @@ FreeRTOS のブロッキング API（`xSemaphoreTake` 等）は待ちに入る�
 | 評価軸 | 案A: μT-Kernel 向け OSAL 自作（LV_OS_CUSTOM） | 案B: CMSIS-RTOS2 抽象層経由 | 案C: OSAL 非依存化（LV_OS_NONE） |
 |--------|----|----|----|
 | 仕組みの成立性 | ◎ `LV_OS_CUSTOM` + `LV_OS_CUSTOM_INCLUDE` は公式機構。lv_conf_user.h だけで切替可能（2.1/2.2 で確認） | △ `lv_cmsis_rtos2.c` は存在するが、**μT-Kernel 向け CMSIS-RTOS2 実装（osThreadNew/osMutexNew(再帰)/osSemaphore/osKernelGetTickCount 等）が存在しない**（リポジトリ内・TRON Forum 公式とも無し）。橋渡し層の自作が前提 | ○ 機構としては成立（lv_os.h がインライン no-op を提供） |
-| 実装コスト | ○ 新規 1 ファイル（~400 行、本書 5.3 にスケッチ完備）+ lv_conf_user.h 数行 | × 案A 相当の作業（μT-Kernel で CMSIS-RTOS2 を実装）**に加えて** CMSIS-RTOS2 API 全般の意味論（カーネル状態・tick 換算・フラグ）合わせが必要。3 案中最大 | △ OSAL コードは不要だが、**`lv_lock` が no-op 化**するため NT-Shell（usrcmd.c × 6 箇所）と LVGL タスク間の排他を**自前ミューテックスで全箇所再設計**。ヘッダで明文化済みの lv_lock 契約（ui_main_screen.h ほか）も書き換え |
+| 実装コスト | ○ 新規 1 ファイル（~400 行、本書 5.3 にスケッチ完備）+ lv_conf_user.h 数行 | × 案A 相当の作業（μT-Kernel で CMSIS-RTOS2 を実装）**に加えて** CMSIS-RTOS2 API 全般の意味論（カーネル状態・tick 換算・フラグ）合わせが必要。3 案中最大 | △ OSAL コードは不要だが、**`lv_lock` が no-op 化**するため NT-Shell（usrcmd.c の lv_lock 区間×4 箇所）と LVGL タスク間の排他を**自前ミューテックスで全箇所再設計**。ヘッダで明文化済みの lv_lock 契約（ui_main_screen.h ほか）も書き換え |
 | 保守性 | ◎ LVGL 標準の契約（lv_lock/描画スレッド）を維持。ユーザーコード無変更（usrcmd.c そのまま）。対応関係が lv_freertos.c と 1:1 でレビュー容易 | × 二重抽象（LVGL→CMSIS→μT-Kernel）。障害解析時に層が 1 つ増える。CMSIS 層は LVGL 以外に利用者がおらず費用対効果が無い | △ LVGL 内部 `#if LV_USE_OS` 分岐が全て非 OS 側になり、将来 LVGL 更新時の挙動差異が読みにくい。自前排他は LVGL 更新と無関係に保守が必要 |
 | 性能（30fps 目標） | ◎ 現行 FreeRTOS 構成と同じ**レンダスレッド並列モード**（dave2d スレッド + GPU 非同期）を維持。60fps 実績構成と等価 | ○ 理論上は案A 同等だが、CMSIS 層のオーバーヘッド（ハンドル変換・属性解釈）が毎ロックに乗る | △ 描画が `lv_timer_handler` 内の**同期実行**になり、GPU 実行中 CPU がブロック。30fps は満たす見込みだが 60fps 実績構成からの後退。実測リスクあり |
 | FSP 再生成耐性 | ◎ 変更は src/（lv_conf_user.h / 自作 OSAL）のみ。`ra/lvgl/` `ra_cfg/` 無編集 | ○ 同左（CMSIS 層も src/ に置ける） | ◎ 同左 |
