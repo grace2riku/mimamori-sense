@@ -13,13 +13,14 @@
  *   - I2C communication callback for async transfer completion
  *   - NT-Shell "touch" command for diagnostics
  *
- * I2C Communication Flow:
+ * I2C Communication Flow (R-006: uT-Kernel 3.0):
  *   1. touchpad_read() callback is called by LVGL periodically
- *   2. Checks g_irq_binary_semaphore to detect new touch events
+ *   2. Checks the touch IRQ semaphore (s_touch_irq_semid) to detect new touch events
  *   3. If touch detected, sends I2C write-read to register 0x02 (TD_STATUS)
  *   4. RM_COMMS_I2C_WriteRead() sends register address, then reads payload
- *   5. comms_i2c_callback() signals g_i2c_event_group on transfer complete
- *   6. i2c_wait() blocks until transfer completes or times out
+ *      (callback mode: bus blocking semaphore / recursive mutex NULL-ed)
+ *   5. comms_i2c_callback() sets the event flag (s_touch_i2c_flgid) on completion
+ *   6. i2c_wait() blocks on the event flag until completion or timeout
  *   7. Touch data is parsed and reported to LVGL
  *
  * Reference:
@@ -43,6 +44,7 @@
  *********************************************************************************************************************/
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #include "lv_port_indev.h"
 #include "lvgl_thread.h"
@@ -50,11 +52,18 @@
 #include "cmd_utils.h"
 #include "ntlibc.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
-#include "event_groups.h"
-#include "timers.h"
+/* R-006 (Issue #156): FreeRTOS headers removed. RTOS dependencies were
+ * replaced with uT-Kernel 3.0:
+ *   g_i2c_event_group (xEventGroup*)      -> s_touch_i2c_flgid (tk_*_flg)
+ *   g_irq_binary_semaphore (xSemaphore*)  -> s_touch_irq_semid (tk_*_sem)
+ *   vTaskDelay                            -> tk_dly_tsk (ms)
+ * Both ra_gen objects (created by g_hal_init/g_common_init) are NEVER
+ * created under boot method A, so src-side uT-Kernel objects are created
+ * here instead (same pattern as ov5640.c in R-005).
+ * Additionally the rm_comms_i2c bus is switched to CALLBACK MODE by
+ * NULL-ing its blocking semaphore / recursive mutex pointers at runtime
+ * (see lv_port_indev_init Step 3). */
+#include <tk/tkernel.h>
 
 #include "camera_thread_api.h"
 
@@ -118,7 +127,8 @@
 #define FT5X06_REG_TD_STATUS    (0x02)
 
 /**
- * I2C transfer event flags for EventGroup notification
+ * I2C transfer event bits for the uT-Kernel event flag (s_touch_i2c_flgid).
+ * Bit patterns are reused as-is from the former FreeRTOS event group.
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:17-18
  */
@@ -126,11 +136,10 @@
 #define I2C_TRANSFER_ABORT      (1 << 1)
 
 /**
- * I2C transfer timeout in FreeRTOS ticks
- *
- * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:20
+ * I2C transfer timeout in milliseconds (uT-Kernel TMO is ms-based).
+ * R-006: portTICK_PERIOD_MS dependency removed (was 1000 ticks @ 1ms tick).
  */
-#define I2C_TIMEOUT_MS          (1000 / portTICK_PERIOD_MS)
+#define I2C_TIMEOUT_MS          (1000)
 
 /**
  * External IRQ channel number for touch panel INT pin
@@ -300,6 +309,79 @@ static volatile int16_t s_last_touch_y = -1;
 /** Last touch state for diagnostics */
 static volatile lv_indev_state_t s_last_touch_state = LV_INDEV_STATE_RELEASED;
 
+/**
+ * uT-Kernel event flag ID for I2C transfer completion (R-006).
+ *
+ * Replaces the FreeRTOS g_i2c_event_group (ra_gen/common_data.c), which is
+ * created by g_common_init() - never executed under boot method A.
+ * Set by comms_i2c_callback() (ISR, tk_set_flg) and waited on by i2c_wait()
+ * (task, tk_wai_flg). 0 = not yet created.
+ */
+static ID s_touch_i2c_flgid = 0;
+
+/**
+ * uT-Kernel semaphore ID for touch IRQ notification (R-006).
+ *
+ * Replaces the FreeRTOS g_irq_binary_semaphore (ra_gen/common_data.c).
+ * Binary equivalent: counting semaphore with maxsem=1 (tk_sig_sem saturates
+ * with E_QOVR, which is ignored - same as a binary semaphore Give).
+ * Signaled by touch_irq_callback() (ISR) and polled by touchpad_is_pressed()
+ * (TMO_POL). 0 = not yet created.
+ */
+static ID s_touch_irq_semid = 0;
+
+/**********************************************************************************************************************
+ Private (static) functions  - uT-Kernel sync object creation (R-006)
+ *********************************************************************************************************************/
+
+/**
+ * Create the uT-Kernel synchronization objects for the touch panel driver.
+ *
+ * Idempotent (re-creation is skipped). Must be called before the I2C device
+ * and the external IRQ are opened, because the FSP callbacks (ISR context)
+ * reference these IDs. Same pattern as ov5640_i2c_sync_init() (R-005).
+ *
+ * @retval true   both objects are available
+ * @retval false  creation failed (touch panel stays non-functional)
+ */
+static bool touch_sync_init(void)
+{
+    if (s_touch_i2c_flgid <= 0)
+    {
+        T_CFLG cflg = {
+            .exinf   = NULL,
+            .flgatr  = TA_TFIFO | TA_WMUL,
+            .iflgptn = 0,
+        };
+        ID flgid = tk_cre_flg(&cflg);
+        if (flgid <= E_OK)
+        {
+            print_to_console("lv_port_indev: tk_cre_flg failed\r\n");
+            return false;
+        }
+        s_touch_i2c_flgid = flgid;
+    }
+
+    if (s_touch_irq_semid <= 0)
+    {
+        T_CSEM csem = {
+            .exinf   = NULL,
+            .sematr  = TA_TFIFO | TA_FIRST,
+            .isemcnt = 0,
+            .maxsem  = 1,
+        };
+        ID semid = tk_cre_sem(&csem);
+        if (semid <= E_OK)
+        {
+            print_to_console("lv_port_indev: tk_cre_sem failed\r\n");
+            return false;
+        }
+        s_touch_irq_semid = semid;
+    }
+
+    return true;
+}
+
 /**********************************************************************************************************************
  Exported global functions (callbacks called from FSP-generated code)
  *********************************************************************************************************************/
@@ -315,8 +397,14 @@ static volatile lv_indev_state_t s_last_touch_state = LV_INDEV_STATE_RELEASED;
  *          This function name must match the callback configured in FSP:
  *            External IRQ -> g_external_irq0 -> Callback: touch_irq_callback
  *
- * @note This function runs in ISR context. Only ISR-safe FreeRTOS APIs
- *       (xSemaphoreGiveFromISR, portYIELD_FROM_ISR) may be used.
+ * @note This function runs in ISR context. tk_sig_sem is a notification
+ *       call and may be issued from an interrupt handler (migration guide
+ *       5.1). uT-Kernel performs delayed dispatch at interrupt exit, so the
+ *       FreeRTOS portYIELD_FROM_ISR equivalent is not needed.
+ *
+ * R-006: xSemaphoreGiveFromISR(g_irq_binary_semaphore) -> tk_sig_sem.
+ *        E_QOVR (semaphore already full, maxsem=1) is ignored - same
+ *        saturation behavior as the former binary semaphore.
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:155-167
  *
@@ -326,17 +414,11 @@ void touch_irq_callback(external_irq_callback_args_t *p_args)
 {
     if (TOUCH_IRQ_CHANNEL == p_args->channel)
     {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
         /*
-         * Give the IRQ binary semaphore to notify touchpad_is_pressed()
+         * Signal the IRQ semaphore to notify touchpad_is_pressed()
          * that new touch data is available for reading.
-         *
-         * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:159-166
          */
-        xSemaphoreGiveFromISR(g_irq_binary_semaphore, &xHigherPriorityTaskWoken);
-
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        (void)tk_sig_sem(s_touch_irq_semid, 1);
     }
 }
 
@@ -345,13 +427,22 @@ void touch_irq_callback(external_irq_callback_args_t *p_args)
  *
  * @details Called from the RM_COMMS_I2C driver when an I2C transfer
  *          completes (successfully or with error). Sets the appropriate
- *          bit in g_i2c_event_group to unblock i2c_wait().
+ *          bit in the uT-Kernel event flag to unblock i2c_wait().
  *
  *          This function name must match the callback configured in FSP:
  *            I2C Communication Device -> g_comms_i2c_device0 -> Callback: comms_i2c_callback
  *
- * @note This function runs in ISR context. Only ISR-safe FreeRTOS APIs
- *       (xEventGroupSetBitsFromISR, portYIELD_FROM_ISR) may be used.
+ *          With the bus switched to callback mode (blocking semaphore /
+ *          recursive mutex NULL-ed in lv_port_indev_init Step 3), the
+ *          rm_comms_i2c driver invokes this callback without touching any
+ *          FreeRTOS object (rm_comms_i2c_driver_ra.c:321-338).
+ *
+ * @note This function runs in ISR context. tk_set_flg is a notification
+ *       call and may be issued from an interrupt handler (migration guide
+ *       5.1); no explicit yield is needed (delayed dispatch).
+ *
+ * R-006: xEventGroupSetBitsFromISR(g_i2c_event_group) -> tk_set_flg
+ *        (same pattern as i2c_camera_callback in ov5640.c, R-005).
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:169-197
  *
@@ -359,35 +450,17 @@ void touch_irq_callback(external_irq_callback_args_t *p_args)
  */
 void comms_i2c_callback(rm_comms_callback_args_t *p_args)
 {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    BaseType_t xResult = pdFAIL;
-
     if (RM_COMMS_EVENT_OPERATION_COMPLETE == p_args->event)
     {
-        xResult = xEventGroupSetBitsFromISR(g_i2c_event_group,
-                                            I2C_TRANSFER_COMPLETE,
-                                            &xHigherPriorityTaskWoken);
+        (void)tk_set_flg(s_touch_i2c_flgid, I2C_TRANSFER_COMPLETE);
     }
     else if (RM_COMMS_EVENT_ERROR == p_args->event)
     {
-        xResult = xEventGroupSetBitsFromISR(g_i2c_event_group,
-                                            I2C_TRANSFER_ABORT,
-                                            &xHigherPriorityTaskWoken);
+        (void)tk_set_flg(s_touch_i2c_flgid, I2C_TRANSFER_ABORT);
     }
     else
     {
         /* Should never get here */
-    }
-
-    if (pdFAIL != xResult)
-    {
-        /*
-         * If xHigherPriorityTaskWoken is now set to pdTRUE then a context
-         * switch should be requested.
-         *
-         * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:188-195
-         */
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 }
 
@@ -403,6 +476,17 @@ void comms_i2c_callback(rm_comms_callback_args_t *p_args)
 void lv_port_indev_init(void)
 {
     fsp_err_t err;
+
+    /*
+     * Step 0 (R-006): Create the uT-Kernel synchronization objects
+     * (I2C completion event flag / touch IRQ semaphore) BEFORE any FSP
+     * open call registers the ISR callbacks that signal them.
+     */
+    if (!touch_sync_init())
+    {
+        s_touch_status = TOUCH_STATUS_ERROR;
+        return;
+    }
 
     /*
      * Step 1: Create and register LVGL input device
@@ -445,7 +529,7 @@ void lv_port_indev_init(void)
      */
     while (!camera_thread_i2c_done())
     {
-        vTaskDelay(10);
+        tk_dly_tsk(10);     /* R-006: vTaskDelay(10) -> tk_dly_tsk(10) ms */
     }
 
     /*
@@ -469,33 +553,33 @@ void lv_port_indev_init(void)
     assert(FSP_SUCCESS == err);
 
     /*
-     * Step 3: Create FreeRTOS synchronization objects for I2C bus
+     * Step 3 (R-006): Switch the RM_COMMS_I2C bus to CALLBACK MODE.
      *
-     * The RM_COMMS_I2C bus requires:
-     *   - A counting semaphore (initial count 0) for blocking on bus operations
-     *   - A recursive mutex for bus lock (allows nested I2C transactions)
+     * Former FreeRTOS implementation created a blocking semaphore and a
+     * recursive bus mutex here, and the rm_comms_i2c driver blocked with
+     * xSemaphoreTake until the transfer completed - impossible under boot
+     * method A (FreeRTOS scheduler not running).
      *
-     * These are created here rather than in the FSP-generated code because
-     * the FreeRTOS static allocation functions need to be called at runtime.
-     *
-     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:121-138
+     * Instead, the semaphore/mutex pointers in the bus extended cfg are
+     * NULL-ed at runtime BEFORE RM_COMMS_I2C_Open():
+     *   - g_comms_i2c_bus0_extended_cfg (ra_gen/common_data.c:532) is a
+     *     NON-const structure, so this is a runtime assignment, not an edit
+     *     of generated code (it survives FSP regeneration).
+     *   - Both pointers NULL is officially supported: RM_COMMS_I2C_Open
+     *     asserts only "if semaphore is NULL, mutex must also be NULL"
+     *     (rm_comms_i2c.c:99-104), and every driver call guards each
+     *     FreeRTOS operation with a NULL check
+     *     (rm_comms_i2c_driver_ra.c:119-130/167-178/219-230/326-331/353-358).
+     *   - The driver then returns immediately after starting the transfer
+     *     and completion is delivered via comms_i2c_callback() (ISR), where
+     *     tk_set_flg signals i2c_wait() - the same callback-mode pattern as
+     *     the camera I2C (ov5640.c, R-005).
+     *   - Bus exclusion (the former recursive mutex) is not needed: the
+     *     touch panel is the ONLY rm_comms_i2c user, and IIC1 itself is
+     *     serialized against the camera by camera_thread_i2c_done() above.
      */
-#if (2 == BSP_CFG_RTOS)
-    /* Create a semaphore for blocking if a semaphore is not NULL */
-    if (NULL != p_extend->p_blocking_semaphore)
-    {
-        *(p_extend->p_blocking_semaphore->p_semaphore_handle) =
-            xSemaphoreCreateCountingStatic((UBaseType_t)1,
-                                           (UBaseType_t)0,
-                                           p_extend->p_blocking_semaphore->p_semaphore_memory);
-    }
-    /* Create a recursive mutex for bus lock if a recursive mutex is not NULL */
-    if (NULL != p_extend->p_bus_recursive_mutex)
-    {
-        *(p_extend->p_bus_recursive_mutex->p_mutex_handle) =
-            xSemaphoreCreateRecursiveMutexStatic(p_extend->p_bus_recursive_mutex->p_mutex_memory);
-    }
-#endif
+    p_extend->p_blocking_semaphore  = NULL;
+    p_extend->p_bus_recursive_mutex = NULL;
 
     /*
      * Step 4: Open the I2C communication device
@@ -517,7 +601,7 @@ void lv_port_indev_init(void)
      *
      * The GT911 INT pin generates a falling-edge interrupt when new
      * touch data is available. The IRQ callback (touch_irq_callback)
-     * gives the g_irq_binary_semaphore to notify the LVGL thread.
+     * signals s_touch_irq_semid (tk_sig_sem) to notify the LVGL task.
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:144-148
      */
@@ -545,38 +629,44 @@ lv_indev_t *lv_port_indev_get(void)
 /**
  * Wait for I2C transfer completion
  *
- * @details Blocks on g_i2c_event_group until either the transfer completes
- *          successfully, aborts with error, or times out.
+ * @details Blocks on the uT-Kernel event flag until either the transfer
+ *          completes successfully, aborts with error, or times out.
+ *
+ * R-006: xEventGroupWaitBits -> tk_wai_flg(TWF_ORW | TWF_BITCLR, ms timeout)
+ *        (same pattern as ov5640_i2c_wait_complete in ov5640.c, R-005).
+ *        TWF_ORW  = wait for ANY of the bits ("either bit will do")
+ *        TWF_BITCLR = clear the satisfied bits on return
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:199-225
  *
  * @retval FSP_SUCCESS       Transfer completed successfully
  * @retval FSP_ERR_ABORTED   Transfer aborted due to I2C error
- * @retval FSP_ERR_TIMEOUT   Transfer timed out
+ * @retval FSP_ERR_TIMEOUT   Transfer timed out (or flag wait failed)
  */
 static fsp_err_t i2c_wait(void)
 {
     fsp_err_t ret = FSP_SUCCESS;
-    EventBits_t uxBits;
+    UINT flgptn = 0;
 
-    uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                 I2C_TRANSFER_COMPLETE | I2C_TRANSFER_ABORT,
-                                 pdTRUE,    /* Clear bits before returning */
-                                 pdFALSE,   /* Either bit will do */
-                                 I2C_TIMEOUT_MS);
+    ER ercd = tk_wai_flg(s_touch_i2c_flgid,
+                         (UINT)(I2C_TRANSFER_COMPLETE | I2C_TRANSFER_ABORT),
+                         TWF_ORW | TWF_BITCLR,
+                         &flgptn,
+                         (TMO)I2C_TIMEOUT_MS);
 
-    if ((I2C_TRANSFER_COMPLETE & uxBits) == I2C_TRANSFER_COMPLETE)
+    if (E_OK != ercd)
+    {
+        /* E_TMOUT or other flag error: report as timeout */
+        ret = FSP_ERR_TIMEOUT;
+    }
+    else if ((I2C_TRANSFER_COMPLETE & flgptn) == I2C_TRANSFER_COMPLETE)
     {
         ret = FSP_SUCCESS;
     }
-    else if ((I2C_TRANSFER_ABORT & uxBits) == I2C_TRANSFER_ABORT)
-    {
-        ret = FSP_ERR_ABORTED;
-    }
     else
     {
-        /* xEventGroupWaitBits() returned because of timeout */
-        ret = FSP_ERR_TIMEOUT;
+        /* I2C_TRANSFER_ABORT was set */
+        ret = FSP_ERR_ABORTED;
     }
 
     return ret;
@@ -585,9 +675,12 @@ static fsp_err_t i2c_wait(void)
 /**
  * Check if a touch event is pending
  *
- * @details Attempts to take the g_irq_binary_semaphore with zero timeout
- *          (non-blocking). Returns true if the semaphore was available,
- *          indicating that touch_irq_callback() was called since the last check.
+ * @details Attempts to take the IRQ semaphore without waiting (TMO_POL).
+ *          Returns true if the semaphore was available, indicating that
+ *          touch_irq_callback() was called since the last check.
+ *
+ * R-006: xSemaphoreTake(g_irq_binary_semaphore, 0)
+ *        -> tk_wai_sem(s_touch_irq_semid, 1, TMO_POL).
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:227-239
  *
@@ -596,16 +689,7 @@ static fsp_err_t i2c_wait(void)
  */
 static bool touchpad_is_pressed(void)
 {
-    BaseType_t status;
-    bool touch_pressed = false;
-
-    status = xSemaphoreTake(g_irq_binary_semaphore, 0);
-    if (pdTRUE == status)
-    {
-        touch_pressed = true;
-    }
-
-    return touch_pressed;
+    return (E_OK == tk_wai_sem(s_touch_irq_semid, 1, TMO_POL));
 }
 
 /**
@@ -974,7 +1058,7 @@ static void touch_cmd_mon(int argc, char **argv)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        tk_dly_tsk(100);    /* R-006: vTaskDelay(pdMS_TO_TICKS(100)) -> tk_dly_tsk(100) ms */
     }
 
     uint32_t total_reads = s_touch_read_count - start_count;

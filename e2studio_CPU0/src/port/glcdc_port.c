@@ -22,26 +22,29 @@
  * Initialization Sequence (performed by glcdc_port_init):
  *   1. LCD hardware reset via DISP_RESET pin (shared with GT911 touch)
  *      - Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:88-102
- *   2. RM_LVGL_PORT_Open(&g_lvgl_port_ctrl, &g_lvgl_port_cfg) which:
+ *   2. lvgl_port_mtk3_open(&g_lvgl_port_cfg) (R-006: uT-Kernel replacement
+ *      of RM_LVGL_PORT_Open - src/port/lvgl_port_mtk3.c) which:
  *      a. Clears both framebuffers with memset()
- *      b. Calls R_GLCDC_Open() with g_display0_cfg (timing, layers, format)
+ *      b. Calls R_GLCDC_Open() with a copy of g_display0_cfg (callback swapped)
  *      c. Calls R_GLCDC_Start() to begin display output
  *      d. Calls R_GLCDC_BufferChange() to set framebuffer[1] as active
  *      e. Creates LVGL display object with flush/wait callbacks
- *      - Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:82-171
+ *      - Reference: e2studio_CPU0/src/port/lvgl_port_mtk3.c (1:1 with rm_lvgl_port.c:82-171)
  *   3. Backlight enabled via one-shot LVGL flush-finish event callback
  *      - Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:41-56
  *
  * Double Buffering Architecture (S-002-3):
- *   The double-buffering is implemented by RM_LVGL_PORT and tracked by this module.
+ *   The double-buffering is implemented by lvgl_port_mtk3 (R-006) and tracked
+ *   by this module.
  *
  *   Buffer swap flow (per frame):
  *     1. LVGL renders dirty areas to the back buffer (e.g., fb_background[0])
- *     2. rm_lvgl_port_flush_cb() calls R_GLCDC_BufferChange(fb_background[0])
+ *     2. lvgl_port_mtk3_flush_cb() calls R_GLCDC_BufferChange(fb_background[0])
  *        to schedule the swap at the next Vsync
- *     3. rm_lvgl_port_flush_wait_cb() blocks on g_semaphore_vpos (FreeRTOS)
+ *     3. lvgl_port_mtk3_flush_wait_cb() blocks on the Vsync semaphore
+ *        (uT-Kernel tk_wai_sem)
  *     4. GLCDC fires Vsync (DISPLAY_EVENT_LINE_DETECTION) interrupt
- *     5. _rm_lvgl_port_display_callback() releases g_semaphore_vpos
+ *     5. lvgl_port_mtk3_display_callback() releases the semaphore (tk_sig_sem)
  *     6. lvgl_glcdc_callback() (this module) increments swap/vsync counters
  *     7. LVGL now renders to fb_background[1] (the old front buffer)
  *
@@ -83,11 +86,12 @@
 #include "cmd_utils.h"
 #include "ntlibc.h"
 #include "r_ioport.h"
-#include "rm_lvgl_port.h"
+#include "rm_lvgl_port.h"      /* types only (rm_lvgl_port_cfg_t / callback args) */
+#include "lvgl_port_mtk3.h"    /* R-006: uT-Kernel display port (replaces RM_LVGL_PORT_Open) */
 #include "lvgl.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+/* R-006 (Issue #156): FreeRTOS.h / task.h removed. vTaskDelay -> tk_dly_tsk. */
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -441,7 +445,7 @@ static void glcdc_cmd_dbuf(void)
     snprintf(buf, sizeof(buf), "  Render Mode : DIRECT (full framebuffer)\r\n");
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  Sync        : Vsync (FreeRTOS semaphore)\r\n");
+    snprintf(buf, sizeof(buf), "  Sync        : Vsync (uT-Kernel semaphore)\r\n");
     print_to_console(buf);
 
     print_to_console("[Buffer State]\r\n");
@@ -485,7 +489,7 @@ static void glcdc_cmd_dbuf(void)
 
         uint32_t swap_start = s_swap_count;
         uint32_t vsync_start = s_vsync_count;
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        tk_dly_tsk(1000);   /* R-006: vTaskDelay(pdMS_TO_TICKS(1000)) -> tk_dly_tsk(1000) ms */
         uint32_t swap_end = s_swap_count;
         uint32_t vsync_end = s_vsync_count;
 
@@ -518,10 +522,10 @@ static void glcdc_cmd_dbuf(void)
     }
 
     print_to_console("[Architecture]\r\n");
-    print_to_console("  RM_LVGL_PORT handles buffer swap:\r\n");
+    print_to_console("  lvgl_port_mtk3 handles buffer swap (uT-Kernel):\r\n");
     print_to_console("    flush_cb      -> R_GLCDC_BufferChange(back_buf)\r\n");
-    print_to_console("    flush_wait_cb -> xSemaphoreTake(vsync_sem)\r\n");
-    print_to_console("    Vsync ISR     -> xSemaphoreGive(vsync_sem)\r\n");
+    print_to_console("    flush_wait_cb -> tk_wai_sem(vsync_sem)\r\n");
+    print_to_console("    Vsync ISR     -> tk_sig_sem(vsync_sem)\r\n");
     print_to_console("  Tearing prevention: guaranteed by Vsync sync\r\n");
 }
 
@@ -736,10 +740,16 @@ bool glcdc_port_init(void)
      *   g. lv_display_set_buffers_with_stride()
      *      - Configures LVGL double buffering with DIRECT render mode
      *
-     * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:82-171
+     * R-006 (Issue #156): RM_LVGL_PORT_Open (FSP, FreeRTOS-dependent Vsync
+     * semaphore / tick) is BYPASSED. lvgl_port_mtk3_open() performs the same
+     * sequence with uT-Kernel primitives, reusing g_lvgl_port_cfg (ra_gen)
+     * read-only. The Vsync/underflow statistics callback (lvgl_glcdc_callback
+     * below) keeps being invoked through g_lvgl_port_cfg.p_callback.
+     *
+     * Reference: e2studio_CPU0/src/port/lvgl_port_mtk3.c (1:1 with rm_lvgl_port.c:82-171)
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:78-83
      */
-    err = RM_LVGL_PORT_Open(&g_lvgl_port_ctrl, &g_lvgl_port_cfg);
+    err = lvgl_port_mtk3_open(&g_lvgl_port_cfg);
     if (FSP_SUCCESS != err) {
         s_glcdc_status = GLCDC_STATUS_ERROR;
         return false;
@@ -757,7 +767,10 @@ bool glcdc_port_init(void)
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:85
      */
-    lv_display_add_event_cb(g_lvgl_port_ctrl.p_lv_display,
+    /* R-006: g_lvgl_port_ctrl.p_lv_display -> lvgl_port_mtk3_get_display()
+     * (the control block is no longer populated since RM_LVGL_PORT_Open is
+     * bypassed). */
+    lv_display_add_event_cb(lvgl_port_mtk3_get_display(),
                             glcdc_backlight_on_event,
                             LV_EVENT_FLUSH_FINISH,
                             NULL);
@@ -793,8 +806,10 @@ uint32_t glcdc_port_get_vsync_count(void)
 /**
  * LVGL GLCDC callback function
  *
- * @details Called from the RM_LVGL_PORT module's internal display callback
- *          (_rm_lvgl_port_display_callback) after processing the Vsync
+ * @details Called from the display port's internal display callback
+ *          (R-006: lvgl_port_mtk3_display_callback in src/port/lvgl_port_mtk3.c,
+ *          which performs the same event conversion as the original
+ *          _rm_lvgl_port_display_callback) after processing the Vsync
  *          semaphore. This callback is registered in g_lvgl_port_cfg.p_callback
  *          (FSP-generated common_data.c:333).
  *

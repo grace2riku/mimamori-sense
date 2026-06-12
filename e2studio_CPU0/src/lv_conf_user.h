@@ -49,6 +49,33 @@
 #define LV_CONF_USER_H_
 
 /*=============================================================
+ * Operating System Abstraction (OSAL)
+ *============================================================*/
+
+/** R-006 (Issue #156): switch the LVGL OSAL from FreeRTOS to the custom
+ * uT-Kernel 3.0 backend (R-006a spike decision: plan A).
+ *
+ * The FSP-generated lv_conf.h defines `LV_USE_OS (LV_OS_FREERTOS)` inside an
+ * `#ifndef LV_USE_OS` guard (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:36-38) and
+ * includes this file first, so defining it here overrides the FSP default
+ * WITHOUT editing ra/lvgl/ or ra_cfg/. With LV_OS_CUSTOM:
+ *   - ra/lvgl/lvgl/src/osal/lv_freertos.c compiles to nothing
+ *     (`#if LV_USE_OS == LV_OS_FREERTOS` guard) - no build exclusion needed
+ *   - lv_os.h includes LV_OS_CUSTOM_INCLUDE for the OSAL types
+ *     (src/ is on the compiler include path)
+ *   - the OSAL functions are provided by src/lv_os_mtkernel.c
+ *
+ * Fallback: setting `LV_USE_OS LV_OS_NONE` here degrades to synchronous
+ * (non-threaded) rendering at COMPILE time (plan C). Note that lv_lock()
+ * becomes a no-op in that case, so the NT-Shell `lvgl` commands (usrcmd.c)
+ * must be disabled or given their own locking (spike report 4).
+ *
+ * Reference: doc/migration/r006a-lvgl-osal-spike.md 2.2 / 5.3
+ */
+#define LV_USE_OS            LV_OS_CUSTOM
+#define LV_OS_CUSTOM_INCLUDE "lv_os_mtkernel.h"
+
+/*=============================================================
  * Standard Library Selection
  *============================================================*/
 
@@ -453,27 +480,17 @@
 #define LV_USE_SYSMON   1
 
 #if LV_USE_SYSMON
-    /** Idle percentage callback
-     *
-     * Uses LVGL's FreeRTOS-based idle tracking (lv_os_get_idle_percent).
-     * The idle/non-idle time is measured by the FreeRTOS task switch trace
-     * hooks (traceTASK_SWITCHED_IN/OUT) defined in src/User_FreeRTOSConfig.h,
-     * which feed lv_freertos_task_switch_in/out() in LVGL's FreeRTOS OSAL.
-     *
-     * This is more accurate than the previous lv_timer_get_idle (LVGL timer
-     * based tracking) because it accounts for time consumed by other FreeRTOS
-     * tasks (camera, AI inference, NT-Shell), not just LVGL's own processing.
-     *
-     * Requires:
-     *   - src/User_FreeRTOSConfig.h (trace hook definitions)
-     *   - FSP: FreeRTOS "Custom FreeRTOSConfig.h" = User_FreeRTOSConfig.h
-     *
-     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/User_FreeRTOSConfig.h
-     *            (upstream commit 47b0e35 "Reduce CPU usage in benchmark demo")
-     *
-     * Issue: #138
-     */
-    #define LV_SYSMON_GET_IDLE lv_os_get_idle_percent
+    /* R-006 (Issue #156): the `LV_SYSMON_GET_IDLE lv_os_get_idle_percent`
+     * override (Issue #138, FreeRTOS trace-hook based measurement) was
+     * REMOVED. LVGL's default for LV_SYSMON_GET_IDLE is the very same
+     * `lv_os_get_idle_percent` (lv_conf_internal.h:3206), which is now
+     * implemented by the custom uT-Kernel OSAL (src/lv_os_mtkernel.c) as a
+     * delegation to lv_timer_get_idle(). The FreeRTOS trace hooks in
+     * User_FreeRTOSConfig.h were removed together (lv_freertos.c compiles
+     * empty under LV_OS_CUSTOM, so the hook targets no longer exist).
+     * Precision note: the value now reflects "idle inside the LVGL task"
+     * rather than whole-CPU idle - acceptable for the on-screen monitor
+     * (spike report 2.5 / 6). */
 
     /** Performance monitor (FPS + CPU usage overlay)
      *

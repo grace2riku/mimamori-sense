@@ -54,6 +54,14 @@ extern void ntshell_task(INT stacd, void *exinf);
  */
 extern void camera_task(INT stacd, void *exinf);
 
+/*
+ * LVGL タスク本体（R-006 / src/lvgl_thread_entry.c）。
+ * uT-Kernel タスク形式 void lvgl_task(INT stacd, void *exinf)。
+ * ヘッダ lvgl_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
+ * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell/camera と同様）。
+ */
+extern void lvgl_task(INT stacd, void *exinf);
+
 /* ---------------------------------------------------------------------------
  *  LED 点滅タスク
  *
@@ -175,6 +183,28 @@ LOCAL T_CTSK ctsk_camera = {
 };
 
 /* ---------------------------------------------------------------------------
+ *  LVGL タスクの生成情報（R-006 / Issue #156）
+ *
+ *  本体は src/lvgl_thread_entry.c の lvgl_task()。
+ *  - 優先度: itskpri=14。優先度表（スパイク報告書 5.7）:
+ *      blink=10 / camera=11 / ntshell=12 / dave2d・swdraw=13 / lvgl=14
+ *    LVGL OSAL（src/lv_os_mtkernel.c）が lv_init() 中に生成する描画スレッド
+ *    （dave2d / swdraw、LV_THREAD_PRIO_HIGH → itskpri=13、各 8KB スタック）は
+ *    LVGL の設計どおり lvgl_task より 1 段高優先（普段は sync 待ちで眠っている）。
+ *  - スタック: 8192 バイト（FreeRTOS 版 lvgl_thread と同値 ―
+ *    ra_gen/lvgl_thread.c の lvgl_thread_stack[8192]）。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_lvgl = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = lvgl_task,
+    .itskpri = 14,            /* 描画スレッド(13) より低く、最低優先度ではない */
+    .stksz   = 8192,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
  *  usermain()
  *
  *  μT-Kernel 3.0 の初期タスクから呼ばれる（mtkernel/kernel/inittask/inittask.c）。
@@ -197,7 +227,7 @@ EXPORT INT usermain(void)
      * （mtk3_bsp2/sysdepend/ra_fsp/lib/libtm/ek_ra8p1/tm_com.c）。 */
     tm_putstring((UB *)"\n");
     tm_putstring((UB *)"==============================================\n");
-    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-005)\n");
+    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-006)\n");
     tm_putstring((UB *)"==============================================\n");
     tm_printf((UB *)"[usermain] uT-Kernel 3.0 started. LED count = %d\n",
               (INT)g_bsp_leds.led_count);
@@ -308,6 +338,34 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] camera_task created & started.\n");
+
+    /* ---------------------------------------------------------------------
+     * LVGL タスクを生成・起動（R-006 / Issue #156）
+     *
+     * camera の後に起動する（タッチ初期化 lv_port_indev_init() が
+     * camera_thread_i2c_done() を待って IIC1 を引き継ぐため、起動順は
+     * 機能上の制約ではないが、移行前の FreeRTOS 構成と同じ依存関係を保つ）。
+     * ログは blink / ntshell / camera と同じく T-Monitor（tm_putstring /
+     * tm_printf、ポーリング送信）で出力する（SCI8 一本化 ― R-005 の注意参照）。
+     *
+     * lvgl_task は lv_init() の中で LVGL OSAL（lv_os_mtkernel.c）経由の
+     * 追加タスク（dave2d / swdraw、itskpri=13）と複数の mutex / semaphore を
+     * 生成する。カーネル資源数は CNF_MAX_MTXID=16 へ拡張済み
+     * （mtk3_bsp2/config/config.h ― R-006）。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_lvgl);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(lvgl) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(lvgl) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] lvgl_task created & started.\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */

@@ -494,6 +494,18 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 - [ ] `mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END = 0x221B0000`（CPU0 RAM 末尾）が維持されているか。
       既定値 `0` だとシステムメモリプールが CPU1 RAM 区画へはみ出して破壊される（→ 7.1）。**RAM 区画を変更したら
       追従させる**。再 vendoring 時も再適用要
+- [ ] （R-006）**`ra/fsp/src/r_drw/r_drw_irq.c` のビルド除外（全 Configuration）が維持されているか**。
+      除外は `.cproject` sourceEntries に保存され Generate Project Content では消えないが、
+      **プロジェクト再インポート・環境移行時は再設定が必要**。除外が外れると
+      `src/port/r_drw_irq_mtk3.c` と 4 シンボル（`d1_initirq_intern` / `d1_shutdownirq_intern` /
+      `d1_queryirq` / `drw_int_isr`）が重複してリンクエラーになる（→ 7.4）
+- [ ] （R-006）**FSP 版数更新時**: `ra/fsp/src/r_drw/r_drw_irq.c` と
+      `ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c` の原本差分を確認し、対応する複製実装
+      （`src/port/r_drw_irq_mtk3.c` / `src/port/lvgl_port_mtk3.c`）へ反映する
+      （両ファイルとも原本と 1:1 対応のコメントを付与済み）
+- [ ] （R-006）`mtk3_bsp2/config/config.h` の **`CNF_MAX_MTXID = 16`** が維持されているか
+      （LVGL OSAL が mutex を 6 個以上生成。既定値 4 だと `tk_cre_mtx` が E_LIMIT で失敗し
+      LVGL 初期化が破綻）。**BSP2 を再 vendoring すると既定値 4 に戻る**ため要再適用（→ 7.4）
 - [ ] （R-004）`usermain()` 先頭の `bsp_irq_cfg()` 呼び出しが維持され、SCI8（NT-Shell）割り込みが結線されるか。
       `bsp_irq_cfg()` は FSP の **内部 API**（`ra/fsp/src/bsp/mcu/all/bsp_irq.h` で `// Used internally by BSP`）であり、
       方式A で `SystemInit()` の `bsp_irq_cfg()`（`system.c:525`）が未実行になる代替として src 側から呼んでいる（→ 7.2）。
@@ -978,7 +990,81 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 確認: LCD 表示(カメラ画像・UI)が正常表示。フレームレート 30fps 目標への影響確認。
 
-実装メモ（R-006 完了時に記入）:
+実装メモ（R-006 / 2026-06-12 実装。実機確認はユーザー実施）:
+
+- **OSAL（案A）**: `src/lv_os_mtkernel.h`（lv_thread_t/lv_mutex_t/lv_thread_sync_t の 3 型）+
+  `src/lv_os_mtkernel.c`（OSAL 全 API）を新規実装。`src/lv_conf_user.h` に
+  `LV_USE_OS LV_OS_CUSTOM` / `LV_OS_CUSTOM_INCLUDE "lv_os_mtkernel.h"` を追加
+  （FSP lv_conf.h の `#ifndef` ガードで ra/ 無編集のまま有効化。`lv_freertos.c` は空コンパイル）。
+  - スレッド: `tk_cre_tsk`+`tk_sta_tsk`（トランポリンで pfn/arg 受け渡し、終了時 `tk_exd_tsk`）。
+    優先度マップ: HIGHEST=12 / **HIGH=13（dave2d・swdraw）** / MID=14 / LOW=15 / LOWEST=16。
+    **`lv_thread_init` は確実に成功させる**（`lv_draw_dave2d.c:104`・`lv_draw_sw.c:98` は戻り値を
+    無視し、失敗すると描画ハングになるため失敗時は `LV_LOG_ERROR` で顕在化）。
+  - mutex: `tk_cre_mtx(TA_INHERIT)` + owner(`tk_get_tid`)/count による再帰ラッパ
+    （μT-Kernel mutex は非再帰）。生成は遅延・冪等（生成競合は `tk_dis_dsp` で直列化）。
+    `lv_mutex_lock_isr`/`lv_lock_isr` は **非対応**（`LV_RESULT_INVALID`。本 PJ 未使用確認済み）。
+  - sync: カウンティングセマフォ（`TA_CNT`, maxsem=32767）。`signal_isr` は `tk_sig_sem`
+    （通知系・ISR 可、遅延ディスパッチのため明示 yield 不要）。
+  - `lv_os_get_idle_percent()` = `lv_timer_get_idle()` 委譲（`LV_SYSMON_GET_IDLE` のデフォルト解決先。
+    lv_conf_user.h の override は削除。精度は「LVGL タスク内アイドル」基準に低下するが表示用途には十分）。
+- **FSP 層 3 件の対処**（上の表のとおり実装）:
+  1. `src/port/lvgl_port_mtk3.{c,h}`（新規）: `RM_LVGL_PORT_Open` をバイパス。
+     `g_lvgl_port_cfg`（ra_gen）読み取り専用再利用、`g_display0_cfg` を**コピー**して
+     `p_callback` のみ差し替え `R_GLCDC_Open`。FB クリア → Open → Start → BufferChange(fb1) →
+     `lv_display_create` → flush/flush_wait/buffers(DIRECT) → `lv_tick_set_cb`（`tk_get_otm`）の順で
+     `rm_lvgl_port.c:82-171` と 1:1。Vsync は `tk_cre_sem(maxsem=1)` / ISR `tk_sig_sem`（E_QOVR 無視）/
+     flush_wait は二段取り `tk_wai_sem(TMO_POL)`→`tk_wai_sem(TMO_FEVR)`。既存の Vsync/underflow 統計
+     コールバック（`lvgl_glcdc_callback`）へのイベント変換・転送も原本と同一に維持。
+  2. `src/port/r_drw_irq_mtk3.c`（新規）+ **`ra/fsp/src/r_drw/r_drw_irq.c` をビルド除外（ユーザー手動・
+     Debug 構成のみ。Release 構成は他にも未整備の設定があり本プロジェクトでは未使用のため対象外）**。
+     除外ファイルの全シンボル 4 つ（`d1_initirq_intern` / `d1_shutdownirq_intern`（`r_drw_base.c:99`
+     参照・欠落でリンクエラー）/ `d1_queryirq` / `drw_int_isr`（`ra_gen/vector_data.c:17` のベクタが
+     同名参照））を実装。OS 部のみ置換（binary sem → `tk_cre_sem(maxsem=1)`、
+     `xSemaphoreTake(timeout)` → `tk_wai_sem((TMO)timeout)`（`d1_to_wait_forever(-1)==TMO_FEVR`）、
+     Give FromISR → `tk_sig_sem`）。レジスタ操作・dlist indirect 継続は原本と同一ロジック。
+  3. `src/port/lv_port_indev.c`: open 前に `g_comms_i2c_bus0_extended_cfg`（ra_gen・非 const）の
+     `p_blocking_semaphore`/`p_bus_recursive_mutex` を実行時 NULL 化（**コールバックモード化**。
+     両方 NULL はドライバ正規サポート: `rm_comms_i2c.c:99-104`、各操作は NULL ガード済み:
+     `rm_comms_i2c_driver_ra.c:119-130/167-178/219-230/326-331/353-358`）。
+     I2C 完了は `s_touch_i2c_flgid`（`tk_cre_flg`/ISR `tk_set_flg`/`tk_wai_flg(TWF_ORW|TWF_BITCLR)`、
+     ov5640.c と同一パターン）、タッチ IRQ は `s_touch_irq_semid`（maxsem=1/ISR `tk_sig_sem`/
+     `tk_wai_sem(TMO_POL)`）。ra_gen の `g_i2c_event_group`/`g_irq_binary_semaphore`（方式A で未生成）
+     参照は全廃。`vTaskDelay` → `tk_dly_tsk`。
+- **タスク化**: `src/lvgl_thread_entry.c` を `lvgl_task(INT, void*)` 化（旧 `lvgl_thread_entry` は
+  ラッパ残置 ― ntshell/camera と同一パターン）。ループは `lv_timer_handler()` 戻り値ベースの
+  `tk_dly_tsk`（0→1ms、>500→500ms にクランプ）。`src/usermain.c` に `T_CTSK ctsk_lvgl`
+  （itskpri=14 / stksz=8192）を camera の後に追加生成・起動。
+- **連動変更**: `src/User_FreeRTOSConfig.h` の trace フック削除（必須 ― 未定義シンボル化回避）。
+  `src/camera_display.c`（R-005 繰り越し）: `xTaskGetTickCount`→`tk_get_otm`(ms)、AI 連携は
+  `g_ai_app_event`（FreeRTOS）→ **`g_ai_app_flgid`（uT-Kernel フラグ ID、camera_display.c で定義・
+  R-007 の ai_inference 側が生成して設定。0 のままなら従来の NULL ガードと同様にスキップ）**。
+  `xEventGroupClearBits(grp,bit)` → `tk_clr_flg(id, ~bit)`（`tk_clr_flg` は AND クリア）。
+  `src/port/glcdc_port.c`: `RM_LVGL_PORT_Open`→`lvgl_port_mtk3_open`、`p_lv_display`→
+  `lvgl_port_mtk3_get_display()`、`display dbuf` の `vTaskDelay(1000)`→`tk_dly_tsk(1000)`。
+  `src/port/camera_test.c` / `src/port/sdram_port.c`（3.3 で R-006 割当の残件）:
+  `vTaskDelay`/`xTaskGetTickCount`→`tk_dly_tsk`/`tk_get_otm`(ms)。
+  `src/ui/fall_detection_screen.c` / `src/port/dave2d_port.c`: 未使用 FreeRTOS include 削除。
+  `src/port/dave2d_cache_management.c` の `#if (BSP_CFG_RTOS==2)` ガード付き include は
+  API 呼び出しゼロのため無変更。`src/usrcmd.c` は無変更（lv_lock 契約維持）。
+- **カーネル設定**: `mtk3_bsp2/config/config.h` の `CNF_MAX_MTXID 4→16`。
+  `CNF_TIMER_PERIOD=10` は据え置き（実効 ~50fps 見込み。実測後に 1ms 化を判断）。
+- **割り込み優先度の確認**: DRW_INT_IPL=2 / GLCDC・ICU19・IIC1=12。BSP2 ARMv8-M は
+  カーネルクリティカルセクションを BASEPRI=INTPRI_MAX_EXTINT_PRI(1) でマスクするため、
+  優先度 2〜12 の ISR から通知系 API（`tk_sig_sem`/`tk_set_flg`）を呼んでよい。
+- **実機確認結果（2026-06-12 ユーザー実施・全項目 OK）**:
+  ①起動ログ: blink/ntshell/camera/lvgl 全タスク起動（`lvgl_task created & started.`）。
+  ②LCD メイン画面表示 OK（`display status`: Vsync Count 増加・58.58Hz 出力）。
+  ③タッチ OK（`touch status`: Read count 増加・座標取得）。
+  ④カメラ映像表示 OK（キャプチャ 65fps・エラー 0）。
+  ⑤NT-Shell `lvgl`/`display`/`touch`/`camera` コマンド OK（lv_lock 経由の別タスクアクセス）。
+  ⑥**FPS 実測: PERF_MONITOR 表示 30fps / CPU 40%（変動あり）→ KPI 30fps 充足**。
+  `CNF_TIMER_PERIOD=10` 据え置きで確定（フル幅カメラ領域 768x450 の再描画負荷と 10ms 量子化の
+  組み合わせとして妥当。さらに引き上げたい場合のみ `CNF_TIMER_PERIOD=1` を試行）。
+- **既知の仕様（不具合ではない）**: `lvgl testpat` はカメラライブ表示開始後は**無効**。
+  カメラ初回フレームで `camera_display_update()` がウィジェットのソースをゼロコピー記述子
+  （VIN フレーム直接参照）へ差し替えるため（`camera_display.c:251-258`）、以降テストパターンを
+  描く静的バッファ `camera_buf` はウィジェットから参照されない。テストパターンは画面作成直後
+  〜カメラ初回フレームまでの間のみ表示される（FreeRTOS 時代から同一のロジック）。
 
 ### 7.5 AI 推論（R-007）
 
@@ -1046,4 +1132,5 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-12 | R-005 | **カメラ関連を μT-Kernel 3.0 へ移行**。`camera_thread_entry.c` のスレッド本体を uT-Kernel タスク `camera_task(INT, void*)` へ移植し、`usermain.c` に `T_CTSK ctsk_camera`（`itskpri=11`（blink=10 と ntshell=12 の中間）/`stksz=4096`）を追加して ntshell 起動の後に `tk_cre_tsk`+`tk_sta_tsk` で起動。旧 `camera_thread_entry(void*)` は `ra_gen/camera_thread.c`（編集禁止）の参照鎖が `main()` 経由でリンクに残るため**削除せず** `camera_task` へ委譲する薄いラッパとして残置。**最重要 ― I2C 完了割り込み→タスク同期の実体 `g_i2c_event_group`（FreeRTOS イベントグループ）が方式A で `g_hal_init()` 未実行のため未生成（NULL）**。よって `ov5640.c` に uT-Kernel イベントフラグ `s_i2c_flgid` を新設: 公開 `ov5640_i2c_sync_init()`（`tk_cre_flg`, `TA_TFIFO\|TA_WMUL`, 冪等）を `camera_task` 先頭で生成、`i2c_camera_callback`（ISR）は `xEventGroupSetBitsFromISR`/`portYIELD_FROM_ISR` 全廃→`tk_set_flg`（通知系・ISR 可、明示 yield 不要）、`ov5640_i2c_wait_complete`（static 除去・公開化）は `xEventGroupWaitBits`→`tk_wai_flg`（`TWF_ORW\|TWF_BITCLR`, ms タイムアウト）+ 戻り値→`FSP_SUCCESS`/`FSP_ERR_ABORTED`/`FSP_ERR_TIMEOUT`。`camera_thread_entry.c` のインライン I2C 待ち（board switch verify/GreenPAK/board switch init）を公開関数 `ov5640_i2c_wait_complete()` へ統一し `g_i2c_event_group`・`I2C_XFER_*` マクロを除去。`vTaskDelay`/`pdMS_TO_TICKS`→`tk_dly_tsk(ms)`。`camera_framebuffer.c`: `xTaskGetTickCountFromISR()`/`xTaskGetTickCount()`→`tk_get_otm(SYSTIM*)`（ISR 可・参照系、`.lo` を ms として使用）、`FPS_INTERVAL_TICKS`(configTICK_RATE_HZ)→`FPS_INTERVAL_MS`(1000)、FPS 式は `frames*1000/elapsed_ms`。**`camera_display.c` は LVGL タイマ駆動・AI 連携（`g_ai_app_event`）のため R-005 では実行されず、R-006（LVGL）へ繰り越し**（FreeRTOS ヘッダ維持で現状コンパイル可）。`vin_port.c` は RTOS 非依存（`__disable_irq`/`__enable_irq`）で変更不要。7.3 実装メモを確定内容で更新。**実機確認（camera タスク起動・`camera status` で Frame Count/FPS 増加）はユーザー実施待ち** |
 | 2026-06-12 | R-005 | **実機動作確認でフレームキャプチャ成功を確認**（`camera status` で Frame Complete が増加・FPS≒65・HW State=IN_PROGRESS・各種エラー 0、LED コマンド動作）。**SCI8 一本化の取りこぼしを修正**: `usermain.c` のカメラ生成ログのみ `print_to_console`（jlink_console）を使っていたため、NT-Shell が `jlink_console_init()` で SCI8 を開く前に呼ばれて `jlink_configured()` 待ち→`tk_dly_tsk(1)` 譲り→NT-Shell バナーと SCI8 出力が競合し**文字化け（`m□`）＋カメラ生成ログ消失**が発生。blink/ntshell と同じ **T-Monitor（`tm_putstring`/`tm_printf`）** へ統一し、不要化した `jlink_console.h` include を除去。7.3 実装メモを修正。**修正後の実機再確認はユーザー実施待ち** |
 | 2026-06-11 | R-003 | **ブート・OS 起動を μT-Kernel 3.0 へ移行（最小構成）**。採用方式を**方式A**に確定（`src/hal_warmstart.c` の `R_BSP_WarmStart(POST_C)` 末尾で `knl_start_mtkernel()` を呼び、FreeRTOS `main()`/`vTaskStartScheduler()` に到達させない。切替マクロ `MIMAMORI_USE_MTKERNEL_BOOT` で切り戻し可）。`src/usermain.c` を新規作成し、BSP2 の WEAK `usermain()` を強い定義で上書き ― LED 点滅タスク（`tk_cre_tsk`+`tk_sta_tsk`、`vTaskDelay`→`tk_dly_tsk(500)`）生成と `tm_printf` 起動ログ、自身は `tk_slp_tsk(TMO_FEVR)`。`ra_gen/` 無編集で既存 FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）を `main()` 未到達により無効化。`g_hal_init()` は最小構成で不要（LED=BSP 直接 / `tm_printf`=SCI8 直接）。7.1 実装メモに方式 A 選定理由・`usermain` 配置・HAL 一度きり保証の移設方針・`USE_OBJECT_NAME=0` による `T_CTSK.dsname` 不在の注意・**SCI8 競合確認結果**（`tm_com.c` と `jlink_console.c`(`channel=8`) が同一 SCI8 を共有。R-003 は ntshell 未起動で非競合、R-004 で一本化方針が必要）を記録。実機 LED 点滅・シリアル出力確認はユーザー実施 |
+| 2026-06-12 | R-006 | **LCD 画面（LVGL）を μT-Kernel 3.0 へ移行**（R-006a 案A の実装）。新規: `src/lv_os_mtkernel.{h,c}`（LVGL カスタム OSAL ― tk_cre_tsk/tk_cre_mtx(TA_INHERIT)+再帰ラッパ/カウンティングセマフォ。優先度マップ HIGH=13）、`src/port/lvgl_port_mtk3.{c,h}`（RM_LVGL_PORT バイパス ― display cfg コピー+callback 差し替えで R_GLCDC_Open、Vsync=tk_sem(maxsem=1)、tick=tk_get_otm。rm_lvgl_port.c:82-171 と 1:1）、`src/port/r_drw_irq_mtk3.c`（`r_drw_irq.c` ビルド除外（**ユーザー手動・全 Configuration**）+ 全 4 シンボル `d1_initirq_intern`/`d1_shutdownirq_intern`/`d1_queryirq`/`drw_int_isr` を uT-Kernel セマフォで再実装）。変更: `lv_conf_user.h`（`LV_USE_OS LV_OS_CUSTOM` 切替・`LV_SYSMON_GET_IDLE` override 削除）、`User_FreeRTOSConfig.h`（trace フック削除 ― lv_freertos.c 空化による未定義シンボル回避）、`lv_port_indev.c`（rm_comms_i2c コールバックモード化＝bus cfg の semaphore/mutex 実行時 NULL 化 + uT-Kernel フラグ/セマフォ + tk_dly_tsk）、`lvgl_thread_entry.c`（`lvgl_task(INT,void*)` 化・`lv_timer_handler` 戻り値駆動 `tk_dly_tsk`・旧エントリはラッパ残置）、`usermain.c`（`ctsk_lvgl` itskpri=14/stksz=8192 を camera 後に生成・起動）、`camera_display.c`（tick→tk_get_otm、AI 連携 `g_ai_app_event`→`g_ai_app_flgid`(R-007 で生成・未生成スキップ)）、`glcdc_port.c`（`lvgl_port_mtk3_open` へ差し替え・dbuf の vTaskDelay→tk_dly_tsk）、`camera_test.c`/`sdram_port.c`（tick/遅延の uT-Kernel 化）、`fall_detection_screen.c`/`dave2d_port.c`（未使用 include 削除）、`mtk3_bsp2/config/config.h`（**CNF_MAX_MTXID 4→16**。CNF_TIMER_PERIOD=10 据え置き）。6.2 に再適用 3 項目（r_drw_irq.c 除外 / FSP 更新時の原本差分反映 / CNF_MAX_MTXID）を追加、7.4 実装メモを確定内容で更新。**実機確認（LCD 表示・タッチ・カメラ表示・FPS）はユーザー実施待ち** |
 | 2026-06-12 | R-006a | **LVGL OSAL 対応方針を確定（スパイク完了）**。新規 `doc/migration/r006a-lvgl-osal-spike.md` に 3 案比較・決定根拠・R-006 実装方針（変更ファイル一覧・API 対応表・PoC コードスケッチ）を文書化。**結論: 案A「μT-Kernel 向け LVGL OSAL 自作（`LV_USE_OS=LV_OS_CUSTOM` + `src/lv_os_mtkernel.{h,c}`）」を採用**（FSP 生成 lv_conf.h の `#ifndef` ガードにより `src/lv_conf_user.h` のみで切替可能・`ra/lvgl/` 無編集・FSP 再生成耐性が完全・現行 60fps 実績構成（dave2d レンダスレッド + lv_lock 契約）を維持・usrcmd.c 無変更）。案B は μT-Kernel 向け CMSIS-RTOS2 実装が存在せず不採用、案C は lv_lock no-op 化で NT-Shell との排他再設計が必要かつ FSP 層依存の削減効果が無く不採用（`LV_USE_OS=LV_OS_NONE` へのコンパイル時切替によるフォールバックとして温存。実行時の自動退避は不成立 ― PR#166 Codex 指摘で訂正）。**追加発見: OSAL の外側で `ra/fsp/` 読み取り専用コード 3 件（`rm_lvgl_port.c`=Vsync 同期/tick、`r_drw_irq.c`=D/AVE 2D dlist 完了同期、`rm_comms_i2c_driver_ra.c`=タッチ I2C ブロッキング）が `BSP_CFG_RTOS==2` で FreeRTOS ブロッキング API を直接呼んでおり、LV_USE_OS の選択と無関係に方式A（FreeRTOS スケジューラ未起動）で破綻するため R-006 で必須対応**（rm_lvgl_port=バイパス自作ポート `src/port/lvgl_port_mtk3.c` / r_drw_irq=ビルド除外+同名シンボル置換 `src/port/r_drw_irq_mtk3.c` / rm_comms_i2c=ra_gen の非 const cfg を実行時 NULL 化してコールバックモード化）。連動対応も特定: `User_FreeRTOSConfig.h` trace フック削除（`lv_freertos.c` 空化による `lv_freertos_task_switch_in/out` 未定義シンボル化の回避）、`lv_os_get_idle_percent` 自作実装（`LV_SYSMON_GET_IDLE` のデフォルト解決先のため未定義だとリンクエラー）、`CNF_MAX_MTXID 4→16`（LVGL は general+builtin mem+xd2+キャッシュ群で mutex 6 個以上）、`CNF_TIMER_PERIOD=10` のままで実効 ~50fps（KPI 30fps 充足・60fps 狙いは 1ms へ変更を実機で実測判断）。`lv_mutex_lock_isr`/`lv_lock_isr` は μT-Kernel 非対応だが本プロジェクト未使用を確認。3.4 / 7.4 を確定内容で更新。コード変更なし（方針決定・文書化のみ） |
