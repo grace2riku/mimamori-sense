@@ -71,9 +71,17 @@
 
 #include "lvgl.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
+/* R-004 / Issue #154: migrated from FreeRTOS to uT-Kernel 3.0.
+ *   vTaskDelay(pdMS_TO_TICKS(100)) -> tk_dly_tsk(100)  (ms)
+ *   tskKERNEL_VERSION_NUMBER       -> uT-Kernel 3.0 version string (see below)
+ * Note: lvgl/camera/ai sub-commands are migrated in R-005 and later; only the
+ * reset delay and the RTOS version display are touched here. */
+#include <tk/tkernel.h>
 #include "fsp_version.h"
+
+/** uT-Kernel 3.0 version string for the info/version commands (R-004).
+ *  VER_MAJOR/VER_MINOR come from <tk/tkernel.h> (sys/knldef.h: 3.0). */
+#define MTKERNEL_VERSION_NUMBER  "uT-Kernel 3.0"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -266,7 +274,7 @@ static int usrcmd_help(int argc, char **argv)
  * info command - Display system information
  * @details Sub-commands:
  *  - info sys : System name and build info
- *  - info ver : FSP, FreeRTOS, NT-Shell version info
+ *  - info ver : FSP, uT-Kernel, NT-Shell version info
  *  - (no args): Show all information
  */
 static int usrcmd_info(int argc, char **argv)
@@ -293,7 +301,7 @@ static int usrcmd_info(int argc, char **argv)
         snprintf(buf, sizeof(buf), "  FSP       : %s\r\n", FSP_VERSION_STRING);
         print_to_console(buf);
 
-        snprintf(buf, sizeof(buf), "  FreeRTOS  : %s\r\n", tskKERNEL_VERSION_NUMBER);
+        snprintf(buf, sizeof(buf), "  RTOS      : %s\r\n", MTKERNEL_VERSION_NUMBER);
         print_to_console(buf);
 
         {
@@ -327,7 +335,7 @@ static int usrcmd_info(int argc, char **argv)
         snprintf(buf, sizeof(buf), "  FSP       : %s\r\n", FSP_VERSION_STRING);
         print_to_console(buf);
 
-        snprintf(buf, sizeof(buf), "  FreeRTOS  : %s\r\n", tskKERNEL_VERSION_NUMBER);
+        snprintf(buf, sizeof(buf), "  RTOS      : %s\r\n", MTKERNEL_VERSION_NUMBER);
         print_to_console(buf);
 
         {
@@ -872,8 +880,8 @@ static int usrcmd_reset(int argc, char **argv)
 
     print_to_console("System resetting...\r\n");
 
-    /* Wait for transmit to complete */
-    vTaskDelay(pdMS_TO_TICKS(100));
+    /* Wait for transmit to complete (R-004: vTaskDelay(pdMS_TO_TICKS(100)) -> tk_dly_tsk(100) ms) */
+    tk_dly_tsk(100);
 
     /* CMSIS standard system reset */
     NVIC_SystemReset();

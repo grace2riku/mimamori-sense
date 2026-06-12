@@ -3,7 +3,7 @@
  * @brief LED control abstraction layer implementation
  * @details
  * Implements LED on/off/toggle/blink operations for the EK-RA8P1 board.
- * Uses FSP R_IOPORT API for GPIO control and FreeRTOS software timers
+ * Uses FSP R_IOPORT API for GPIO control and uT-Kernel 3.0 cyclic handlers
  * for blink functionality.
  *
  * EK-RA8P1 User LED Mapping (from board_leds.c / bsp_pin_cfg.h):
@@ -15,6 +15,17 @@
  *
  * @note
  * This file is part of the LED control command (S-011) implementation.
+ *
+ * @note R-004 / Issue #154 (FreeRTOS -> uT-Kernel 3.0 migration):
+ * Blink functionality was migrated from FreeRTOS software timers
+ * (xTimerCreate/Start/Stop/ChangePeriod) to uT-Kernel 3.0 cyclic handlers
+ * (tk_cre_cyc/tk_sta_cyc/tk_stp_cyc). See doc/migration/mtk3-migration-guide.md 7.2.
+ *   - One cyclic handler is created per LED (mirrors the previous one-timer-per-LED design).
+ *   - The cyclic handler runs in interrupt context; it only calls
+ *     R_IOPORT_PinWrite/Read (FSP/RTOS-independent) and never a waiting system call
+ *     (migration guide 5.1 ISR constraint).
+ *   - uT-Kernel 3.0 has no tk_set_cyc, so changing the blink interval is implemented
+ *     by deleting and recreating the cyclic handler with the new cycle time.
  */
 
 /**********************************************************************************************************************
@@ -25,8 +36,7 @@
 #include "common_data.h"
 #include "bsp_pin_cfg.h"
 
-#include "FreeRTOS.h"
-#include "timers.h"
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -55,13 +65,12 @@ static led_state_t s_led_state[LED_COUNT] = {
     LED_STATE_OFF, LED_STATE_OFF, LED_STATE_OFF
 };
 
-/** FreeRTOS software timer handles for blink functionality (one per LED) */
-static TimerHandle_t s_blink_timer[LED_COUNT] = { NULL, NULL, NULL };
-
-/** Blink timer names for FreeRTOS debug */
-static const char * const s_timer_names[LED_COUNT] = {
-    "LED0_Blink", "LED1_Blink", "LED2_Blink"
-};
+/**
+ * uT-Kernel 3.0 cyclic handler IDs for blink functionality (one per LED).
+ * 0 means "not created". Cyclic handlers are created on demand by
+ * led_ctrl_blink() and deleted by led_stop_blink_timer().
+ */
+static ID s_blink_cyc[LED_COUNT] = { 0, 0, 0 };
 
 /** Module initialization flag */
 static bool s_initialized = false;
@@ -69,7 +78,7 @@ static bool s_initialized = false;
 /**********************************************************************************************************************
  Private (static) functions prototypes
  *********************************************************************************************************************/
-static void led_blink_timer_callback(TimerHandle_t xTimer);
+static void led_blink_cyc_handler(void *exinf);
 static void led_set_pin(uint32_t id, bsp_io_level_t level);
 static bsp_io_level_t led_read_pin(uint32_t id);
 static void led_stop_blink_timer(uint32_t id);
@@ -79,14 +88,16 @@ static void led_stop_blink_timer(uint32_t id);
  *********************************************************************************************************************/
 
 /**
- * Blink timer callback function
- * @details Called by FreeRTOS timer service at the blink interval.
- *          Toggles the LED pin state.
- * @param xTimer Timer handle (timer ID is set to the LED index)
+ * Blink cyclic handler function
+ * @details Called by the uT-Kernel 3.0 kernel at the blink interval.
+ *          Runs in interrupt context; only toggles the LED pin via FSP
+ *          R_IOPORT API (no waiting system calls; migration guide 5.1).
+ *          The LED index is passed through the cyclic handler's exinf.
+ * @param exinf Extended information (LED index, set at tk_cre_cyc time)
  */
-static void led_blink_timer_callback(TimerHandle_t xTimer)
+static void led_blink_cyc_handler(void *exinf)
 {
-    uint32_t id = (uint32_t)pvTimerGetTimerID(xTimer);
+    uint32_t id = (uint32_t)exinf;
 
     if (id >= LED_COUNT) {
         return;
@@ -123,13 +134,19 @@ static bsp_io_level_t led_read_pin(uint32_t id)
 }
 
 /**
- * Stop the blink timer for the specified LED if it is running
+ * Stop the blink cyclic handler for the specified LED if it is running.
+ * @details Stops and deletes the cyclic handler. The handler is recreated
+ *          by led_ctrl_blink() when blinking is (re)started, which also
+ *          allows the cycle interval to be changed (no tk_set_cyc in uT-Kernel 3.0).
  * @param id LED index
  */
 static void led_stop_blink_timer(uint32_t id)
 {
-    if (s_blink_timer[id] != NULL) {
-        xTimerStop(s_blink_timer[id], 0);
+    if (s_blink_cyc[id] > 0) {
+        /* Errors are non-fatal here: if already stopped/deleted, just clear the id. */
+        (void)tk_stp_cyc(s_blink_cyc[id]);
+        (void)tk_del_cyc(s_blink_cyc[id]);
+        s_blink_cyc[id] = 0;
     }
 }
 
@@ -146,19 +163,11 @@ void led_ctrl_init(void)
         return;
     }
 
-    /* Create blink timers for each LED.
-     * Timer period is set to a default value; it will be changed when blink is started.
-     * Timers are created in the stopped state (not auto-reload until started). */
+    /* uT-Kernel 3.0: cyclic handlers are created on demand in led_ctrl_blink()
+     * (with the requested cycle interval) and deleted when blinking stops.
+     * Nothing to pre-create here. */
     for (uint32_t i = 0; i < LED_COUNT; i++) {
-        s_blink_timer[i] = xTimerCreate(
-            s_timer_names[i],
-            pdMS_TO_TICKS(LED_BLINK_DEFAULT_MS),
-            pdTRUE,                     /* Auto-reload */
-            (void *)i,                  /* Timer ID = LED index */
-            led_blink_timer_callback
-        );
-        /* Timer creation can fail if FreeRTOS heap is exhausted.
-         * The blink command will report an error in that case. */
+        s_blink_cyc[i] = 0;
     }
 
     /* Ensure all LEDs start in OFF state */
@@ -179,7 +188,7 @@ bool led_ctrl_on(uint32_t id)
         return false;
     }
 
-    /* Stop blink timer if running */
+    /* Stop blink cyclic handler if running */
     led_stop_blink_timer(id);
 
     led_set_pin(id, BSP_IO_LEVEL_HIGH);
@@ -197,7 +206,7 @@ bool led_ctrl_off(uint32_t id)
         return false;
     }
 
-    /* Stop blink timer if running */
+    /* Stop blink cyclic handler if running */
     led_stop_blink_timer(id);
 
     led_set_pin(id, BSP_IO_LEVEL_LOW);
@@ -215,7 +224,7 @@ bool led_ctrl_toggle(uint32_t id, led_state_t *p_prev_state)
         return false;
     }
 
-    /* Stop blink timer if running */
+    /* Stop blink cyclic handler if running */
     led_stop_blink_timer(id);
 
     bsp_io_level_t current = led_read_pin(id);
@@ -236,6 +245,11 @@ bool led_ctrl_toggle(uint32_t id, led_state_t *p_prev_state)
 
 /**
  * Start blinking the specified LED
+ * @details Creates (or recreates) a uT-Kernel 3.0 cyclic handler that toggles
+ *          the LED at the specified half-period interval.
+ *          uT-Kernel 3.0 has no tk_set_cyc, so changing the interval is done by
+ *          deleting any existing handler (led_stop_blink_timer) and creating a
+ *          new one with the requested cycle time.
  */
 bool led_ctrl_blink(uint32_t id, uint32_t interval_ms)
 {
@@ -243,26 +257,43 @@ bool led_ctrl_blink(uint32_t id, uint32_t interval_ms)
         return false;
     }
 
-    if (s_blink_timer[id] == NULL) {
-        return false;   /* Timer creation failed during init */
+    /* Stop and delete any existing cyclic handler (also handles interval change). */
+    led_stop_blink_timer(id);
+
+    /* uT-Kernel 3.0 cycle interval is in milliseconds (RELTIM). Minimum 1ms. */
+    RELTIM cyctim = (RELTIM)interval_ms;
+    if (cyctim == 0) {
+        cyctim = 1;
     }
 
-    /* Stop the timer if already running */
-    xTimerStop(s_blink_timer[id], 0);
+    /* Create the cyclic handler.
+     *   TA_HLNG : handler is written in C
+     *   TA_STA  : start the cyclic handler immediately on creation
+     *   TA_PHS  : preserve cycle phase (not strictly required here)
+     * exinf carries the LED index so a single handler function serves all LEDs.
+     * USE_OBJECT_NAME = 0, so T_CCYC has no dsname member (do not initialize it). */
+    T_CCYC ccyc = {
+        .exinf  = (void *)id,
+        .cycatr = TA_HLNG | TA_STA | TA_PHS,
+        .cychdr = (FP)led_blink_cyc_handler,
+        .cyctim = cyctim,
+        .cycphs = cyctim,   /* first invocation after one full interval */
+    };
 
-    /* Change the timer period to the requested interval */
-    TickType_t period = pdMS_TO_TICKS(interval_ms);
-    if (period == 0) {
-        period = 1;     /* Minimum 1 tick */
+    ID cycid = tk_cre_cyc(&ccyc);
+    if (cycid <= E_OK) {
+        /* Creation failed (negative return is an error code). */
+        return false;
     }
-    xTimerChangePeriod(s_blink_timer[id], period, 0);
+    s_blink_cyc[id] = cycid;
 
-    /* Ensure the LED starts in ON state for the first blink cycle */
+    /* Ensure the LED starts in ON state for the first blink cycle. */
     led_set_pin(id, BSP_IO_LEVEL_HIGH);
     s_led_state[id] = LED_STATE_BLINKING;
 
-    /* Start the timer */
-    xTimerStart(s_blink_timer[id], 0);
+    /* TA_STA already started the handler at creation; tk_sta_cyc is therefore
+     * redundant, but call it to be explicit and tolerant if TA_STA is absent. */
+    (void)tk_sta_cyc(cycid);
 
     return true;
 }
