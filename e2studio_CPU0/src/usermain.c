@@ -46,6 +46,14 @@ extern bsp_leds_t g_bsp_leds;
  */
 extern void ntshell_task(INT stacd, void *exinf);
 
+/*
+ * カメラ タスク本体（R-005 / src/camera_thread_entry.c）。
+ * uT-Kernel タスク形式 void camera_task(INT stacd, void *exinf)。
+ * ヘッダ camera_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
+ * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell_task と同様）。
+ */
+extern void camera_task(INT stacd, void *exinf);
+
 /* ---------------------------------------------------------------------------
  *  LED 点滅タスク
  *
@@ -145,6 +153,28 @@ LOCAL T_CTSK ctsk_ntshell = {
 };
 
 /* ---------------------------------------------------------------------------
+ *  カメラ タスクの生成情報（R-005 / Issue #155）
+ *
+ *  本体は src/camera_thread_entry.c の camera_task()。
+ *  - 優先度: itskpri=11。blink(10) と ntshell(12) の中間。
+ *    カメラ初期化（I2C シーケンス・VIN/MIPI 起動）は NT-Shell の対話処理より
+ *    リアルタイム性が高いため NT-Shell より高優先度（数値小）に置く。一方、
+ *    LED 点滅（blink=10）は周期確定が重要なため、カメラはそれと同等〜やや低く
+ *    （数値大 = 11）して LED 点滅周期への影響を避ける。
+ *  - スタック: 4096 バイト（FreeRTOS 版 camera_thread と同等。snprintf による
+ *    ログ整形と OV5640 の I2C シーケンスでスタックを消費するため）。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_camera = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = camera_task,
+    .itskpri = 11,            /* blink(10) と ntshell(12) の中間 */
+    .stksz   = 4096,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
  *  usermain()
  *
  *  μT-Kernel 3.0 の初期タスクから呼ばれる（mtkernel/kernel/inittask/inittask.c）。
@@ -167,7 +197,7 @@ EXPORT INT usermain(void)
      * （mtk3_bsp2/sysdepend/ra_fsp/lib/libtm/ek_ra8p1/tm_com.c）。 */
     tm_putstring((UB *)"\n");
     tm_putstring((UB *)"==============================================\n");
-    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-004)\n");
+    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-005)\n");
     tm_putstring((UB *)"==============================================\n");
     tm_printf((UB *)"[usermain] uT-Kernel 3.0 started. LED count = %d\n",
               (INT)g_bsp_leds.led_count);
@@ -247,6 +277,37 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] ntshell_task created & started. (SCI8 -> NT-Shell)\n");
+
+    /* ---------------------------------------------------------------------
+     * カメラ タスクを生成・起動（R-005 / Issue #155）
+     *
+     * SCI8 一本化（重要）: usermain（初期タスク）の起動ログは blink / ntshell と
+     * 同様に **T-Monitor（tm_putstring/tm_printf、SCI8 直接レジスタ・ポーリング送信）**
+     * で出力する。tm_putstring はブロッキング（TEND 待ち）で送信完了してから戻るため、
+     * usermain の全ログは tk_slp_tsk(TMO_FEVR) で待ち状態に入る前に送信し切れる。
+     * その後に NT-Shell タスクが jlink_console_init()（R_SCI_B_UART_Open, channel=8）で
+     * SCI8 を FSP UART として開く。これにより T-Monitor と jlink_console の SCI8 競合が
+     * 起きない。
+     *
+     * ここで print_to_console（jlink_console）を使うと、本コード実行時点では NT-Shell が
+     * まだ jlink_console_init() を実行しておらず SCI8 が未オープンのため、print_to_console が
+     * 内部で jlink_configured() 待ちに入り tk_dly_tsk(1) で譲る。すると NT-Shell が SCI8 を
+     * 開いてバナー出力を始め、復帰した usermain と同時に SCI8 へ書き込み**競合・文字化け**
+     * （実機で確認: 'm□' のような化け＋本ログ消失）が起きる。よって T-Monitor を使う。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_camera);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(camera) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(camera) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] camera_task created & started.\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */

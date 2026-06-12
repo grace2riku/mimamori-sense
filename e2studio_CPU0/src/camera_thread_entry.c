@@ -1,8 +1,8 @@
 /**
  * @file camera_thread_entry.c
- * @brief Camera capture FreeRTOS thread entry and FSP callbacks (F-002-5)
+ * @brief Camera capture task entry and FSP callbacks (F-002-5)
  * @details
- * FreeRTOS thread that manages the entire camera capture pipeline:
+ * uT-Kernel task that manages the entire camera capture pipeline:
  *   1. Board-level signal routing (GreenPAK, PI4IOE5V6408 board switch)
  *   2. VIN driver open (which internally opens MIPI CSI and MIPI PHY)
  *   3. OV5640 sensor initialization (XCLK start, power-up, reset, register config)
@@ -37,12 +37,21 @@
  *   GPT Timer: g_timer_camera_xclk_ctrl/cfg       (hal_data.h)
  *   I2C:       g_i2c_master_camera_ctrl/cfg        (hal_data.h)
  *
- * Thread configuration (from configuration.xml):
- *   Symbol    : camera_thread
- *   Name      : "Camera Thread"
- *   Stack size: 4096 bytes
- *   Priority  : 4
- *   Allocation: Static
+ * R-005 / Issue #155（FreeRTOS -> uT-Kernel 3.0 移行）:
+ *   本タスクは src/usermain.c の usermain() から tk_cre_tsk + tk_sta_tsk で
+ *   生成・起動される（方式A: ra_gen/main.c の FreeRTOS スレッド生成経路は未到達）。
+ *   - エントリ関数は uT-Kernel タスク形式 camera_task(INT stacd, void *exinf) へ移植。
+ *   - FreeRTOS 依存（FreeRTOS.h/task.h/event_groups.h, vTaskDelay, pdMS_TO_TICKS,
+ *     g_i2c_event_group の xEventGroupWaitBits）を除去/置換。
+ *   - I2C 完了待ちは ov5640.c の uT-Kernel イベントフラグ（ov5640_i2c_sync_init /
+ *     ov5640_i2c_wait_complete）へ統一（g_i2c_event_group は方式A で未生成のため）。
+ *   旧 FreeRTOS エントリ camera_thread_entry() は対応関係の追跡用に末尾へ残置
+ *   （方式A では未使用だが ra_gen/camera_thread.c のリンク解決に必要）。
+ *   詳細は doc/migration/mtk3-migration-guide.md 7.3。
+ *
+ * uT-Kernel タスク設定（usermain.c で生成）:
+ *   Stack size: 4096 bytes（FreeRTOS 版スレッドと同等）
+ *   Priority  : itskpri=11（blink=10 と ntshell=12 の中間）
  *
  * Reference:
  *   reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:309-377
@@ -74,9 +83,7 @@
 #include "port/csi2_port.h"
 #include "port/mipi_port.h"
 
-#include "FreeRTOS.h"
-#include "task.h"
-#include "event_groups.h"
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -145,12 +152,11 @@
 #define GREENPAK_IO5_EXPECTED       (0x30)          /* Expected IO5 config bits */
 #define GREENPAK_IO5_MASK           (0xCF)          /* IO5 config mask */
 
-/* I2C transfer event bits (must match i2c_camera_callback in ov5640.c) */
-#define I2C_XFER_COMPLETE           (1 << 0)
-#define I2C_XFER_ABORT              (1 << 1)
-#define I2C_XFER_TIMEOUT_MS         (1000 / portTICK_PERIOD_MS)
+/* R-005: I2C 完了待ちは ov5640.c の uT-Kernel イベントフラグ（ov5640_i2c_wait_complete）へ
+ * 統一したため、本ファイルの I2C_XFER_COMPLETE/ABORT/TIMEOUT_MS（旧 FreeRTOS イベントグループ
+ * 用ビット・タイムアウト）と g_i2c_event_group 参照は不要となり削除した。 */
 
-/** Main loop polling interval (ticks) */
+/** Main loop polling interval (ms). R-005: tick -> ms（tk_dly_tsk）。 */
 #define CAMERA_POLL_INTERVAL    (1)
 
 /**********************************************************************************************************************
@@ -215,17 +221,29 @@ static bool camera_board_switch_init(void);
  *
  * Reference: reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/camera_thread_entry.c:309-377
  *
- * @param pvParameters FreeRTOS task parameter (unused)
+ * R-005: uT-Kernel タスク本体（usermain() から tk_cre_tsk + tk_sta_tsk で生成・起動）。
+ *
+ * @param stacd タスク起動コード（未使用）
+ * @param exinf 拡張情報（未使用）
  */
-void camera_thread_entry(void *pvParameters)
+void camera_task(INT stacd, void *exinf)
 {
-    FSP_PARAMETER_NOT_USED(pvParameters);
+    (void)stacd;
+    (void)exinf;
 
     fsp_err_t err;
     char buf[CAMERA_PRINT_BUF_SIZE];
 
     s_camera_initialized = false;
     s_camera_init_error = false;
+
+    /*
+     * R-005: I2C 完了同期用 uT-Kernel イベントフラグを生成する。
+     * 以降の board switch / GreenPAK / OV5640 の各 I2C 完了待ち
+     * （ov5640_i2c_wait_complete）より前に必須。方式A では g_hal_init() が
+     * 実行されず g_i2c_event_group が未生成のため、ここで自前に生成する。冪等。
+     */
+    ov5640_i2c_sync_init();
 
     /*
      * Wait for JLink console to be ready so we can log initialization progress.
@@ -236,7 +254,7 @@ void camera_thread_entry(void *pvParameters)
      */
     while (!jlink_configured())
     {
-        vTaskDelay(100);
+        tk_dly_tsk(100);
     }
 
     camera_thread_log("Camera thread started.\r\n");
@@ -294,21 +312,17 @@ void camera_thread_entry(void *pvParameters)
                 for (uint32_t i = 0; i < 3 && rb_ok; i++)
                 {
                     uint8_t reg = verify_regs[i];
-                    EventBits_t uxBits;
 
                     fsp_err_t e = R_IIC_MASTER_Write(&g_i2c_master_camera_ctrl, &reg, 1, true);
                     if (FSP_SUCCESS != e) { rb_ok = false; break; }
 
-                    uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                        I2C_XFER_COMPLETE | I2C_XFER_ABORT, pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-                    if (!(uxBits & I2C_XFER_COMPLETE)) { rb_ok = false; break; }
+                    /* R-005: xEventGroupWaitBits -> ov5640_i2c_wait_complete (uT-Kernel flag) */
+                    if (FSP_SUCCESS != ov5640_i2c_wait_complete()) { rb_ok = false; break; }
 
                     e = R_IIC_MASTER_Read(&g_i2c_master_camera_ctrl, &verify_vals[i], 1, false);
                     if (FSP_SUCCESS != e) { rb_ok = false; break; }
 
-                    uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                        I2C_XFER_COMPLETE | I2C_XFER_ABORT, pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-                    if (!(uxBits & I2C_XFER_COMPLETE)) { rb_ok = false; break; }
+                    if (FSP_SUCCESS != ov5640_i2c_wait_complete()) { rb_ok = false; break; }
                 }
 
                 R_IIC_MASTER_SlaveAddressSet(&g_i2c_master_camera_ctrl,
@@ -484,7 +498,7 @@ void camera_thread_entry(void *pvParameters)
      * Wait for OV5640 PLL lock and MIPI data flow, then verify CSI-2
      * status before releasing IIC1 for touch panel use.
      * ====================================================================== */
-    vTaskDelay(pdMS_TO_TICKS(500));
+    tk_dly_tsk(500);   /* R-005: vTaskDelay(pdMS_TO_TICKS(500)) -> tk_dly_tsk(500) */
 
     {
         /* Read CSI-2 receive status to confirm MIPI data is flowing */
@@ -573,7 +587,7 @@ void camera_thread_entry(void *pvParameters)
              */
         }
 
-        vTaskDelay(CAMERA_POLL_INTERVAL);
+        tk_dly_tsk(CAMERA_POLL_INTERVAL);   /* R-005: vTaskDelay -> tk_dly_tsk (ms) */
     }
 
     /* Not reached during normal operation */
@@ -600,7 +614,7 @@ camera_init_failed:
     camera_thread_log("  ERROR: Camera initialization failed. Thread blocked.\r\n");
     while (1)
     {
-        vTaskDelay(1000);
+        tk_dly_tsk(1000);   /* R-005: vTaskDelay(1000) -> tk_dly_tsk(1000) */
     }
 }
 
@@ -767,7 +781,6 @@ static void camera_thread_log_fsp_err(const char *context, fsp_err_t err)
 static bool camera_greenpak_init(void)
 {
     fsp_err_t err;
-    EventBits_t uxBits;
 
     /* Open camera I2C master if not already open */
     if (0 == g_i2c_master_camera_ctrl.open)
@@ -801,10 +814,8 @@ static bool camera_greenpak_init(void)
             goto restore_addr;
         }
 
-        uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                      I2C_XFER_COMPLETE | I2C_XFER_ABORT,
-                                      pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-        if ((I2C_XFER_COMPLETE & uxBits) != I2C_XFER_COMPLETE)
+        /* R-005: xEventGroupWaitBits -> ov5640_i2c_wait_complete (uT-Kernel flag) */
+        if (FSP_SUCCESS != ov5640_i2c_wait_complete())
         {
             goto restore_addr;
         }
@@ -816,10 +827,7 @@ static bool camera_greenpak_init(void)
             goto restore_addr;
         }
 
-        uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                      I2C_XFER_COMPLETE | I2C_XFER_ABORT,
-                                      pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-        if ((I2C_XFER_COMPLETE & uxBits) != I2C_XFER_COMPLETE)
+        if (FSP_SUCCESS != ov5640_i2c_wait_complete())
         {
             goto restore_addr;
         }
@@ -863,10 +871,8 @@ static bool camera_greenpak_init(void)
                 goto restore_addr;
             }
 
-            uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                          I2C_XFER_COMPLETE | I2C_XFER_ABORT,
-                                          pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-            if ((I2C_XFER_COMPLETE & uxBits) != I2C_XFER_COMPLETE)
+            /* R-005: xEventGroupWaitBits -> ov5640_i2c_wait_complete (uT-Kernel flag) */
+            if (FSP_SUCCESS != ov5640_i2c_wait_complete())
             {
                 goto restore_addr;
             }
@@ -911,7 +917,6 @@ restore_addr:
 static bool camera_board_switch_init(void)
 {
     fsp_err_t err;
-    EventBits_t uxBits;
 
     /* Open camera I2C master if not already open */
     if (0 == g_i2c_master_camera_ctrl.open)
@@ -951,12 +956,9 @@ static bool camera_board_switch_init(void)
             return false;
         }
 
-        /* Wait for I2C transfer completion */
-        uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                      I2C_XFER_COMPLETE | I2C_XFER_ABORT,
-                                      pdTRUE, pdFALSE, I2C_XFER_TIMEOUT_MS);
-
-        if ((I2C_XFER_COMPLETE & uxBits) != I2C_XFER_COMPLETE)
+        /* Wait for I2C transfer completion.
+         * R-005: xEventGroupWaitBits -> ov5640_i2c_wait_complete (uT-Kernel flag) */
+        if (FSP_SUCCESS != ov5640_i2c_wait_complete())
         {
             return false;
         }
@@ -968,4 +970,25 @@ static bool camera_board_switch_init(void)
                                   I2C_MASTER_ADDR_MODE_7BIT);
 
     return true;
+}
+
+/**
+ * 旧 FreeRTOS スレッドエントリ（R-005 移行前の名残り。対応関係追跡用に残置）。
+ *
+ * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
+ * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
+ * 実行時には呼ばれない。しかし ra_gen/camera_thread.c（編集禁止）の
+ * camera_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
+ * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
+ * uT-Kernel タスク camera_task() へ委譲する薄いラッパとして残す
+ * （実行されないが、将来 FreeRTOS へ切り戻した場合も動作する）。
+ * ntshell_thread_entry.c 末尾のラッパと同一パターン。
+ *
+ * @param pvParameters FreeRTOSタスクパラメータ（未使用）
+ */
+void camera_thread_entry(void *pvParameters)
+{
+    FSP_PARAMETER_NOT_USED(pvParameters);
+    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
+    camera_task(0, NULL);
 }

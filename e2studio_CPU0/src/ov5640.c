@@ -10,8 +10,18 @@
  * FSP Instance Mapping (current project):
  *   I2C Master:  g_i2c_master_camera_ctrl (IIC1, 7-bit addr 0x3C)
  *   GPT Timer:   g_timer_camera_xclk_ctrl (GPT12, 24 MHz XCLK output)
- *   I2C Event:   g_i2c_event_group (shared FreeRTOS event group)
+ *   I2C Event:   uT-Kernel event flag (s_i2c_flgid, created by ov5640_i2c_sync_init)
  *   Callback:    i2c_camera_callback (FSP-generated declaration)
+ *
+ * R-005 / Issue #155（FreeRTOS -> uT-Kernel 3.0 移行）:
+ *   I2C 完了割り込み -> タスク同期を FreeRTOS イベントグループ
+ *   （g_i2c_event_group）から uT-Kernel イベントフラグへ置換した。
+ *   背景: 方式A（src/hal_warmstart.c の静的コンストラクタで knl_start_mtkernel()
+ *   を呼ぶ）では g_hal_init()/g_common_init() が実行されないため、
+ *   g_i2c_event_group は実行時に未生成（NULL）となる。よって本ファイルに
+ *   uT-Kernel イベントフラグ（s_i2c_flgid）を新設し、ov5640_i2c_sync_init() で
+ *   生成、i2c_camera_callback で tk_set_flg、ov5640_i2c_wait_complete で
+ *   tk_wai_flg を行う。詳細は doc/migration/mtk3-migration-guide.md 7.3。
  *
  * Reference (ov5640.c):
  *   reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/ov5640.c
@@ -31,8 +41,8 @@
 
 #include "bsp_api.h"
 #include "hal_data.h"
-#include "FreeRTOS.h"
-#include "event_groups.h"
+
+#include <tk/tkernel.h>
 
 #include "ov5640.h"
 #include "ov5640_cfg.h"
@@ -63,14 +73,32 @@
 /* Millisecond delay using BSP software delay */
 #define delay_ms(x)  (R_BSP_SoftwareDelay((x), BSP_DELAY_UNITS_MILLISECONDS))
 
-/* I2C transfer event bits for FreeRTOS event group */
+/* I2C transfer event bits for uT-Kernel event flag (s_i2c_flgid).
+ * Bit patterns are reused as-is from the former FreeRTOS event group. */
 #define I2C_TRANSFER_COMPLETE   (1 << 0)
 #define I2C_TRANSFER_ABORT      (1 << 1)
-#define I2C_TIMEOUT_MS          (1000 / portTICK_PERIOD_MS)
+
+/* I2C completion wait timeout in milliseconds (uT-Kernel TMO is ms-based).
+ * R-005: portTICK_PERIOD_MS 依存を除去し、ミリ秒定数に統一。 */
+#define I2C_TIMEOUT_MS          (1000)
 
 /**********************************************************************************************************************
  Private (static) variables
  *********************************************************************************************************************/
+
+/**
+ * uT-Kernel event flag ID for I2C transfer completion (R-005).
+ *
+ * Created by ov5640_i2c_sync_init() with tk_cre_flg(). Used to synchronize
+ * the I2C completion interrupt (i2c_camera_callback, ISR context) with the
+ * waiting camera task (ov5640_i2c_wait_complete, task context).
+ *
+ * Replaces the former FreeRTOS g_i2c_event_group, which is not created at
+ * runtime under method A (g_hal_init() is never called).
+ *
+ * 0 means "not yet created" (冪等な生成判定に使用)。
+ */
+static ID s_i2c_flgid = 0;
 
 /* Driver status tracking */
 static ov5640_status_t s_ov5640_status = {
@@ -99,7 +127,8 @@ static uint8_t s_sclk_root_div   = OV5640_SCLK_ROOT_DIV;
  Private (static) function prototypes
  *********************************************************************************************************************/
 
-static fsp_err_t ov5640_i2c_wait_complete(void);
+/* ov5640_i2c_wait_complete is now public (declared in ov5640.h) for use by
+ * camera_thread_entry.c's board switch / GreenPAK I2C waits (R-005). */
 static fsp_err_t ov5640_i2c_write_reg16_8(uint16_t reg, uint8_t data);
 static fsp_err_t ov5640_i2c_read_reg16_8(uint16_t reg, uint8_t *data);
 static void ov5640_init_base_registers(void);
@@ -117,43 +146,84 @@ static void ov5640_init_output_format(void);
  Exported global functions
  *********************************************************************************************************************/
 
+/**********************************************************************************************************************
+ * Function Name: ov5640_i2c_sync_init
+ * Description  : Create the uT-Kernel event flag used for I2C completion sync (R-005)
+ *
+ * @details
+ * Creates the event flag (s_i2c_flgid) that synchronizes the I2C completion
+ * interrupt (i2c_camera_callback) with the waiting camera task
+ * (ov5640_i2c_wait_complete). Must be called once before any camera I2C
+ * operation (board switch / GreenPAK / OV5640 register access).
+ *
+ * Replaces the former FreeRTOS g_i2c_event_group, which is created by
+ * g_hal_init()/g_common_init() -- never called under method A. The camera
+ * task therefore creates this event flag itself at task startup.
+ *
+ * Idempotent: re-creation is skipped if the flag was already created.
+ *
+ * Event flag attribute:
+ *   TA_TFIFO : wait queue managed by FIFO order
+ *   TA_WMUL  : allow multiple tasks to wait (and OR/AND wait modes)
+ *   iflgptn = 0 : initial pattern cleared
+ * USE_OBJECT_NAME = 0 のため dsname は初期化子に含めない（R-003/R-004 と同様）。
+ *********************************************************************************************************************/
+void ov5640_i2c_sync_init(void)
+{
+    /* 冪等: 既に生成済みなら何もしない */
+    if (s_i2c_flgid > 0)
+    {
+        return;
+    }
+
+    T_CFLG cflg = {
+        .exinf   = NULL,
+        .flgatr  = TA_TFIFO | TA_WMUL,
+        .iflgptn = 0,
+    };
+
+    ID flgid = tk_cre_flg(&cflg);
+    if (flgid <= E_OK)
+    {
+        /* 生成失敗（戻り値が負ならエラーコード）。
+         * ov5640 は print 系を持たないため最小限のログのみ。
+         * 失敗時は s_i2c_flgid=0 のままとなり、後続の wait は E_ID で失敗する。 */
+        s_i2c_flgid = 0;
+        return;
+    }
+
+    s_i2c_flgid = flgid;
+}
+
 /**
  * I2C callback for camera I2C master (IIC1)
  * Called from ISR context when I2C transfer completes or aborts.
- * Sets event group bits to signal waiting task.
+ * Sets uT-Kernel event flag bits to signal the waiting task (R-005).
  *
  * Note: This callback name (i2c_camera_callback) is defined in FSP configuration
  * and declared in ra_gen/hal_data.h. Must be implemented in user code.
+ *
+ * R-005: tk_set_flg は割り込みハンドラから呼んでよい（通知系）。uT-Kernel は
+ * 割り込み出口で遅延ディスパッチするため、FreeRTOS の portYIELD_FROM_ISR に
+ * 相当する明示的 yield は不要（migration guide 5.1）。
  *
  * Reference: reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/board_i2c_master.c:219-252
  */
 void i2c_camera_callback(i2c_master_callback_args_t *p_args)
 {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    BaseType_t xResult = pdFAIL;
-
     if ((I2C_MASTER_EVENT_TX_COMPLETE == p_args->event) ||
         (I2C_MASTER_EVENT_RX_COMPLETE == p_args->event))
     {
-        xResult = xEventGroupSetBitsFromISR(g_i2c_event_group,
-                                            I2C_TRANSFER_COMPLETE,
-                                            &xHigherPriorityTaskWoken);
+        (void)tk_set_flg(s_i2c_flgid, I2C_TRANSFER_COMPLETE);
     }
     else if (I2C_MASTER_EVENT_ABORTED == p_args->event)
     {
-        xResult = xEventGroupSetBitsFromISR(g_i2c_event_group,
-                                            I2C_TRANSFER_ABORT,
-                                            &xHigherPriorityTaskWoken);
+        (void)tk_set_flg(s_i2c_flgid, I2C_TRANSFER_ABORT);
     }
     else
     {
         /* Unexpected event - do nothing */
         ;
-    }
-
-    if (pdFAIL != xResult)
-    {
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 
     R_BSP_IrqStatusClear(R_FSP_CurrentIrqGet());
@@ -698,34 +768,57 @@ const ov5640_status_t *ov5640_get_status(void)
 
 /**********************************************************************************************************************
  * Function Name: ov5640_i2c_wait_complete
- * Description  : Wait for I2C transfer to complete using FreeRTOS event group
+ * Description  : Wait for I2C transfer to complete using uT-Kernel event flag (R-005)
  * Arguments    : None
  * Return Value : FSP_SUCCESS on complete, FSP_ERR_ABORTED on abort, FSP_ERR_TIMEOUT on timeout
+ *
+ * @details
+ * R-005: FreeRTOS xEventGroupWaitBits -> uT-Kernel tk_wai_flg。
+ *   - waiptn  : I2C_TRANSFER_COMPLETE | I2C_TRANSFER_ABORT（いずれか）
+ *   - wfmode  : TWF_ORW | TWF_BITCLR（OR 待ち、一致ビットのみクリア）
+ *               元の FreeRTOS は pdTRUE（該当ビットのクリア）+ pdFALSE（OR）相当のため
+ *               TWF_BITCLR が最も近い。I2C は単発完了待ちのため TWF_CLR でも実害はない。
+ *   - tmout   : I2C_TIMEOUT_MS（ミリ秒）
+ * 公開関数化（static 除去）: camera_thread_entry.c の board switch / GreenPAK I2C 待ちから使用。
+ *
  * Reference    : reference_projects/quickstart_ek_ra8p1_ep/e2studio/src/board_i2c_master.c:52-78
  *********************************************************************************************************************/
-static fsp_err_t ov5640_i2c_wait_complete(void)
+fsp_err_t ov5640_i2c_wait_complete(void)
 {
     fsp_err_t ret;
-    EventBits_t uxBits;
+    UINT      flgptn = 0;
+    ER        ercd;
 
-    uxBits = xEventGroupWaitBits(g_i2c_event_group,
-                                 I2C_TRANSFER_COMPLETE | I2C_TRANSFER_ABORT,
-                                 pdTRUE,      /* Clear bits before returning */
-                                 pdFALSE,     /* Either bit will do */
-                                 I2C_TIMEOUT_MS);
+    ercd = tk_wai_flg(s_i2c_flgid,
+                      I2C_TRANSFER_COMPLETE | I2C_TRANSFER_ABORT,
+                      TWF_ORW | TWF_BITCLR,
+                      &flgptn,
+                      I2C_TIMEOUT_MS);
 
-    if ((I2C_TRANSFER_COMPLETE & uxBits) == I2C_TRANSFER_COMPLETE)
+    if (E_OK == ercd)
     {
-        ret = FSP_SUCCESS;
+        if ((I2C_TRANSFER_COMPLETE & flgptn) == I2C_TRANSFER_COMPLETE)
+        {
+            ret = FSP_SUCCESS;
+        }
+        else if ((I2C_TRANSFER_ABORT & flgptn) == I2C_TRANSFER_ABORT)
+        {
+            ret = FSP_ERR_ABORTED;
+        }
+        else
+        {
+            /* Should not happen (waiptn satisfied but neither bit set) */
+            ret = FSP_ERR_ABORTED;
+        }
     }
-    else if ((I2C_TRANSFER_ABORT & uxBits) == I2C_TRANSFER_ABORT)
+    else if (E_TMOUT == ercd)
     {
-        ret = FSP_ERR_ABORTED;
+        ret = FSP_ERR_TIMEOUT;
     }
     else
     {
-        /* Timeout */
-        ret = FSP_ERR_TIMEOUT;
+        /* Other errors (e.g. E_ID when flag not created) */
+        ret = FSP_ERR_ABORTED;
     }
 
     return ret;

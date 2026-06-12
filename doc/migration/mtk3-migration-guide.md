@@ -134,10 +134,10 @@ Grep 実測。各 API は「FreeRTOS → μT-Kernel 3.0 API 対応表」（→ 5
 | `src/blinky_thread_entry.c` | `vTaskDelay(configTICK_RATE_HZ/2)` | R-003 |
 | `src/jlink_console.c` | `vTaskDelay(1)`, `taskENTER_CRITICAL()` | R-004 |
 | `src/usrcmd.c` | `vTaskDelay(pdMS_TO_TICKS(100))` | R-004 |
-| `src/camera_thread_entry.c` | `vTaskDelay`, `pdMS_TO_TICKS`, `xEventGroupWaitBits`（I2C 完了待ち） | R-005 |
-| `src/camera_framebuffer.c` | `xTaskGetTickCountFromISR()`（ISR 内 FPS 計測） | R-005 |
-| `src/camera_display.c` | `xEventGroupGetBits/SetBits/ClearBits`（AI アプリ連携イベント） | R-005 / R-007 |
-| `src/ov5640.c` | FreeRTOS 依存（要精査） | R-005 |
+| `src/camera_thread_entry.c` | `vTaskDelay`, `pdMS_TO_TICKS`, `xEventGroupWaitBits`（I2C 完了待ち） | R-005 ✅ |
+| `src/camera_framebuffer.c` | `xTaskGetTickCountFromISR()`（ISR 内 FPS 計測） | R-005 ✅ |
+| `src/camera_display.c` | `xEventGroupGetBits/SetBits/ClearBits`（AI アプリ連携イベント） | **R-006（LVGL）へ繰り越し** ／ R-007（R-005 では未実行・未変更） |
+| `src/ov5640.c` | I2C 完了割り込み→タスク同期（旧 `g_i2c_event_group`。方式A 未生成のため uT-Kernel イベントフラグ新設） | R-005 ✅ |
 | `src/led_ctrl.c` | **FreeRTOS ソフトウェアタイマ** `xTimerCreate/Start/Stop`（LED 点滅） | R-003/R-004（→ `tk_cre_cyc` 周期ハンドラへ） |
 | `src/ai_inference_thread_entry.c` | `xEventGroupCreateStatic`, `xEventGroupWaitBits/SetBits`, `vTaskDelay`（推論同期） | R-007 |
 | `src/lvgl_thread_entry.c` | `vTaskDelay(1)`（`lv_timer_handler` 駆動） | R-006 |
@@ -843,7 +843,71 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 確認: カメラ取得・表示が μT-Kernel 下で動作。
 
-実装メモ（R-005 完了時に記入）:
+実装メモ（R-005 / 2026-06-12 実装。実機確認はユーザー実施）:
+
+- **camera スレッドの uT-Kernel タスク化**:
+  - `src/camera_thread_entry.c` のスレッド本体を uT-Kernel タスク形式
+    `void camera_task(INT stacd, void *exinf)` へ移植。FreeRTOS 依存
+    （`FreeRTOS.h`/`task.h`/`event_groups.h`, `vTaskDelay`/`pdMS_TO_TICKS`→`tk_dly_tsk(ms)`,
+    `g_i2c_event_group` の `xEventGroupWaitBits`）を除去/置換。
+  - `src/usermain.c` に `T_CTSK ctsk_camera`（`TA_HLNG|TA_RNG3`, **`itskpri=11`**（blink=10 と
+    ntshell=12 の中間。カメラ初期化は NT-Shell の対話処理よりリアルタイム性が高いため
+    ntshell より高優先度・数値小、一方 LED 点滅周期への影響を避けるため blink と同等〜やや低く）,
+    `stksz=4096`（FreeRTOS 版 camera_thread と同等）, `bufptr=NULL`）を追加し、
+    ntshell タスク起動の後に `tk_cre_tsk`+`tk_sta_tsk` で生成・起動。**`USE_OBJECT_NAME=0` のため
+    `T_CTSK.dsname` は初期化子に含めない**。生成ログは blink/ntshell と同様 **T-Monitor
+    （`tm_putstring`/`tm_printf`）** で出力する（**SCI8 一本化の要点・実機修正で確定**）。当初
+    `print_to_console`（jlink_console）で出力したところ、本コード実行時点では NT-Shell がまだ
+    `jlink_console_init()` 未実行で SCI8 未オープンのため、`print_to_console` が `jlink_configured()`
+    待ちで `tk_dly_tsk(1)` 譲り → NT-Shell が SCI8 を開いてバナー出力開始 → 復帰した usermain と
+    同時に SCI8 へ書き込み**競合・文字化け**（実機で `m□` 様の化け＋本ログ消失を確認）した。
+    usermain の全ログは tm_putstring（ポーリング送信・ブロッキング）で `tk_slp_tsk(TMO_FEVR)` 前に
+    送信し切ってから NT-Shell が SCI8 を開く、という R-004 の一本化設計に揃える。
+  - 旧 FreeRTOS エントリ `camera_thread_entry(void*)` は**削除せず**、本体を `camera_task(0, NULL)`
+    へ委譲する薄いラッパとして残置。理由: `ra_gen/camera_thread.c`（編集禁止）の `camera_thread_func()`
+    が `camera_thread_entry` を参照し、その参照鎖は startup が参照する `main()` から辿れる（方式A で
+    `main()` は実行されないが**リンク時には解決が必要**）。ntshell_thread_entry.c 末尾と同一パターン。
+- **I2C 完了割り込み→タスク同期の置換（uT-Kernel イベントフラグ新設 ― 最重要）**:
+  - 背景: I2C 完了の割り込み→タスク同期の実体は FreeRTOS イベントグループ `g_i2c_event_group`
+    （`ra_gen/common_data.c` の `g_common_init()`/`g_hal_init()` で生成）だが、**方式A では
+    `g_hal_init()` が呼ばれないため実行時に未生成（NULL）**。そのため FreeRTOS のまま放置すると
+    カメラ I2C 完了待ちが機能しない。
+  - 対処: `src/ov5640.c` に **uT-Kernel イベントフラグ `s_i2c_flgid`** を新設。
+    - 新規公開 `void ov5640_i2c_sync_init(void)`: `tk_cre_flg`（`T_CFLG`: `flgatr=TA_TFIFO|TA_WMUL`,
+      `iflgptn=0`。`dsname` は `USE_OBJECT_NAME=0` のため含めない）でイベントフラグを生成。**冪等**
+      （`s_i2c_flgid>0` なら再生成しない）。`camera_task` 先頭（各 I2C 操作より前）で呼ぶ。
+    - `i2c_camera_callback`（ISR）: `xEventGroupSetBitsFromISR`/`xHigherPriorityTaskWoken`/
+      `portYIELD_FROM_ISR` を全廃し、TX/RX 完了で `tk_set_flg(s_i2c_flgid, I2C_TRANSFER_COMPLETE)`、
+      ABORT で `tk_set_flg(..., I2C_TRANSFER_ABORT)`。`tk_set_flg` は通知系で ISR から呼んでよい
+      （手順書 5.1）。uT-Kernel は割り込み出口で遅延ディスパッチするため明示的 yield 不要。末尾の
+      `R_BSP_IrqStatusClear(R_FSP_CurrentIrqGet())` は維持。
+    - `ov5640_i2c_wait_complete`（**static 除去・公開化**, `ov5640.h` にプロトタイプ追加）:
+      `xEventGroupWaitBits` → `tk_wai_flg(s_i2c_flgid, COMPLETE|ABORT, TWF_ORW|TWF_BITCLR, &flgptn,
+      I2C_TIMEOUT_MS)`。戻り値で分岐: `E_OK`+COMPLETE→`FSP_SUCCESS`、ABORT→`FSP_ERR_ABORTED`、
+      `E_TMOUT`→`FSP_ERR_TIMEOUT`、その他（`E_ID` 等）→`FSP_ERR_ABORTED`。`TWF_BITCLR`（一致ビットのみ
+      クリア）を採用（元 FreeRTOS の pdTRUE=該当ビットクリア相当）。
+    - `I2C_TIMEOUT_MS` は `portTICK_PERIOD_MS` 依存を除去しミリ秒定数（1000）に。ビットパターン
+      `I2C_TRANSFER_COMPLETE`(1<<0)/`I2C_TRANSFER_ABORT`(1<<1) はそのまま流用。
+  - `camera_thread_entry.c` のインライン待ち（board switch readback verify, GreenPAK,
+    board switch init の各 `xEventGroupWaitBits(g_i2c_event_group, ...)`）は全て公開関数
+    `ov5640_i2c_wait_complete()` へ統一。`EventBits_t uxBits;` 宣言と判定を整理し、`g_i2c_event_group`
+    参照・ファイル内の `I2C_XFER_COMPLETE`/`ABORT`/`TIMEOUT_MS` マクロ（未使用化）を削除。
+- **camera_framebuffer.c の ISR FPS 計測**:
+  - `xTaskGetTickCountFromISR()`（`vin0_callback`→frame_complete 割り込みから呼ばれる）→
+    **`tk_get_otm(SYSTIM*)`**（ISR 可・参照系、手順書 5.1）。`SYSTIM` は 64bit（`hi`/`lo`）でミリ秒を返す。
+    FPS は秒内差分のため下位 32bit（`.lo`）を ms 値として使用（`SYSTIM now; tk_get_otm(&now);
+    uint32_t now_ms=(uint32_t)now.lo;`）。`init` 内の `xTaskGetTickCount()` も同様に置換。
+  - `FPS_INTERVAL_TICKS`(=`configTICK_RATE_HZ`)→`FPS_INTERVAL_MS`(=1000)。`s_fps_last_tick`(`TickType_t`)
+    →`s_fps_last_ms`(`uint32_t` ms)。FPS 計算式 `frames*configTICK_RATE_HZ/elapsed`→`frames*1000/elapsed_ms`
+    （単位 ms で一貫するので係数 1000）。`camera_framebuffer_get_info` の `__disable_irq()/__enable_irq()`
+    は RTOS 非依存のため維持。
+- **camera_display.c は R-006（LVGL）へ繰り越し**:
+  - `src/camera_display.c` は LVGL タイマ駆動（`lv_timer_handler`）かつ AI 連携（`g_ai_app_event`,
+    R-007）であり、**R-005 では実行されず**、Issue 作業項目にも非記載。FreeRTOS ヘッダは維持されており
+    現状コンパイルは通るため、R-005 では変更しない（LVGL の OSAL 方針確定後 R-006 で移行）。
+- **vin_port.c は変更不要**:
+  - `src/port/vin_port.c` は FreeRTOS API 非依存（`__disable_irq`/`__enable_irq` のみ・RTOS 非依存）の
+    ため R-005 では変更しない。
 
 ### 7.4 LCD / LVGL（R-006 / 前提 R-006a）
 
@@ -930,4 +994,6 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-12 | R-003 | **マルチコア・デバッグ起動失敗を修正**。`Debug_Multicore Launch Group` の CPU1 接続が `'monitor enable_stopped_notify_on_connect' is timed out` で失敗（区画変更とは無関係）。原因は方式A が `main()`/スケジューラ未到達で、元 FreeRTOS の `blinky_thread_entry.c` 先頭にあった `R_BSP_SecondaryCoreStart()` が実行されず CPU1 がリセット保持のままになり、CPU1 デバッガ接続がタイムアウトしていたこと。`src/usermain.c` の起動ログ直後に元と同一ガードで `R_BSP_SecondaryCoreStart()` を移設して CPU1 を解除（元挙動の復元）。7.1 実装メモに記録。代替は CPU0 単体デバッグ構成 |
 | 2026-06-12 | R-003 | **区画再配分で LLVM ビルド成功を確認**（Debug 構成・コンパイル＋リンク成功）。`solution.xml` Memories タブで `FLASH_CPU0_CPU0_S` を `0xF0000`（960KB）→ `0xF8000`（992KB）、CPU1 フラッシュを `0x10000`（64KB）→ `0x8000`（32KB）へ変更（合計 `0x100000`=1MB 維持）し Generate Project Content。これで R-003 のコードフラッシュ・オーバーフローが解消。実機 LED 点滅・シリアル出力確認はユーザー実施待ち |
 | 2026-06-12 | R-004 | **NT-Shell 関連を μT-Kernel 3.0 へ移行**。`ntshell_thread_entry.c` のスレッド本体を uT-Kernel タスク `ntshell_task(INT, void*)` へ移植し、`usermain.c` に `T_CTSK ctsk_ntshell`（`itskpri=12`/`stksz=4096`）を追加して `tk_cre_tsk`+`tk_sta_tsk` で起動。旧 `ntshell_thread_entry(void*)` は `ra_gen/ntshell_thread.c`（編集禁止）からの参照鎖が `main()` 経由でリンクに残るため**削除せず**本体を `ntshell_task` へ委譲する薄いラッパとして残置。**SCI8 競合を「起動バナーまで T-Monitor → NT-Shell が SCI8 を FSP UART で開いた後は jlink_console 専有」で一本化**。**方式A で未実行となる FSP `bsp_irq_cfg()`（ELC→NVIC の IELSR 設定）を `usermain()` 先頭で呼び SCI8 割り込み（TXI/RXI/TEI/ERI）を NVIC へ結線**（未実施だと `jlink_console_write` がハング）。`g_hal_init()` は FreeRTOS オブジェクト生成のみで割り込み構成に無関係のため呼ばない。`jlink_console.c`: `vTaskDelay(1)`×4→`tk_dly_tsk(1)`、`taskENTER/EXIT_CRITICAL`×3→**割り込みマスク `DI`/`EI`**（ISR と共有する `s_out_of_band_received[]` 保護のため `tk_dis_dsp` 不可）、`<assert.h>` 明示追加。`usrcmd.c`: `vTaskDelay(pdMS_TO_TICKS(100))`→`tk_dly_tsk(100)`、`tskKERNEL_VERSION_NUMBER`→`"uT-Kernel 3.0"`（reset/version 表示のみ。lvgl/camera/ai サブコマンドは R-005 以降）。`led_ctrl.c`: FreeRTOS ソフトウェアタイマ→uT-Kernel 周期ハンドラ（`tk_cre_cyc`/`tk_sta_cyc`/`tk_stp_cyc`/`tk_del_cyc`、LED ごと 1 ハンドラ・`exinf` で index 伝達・`TA_HLNG\|TA_STA\|TA_PHS`、`tk_set_cyc` 不在のため interval 変更は削除→再生成）。`config_func.h` は R-003 で必要機能（cyc/sem/mtx/flg）保持済みで変更不要。7.2 実装メモ・7.1 末尾「R-004 での注意」を確定内容で更新。**実機確認（ntshell 起動・mr/md/mw/led 各コマンド・LED blink）はユーザー実施待ち** |
+| 2026-06-12 | R-005 | **カメラ関連を μT-Kernel 3.0 へ移行**。`camera_thread_entry.c` のスレッド本体を uT-Kernel タスク `camera_task(INT, void*)` へ移植し、`usermain.c` に `T_CTSK ctsk_camera`（`itskpri=11`（blink=10 と ntshell=12 の中間）/`stksz=4096`）を追加して ntshell 起動の後に `tk_cre_tsk`+`tk_sta_tsk` で起動。旧 `camera_thread_entry(void*)` は `ra_gen/camera_thread.c`（編集禁止）の参照鎖が `main()` 経由でリンクに残るため**削除せず** `camera_task` へ委譲する薄いラッパとして残置。**最重要 ― I2C 完了割り込み→タスク同期の実体 `g_i2c_event_group`（FreeRTOS イベントグループ）が方式A で `g_hal_init()` 未実行のため未生成（NULL）**。よって `ov5640.c` に uT-Kernel イベントフラグ `s_i2c_flgid` を新設: 公開 `ov5640_i2c_sync_init()`（`tk_cre_flg`, `TA_TFIFO\|TA_WMUL`, 冪等）を `camera_task` 先頭で生成、`i2c_camera_callback`（ISR）は `xEventGroupSetBitsFromISR`/`portYIELD_FROM_ISR` 全廃→`tk_set_flg`（通知系・ISR 可、明示 yield 不要）、`ov5640_i2c_wait_complete`（static 除去・公開化）は `xEventGroupWaitBits`→`tk_wai_flg`（`TWF_ORW\|TWF_BITCLR`, ms タイムアウト）+ 戻り値→`FSP_SUCCESS`/`FSP_ERR_ABORTED`/`FSP_ERR_TIMEOUT`。`camera_thread_entry.c` のインライン I2C 待ち（board switch verify/GreenPAK/board switch init）を公開関数 `ov5640_i2c_wait_complete()` へ統一し `g_i2c_event_group`・`I2C_XFER_*` マクロを除去。`vTaskDelay`/`pdMS_TO_TICKS`→`tk_dly_tsk(ms)`。`camera_framebuffer.c`: `xTaskGetTickCountFromISR()`/`xTaskGetTickCount()`→`tk_get_otm(SYSTIM*)`（ISR 可・参照系、`.lo` を ms として使用）、`FPS_INTERVAL_TICKS`(configTICK_RATE_HZ)→`FPS_INTERVAL_MS`(1000)、FPS 式は `frames*1000/elapsed_ms`。**`camera_display.c` は LVGL タイマ駆動・AI 連携（`g_ai_app_event`）のため R-005 では実行されず、R-006（LVGL）へ繰り越し**（FreeRTOS ヘッダ維持で現状コンパイル可）。`vin_port.c` は RTOS 非依存（`__disable_irq`/`__enable_irq`）で変更不要。7.3 実装メモを確定内容で更新。**実機確認（camera タスク起動・`camera status` で Frame Count/FPS 増加）はユーザー実施待ち** |
+| 2026-06-12 | R-005 | **実機動作確認でフレームキャプチャ成功を確認**（`camera status` で Frame Complete が増加・FPS≒65・HW State=IN_PROGRESS・各種エラー 0、LED コマンド動作）。**SCI8 一本化の取りこぼしを修正**: `usermain.c` のカメラ生成ログのみ `print_to_console`（jlink_console）を使っていたため、NT-Shell が `jlink_console_init()` で SCI8 を開く前に呼ばれて `jlink_configured()` 待ち→`tk_dly_tsk(1)` 譲り→NT-Shell バナーと SCI8 出力が競合し**文字化け（`m□`）＋カメラ生成ログ消失**が発生。blink/ntshell と同じ **T-Monitor（`tm_putstring`/`tm_printf`）** へ統一し、不要化した `jlink_console.h` include を除去。7.3 実装メモを修正。**修正後の実機再確認はユーザー実施待ち** |
 | 2026-06-11 | R-003 | **ブート・OS 起動を μT-Kernel 3.0 へ移行（最小構成）**。採用方式を**方式A**に確定（`src/hal_warmstart.c` の `R_BSP_WarmStart(POST_C)` 末尾で `knl_start_mtkernel()` を呼び、FreeRTOS `main()`/`vTaskStartScheduler()` に到達させない。切替マクロ `MIMAMORI_USE_MTKERNEL_BOOT` で切り戻し可）。`src/usermain.c` を新規作成し、BSP2 の WEAK `usermain()` を強い定義で上書き ― LED 点滅タスク（`tk_cre_tsk`+`tk_sta_tsk`、`vTaskDelay`→`tk_dly_tsk(500)`）生成と `tm_printf` 起動ログ、自身は `tk_slp_tsk(TMO_FEVR)`。`ra_gen/` 無編集で既存 FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）を `main()` 未到達により無効化。`g_hal_init()` は最小構成で不要（LED=BSP 直接 / `tm_printf`=SCI8 直接）。7.1 実装メモに方式 A 選定理由・`usermain` 配置・HAL 一度きり保証の移設方針・`USE_OBJECT_NAME=0` による `T_CTSK.dsname` 不在の注意・**SCI8 競合確認結果**（`tm_com.c` と `jlink_console.c`(`channel=8`) が同一 SCI8 を共有。R-003 は ntshell 未起動で非競合、R-004 で一本化方針が必要）を記録。実機 LED 点滅・シリアル出力確認はユーザー実施 |
