@@ -38,12 +38,28 @@
  */
 extern bsp_leds_t g_bsp_leds;
 
+/*
+ * NT-Shell タスク本体（R-004 / src/ntshell_thread_entry.c）。
+ * uT-Kernel タスク形式 void ntshell_task(INT stacd, void *exinf)。
+ * ヘッダ ntshell_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
+ * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する。
+ */
+extern void ntshell_task(INT stacd, void *exinf);
+
 /* ---------------------------------------------------------------------------
  *  LED 点滅タスク
  *
  *  FreeRTOS 版 blinky_thread_entry.c の最小相当。
  *  対応関係（FreeRTOS -> μT-Kernel 3.0、移行手順書 5 章 API 対応表）:
  *    vTaskDelay(configTICK_RATE_HZ / 2)  ->  tk_dly_tsk(500)   ※500ms（ミリ秒系）
+ *
+ *  点滅対象 LED（R-004 で移行前の挙動へ復元）:
+ *    元の blinky のマルチコア分岐（#else）を踏襲し、マルチコア構成では
+ *    自コア（_RA_CORE）のインデックスの LED 1 個だけを点滅させる。CPU0 は
+ *    LED1(Blue, P600) のみ。なお LED2(Green, P303) は CPU1（FreeRTOS のまま・
+ *    本移行の対象外）の blinky が点滅させる（_RA_CORE=1 → p_leds[1]）。
+ *    LED3(Red, PA07) はどちらのコアも点滅させないため、led コマンド（S-011）
+ *    で自由に操作できるのは Red のみ（移行前と同じ競合関係）。
  *
  *  注意: CPU1 起動（R_BSP_SecondaryCoreStart）は usermain() 側で実施済み
  *        （マルチコア・デバッグ整合のため。元 FreeRTOS の blinky 先頭呼び出しを移設）。
@@ -68,11 +84,22 @@ LOCAL void blink_task(INT stacd, void *exinf)
         /* PFS レジスタへのアクセスを許可（BSP IO 関数の作法に従う） */
         R_BSP_PinAccessEnable();
 
-        /* 全ボード LED を更新（マルチコアだが本タスクは CPU0 のみで動作） */
+        /* 元の FreeRTOS blinky_thread_entry.c のマルチコア分岐を踏襲する。
+         * 本プロジェクトはデュアルコア（BSP_NUMBER_OF_CORES > 1）なので #else 側が
+         * 有効となり、各コアは「自分のコア番号（_RA_CORE）のインデックスの LED
+         * 1 個だけ」を点滅させる。CPU0（_RA_CORE = 0）は p_leds[0] = LED1(Blue, P600)
+         * のみ。LED2(Green) は CPU1（FreeRTOS のまま）の blinky が点滅させるため、
+         * led コマンドで自由に操作できるのは誰も点滅させない LED3(Red, PA07) のみ
+         * となる（移行前と同じ挙動。R-004 で復元）。 */
+#if BSP_NUMBER_OF_CORES == 1
+        /* 単一コア構成: 全ボード LED を点滅 */
         for (uint32_t i = 0; i < leds.led_count; i++) {
-            uint32_t pin = leds.p_leds[i];
-            R_BSP_PinWrite((bsp_io_port_pin_t)pin, pin_level);
+            R_BSP_PinWrite((bsp_io_port_pin_t)leds.p_leds[i], pin_level);
         }
+#else
+        /* マルチコア構成: 自コアのインデックスの LED 1 個のみ点滅 */
+        R_BSP_PinWrite((bsp_io_port_pin_t)leds.p_leds[_RA_CORE], pin_level);
+#endif
 
         /* PFS レジスタを保護 */
         R_BSP_PinAccessDisable();
@@ -99,6 +126,25 @@ LOCAL T_CTSK ctsk_blink = {
 };
 
 /* ---------------------------------------------------------------------------
+ *  NT-Shell タスクの生成情報（R-004 / Issue #154）
+ *
+ *  本体は src/ntshell_thread_entry.c の ntshell_task()。
+ *  - 優先度: blink タスク（itskpri=10）より低優先度（数値大 = 12）。
+ *    NT-Shell は対話コンソールであり LED 点滅よりリアルタイム性が低いため。
+ *  - スタック: FreeRTOS 版スレッド設定と同じ 4096 バイト
+ *    （ntshell_execute / snprintf / コマンドディスパッチで消費するため）。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_ntshell = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = ntshell_task,
+    .itskpri = 12,            /* blink(10) より低優先度 */
+    .stksz   = 4096,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
  *  usermain()
  *
  *  μT-Kernel 3.0 の初期タスクから呼ばれる（mtkernel/kernel/inittask/inittask.c）。
@@ -121,10 +167,29 @@ EXPORT INT usermain(void)
      * （mtk3_bsp2/sysdepend/ra_fsp/lib/libtm/ek_ra8p1/tm_com.c）。 */
     tm_putstring((UB *)"\n");
     tm_putstring((UB *)"==============================================\n");
-    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-003)\n");
+    tm_putstring((UB *)" mimamori-sense  uT-Kernel 3.0 boot (R-004)\n");
     tm_putstring((UB *)"==============================================\n");
     tm_printf((UB *)"[usermain] uT-Kernel 3.0 started. LED count = %d\n",
               (INT)g_bsp_leds.led_count);
+
+    /* ---------------------------------------------------------------------
+     * FSP 割り込み構成（ELC -> NVIC マッピング）の復元 ― R-004 / Issue #154
+     *
+     * 方式A（静的コンストラクタで knl_start_mtkernel() を呼ぶ）では
+     * FSP の SystemInit() が __init_array 実行直後に行う bsp_irq_cfg()
+     * （system.c:525）が実行されない（その前にカーネルへ制御が移るため）。
+     * bsp_irq_cfg() は R_ICU->IELSR[]（ELC イベント -> NVIC ベクタの対応）を
+     * g_interrupt_event_link_select[] から設定する FSP 公開関数で、これが
+     * 未実行だと R_SCI_B_UART_Open()（jlink_console_init 内）が NVIC を有効化しても
+     * SCI8 の TXI/RXI/TEI/ERI が NVIC ベクタに結線されず、UART 割り込みが発火しない
+     * （R_SCI_B_UART_Write 後に g_transfer_done が立たず jlink_console_write がハングする）。
+     *
+     * usermain() は uT-Kernel 初期タスクから一度だけ呼ばれるため、他タスク生成前の
+     * ここで bsp_irq_cfg() を一度だけ呼び、IELSR マッピングを構成する。
+     * （ra_gen は編集禁止のため src 側から FSP 公開関数を呼んで対応 ― 手順書 7.1/7.2）。
+     * --------------------------------------------------------------------- */
+    bsp_irq_cfg();
+    tm_putstring((UB *)"[usermain] bsp_irq_cfg() done (ELC->NVIC IELSR configured).\n");
 
     /* セカンダリコア（CPU1 / Cortex-M33）を起動する。
      *
@@ -157,6 +222,31 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] blink_task created & started.\n");
+
+    /* ---------------------------------------------------------------------
+     * NT-Shell タスクを生成・起動（R-004 / Issue #154）
+     *
+     * SCI8 一本化: ここまで（起動ログ）は T-Monitor（tm_printf / SCI8 直接レジスタ）で出力。
+     * NT-Shell タスクが起動して jlink_console_init()（R_SCI_B_UART_Open, channel=8）で
+     * SCI8 を FSP UART として開いた後は、SCI8 は jlink_console が専有する。
+     * tm_printf/tm_putstring（T-Monitor）は SCI8 を直接初期化・送信するため、ここ以降の
+     * usermain では T-Monitor を使わない（同一 SCI8 の二重送信による競合を避ける）。
+     * tm_putstring はポーリング送信（TEND 待ち）でブロッキングのため、上の起動ログは
+     * この時点で送信完了済み。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_ntshell);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(ntshell) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(ntshell) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] ntshell_task created & started. (SCI8 -> NT-Shell)\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */

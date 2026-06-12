@@ -64,9 +64,11 @@ extern "C" {
 
 /**
  * Initialize the LED control module
- * @details Sets up FreeRTOS software timers for blink functionality.
- *          Must be called before using any other led_ctrl functions.
- *          Should be called from a FreeRTOS task context (after scheduler starts).
+ * @details Initializes internal state for blink functionality.
+ *          Blink cyclic handlers (uT-Kernel 3.0) are created on demand by
+ *          led_ctrl_blink(). Must be called before using any other led_ctrl
+ *          functions, from a uT-Kernel 3.0 task context (after the kernel starts).
+ * @note R-004: migrated from FreeRTOS software timers to uT-Kernel 3.0 cyclic handlers.
  */
 void led_ctrl_init(void);
 
@@ -100,12 +102,12 @@ bool led_ctrl_toggle(uint32_t id, led_state_t *p_prev_state);
 
 /**
  * Start blinking the specified LED
- * @details Starts a FreeRTOS software timer that toggles the LED at the
- *          specified interval. If the LED is already blinking, the timer
- *          is reset with the new interval.
+ * @details Creates a uT-Kernel 3.0 cyclic handler that toggles the LED at the
+ *          specified interval. If the LED is already blinking, the handler is
+ *          recreated with the new interval (uT-Kernel 3.0 has no tk_set_cyc).
  * @param id LED index (0 to LED_COUNT-1)
  * @param interval_ms Blink interval in milliseconds (half-period)
- * @return true on success, false if id is out of range or timer creation fails
+ * @return true on success, false if id is out of range or handler creation fails
  */
 bool led_ctrl_blink(uint32_t id, uint32_t interval_ms);
 

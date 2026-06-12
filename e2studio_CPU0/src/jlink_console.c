@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>	// rand
+#include <assert.h>	// assert (previously pulled in via FreeRTOS include chain; R-004)
 
 #include "r_typedefs.h"
 
@@ -27,8 +28,19 @@
 //#include "common_init.h"
 //#include "board_cfg.h"
 #include "jlink_console.h"
-#include "FreeRTOS.h"
-#include "task.h"	// vTaskDelay
+
+/* R-004 / Issue #154: migrated from FreeRTOS to uT-Kernel 3.0.
+ *   vTaskDelay(1)                 -> tk_dly_tsk(1)   (ms)
+ *   taskENTER_CRITICAL()/EXIT()   -> DI(intsts)/EI(intsts)  (interrupt mask)
+ * The critical sections protect s_out_of_band_received[] / s_g_out_of_band_index
+ * which are written by the UART RX ISR (jlink_console_callback()). Because the
+ * protected data is shared with an ISR, dispatch-disable (tk_dis_dsp) is NOT
+ * sufficient; a real interrupt mask is required. DI()/EI() use BASEPRI on
+ * ARMv8-M (Cortex-M85), masking interrupts at/below the kernel level, which is
+ * the same mechanism FreeRTOS's taskENTER_CRITICAL() used. The protected regions
+ * are very short, so masking all kernel-level interrupts briefly is acceptable.
+ * See doc/migration/mtk3-migration-guide.md 5 / 5.1 / 7.2. */
+#include <tk/tkernel.h>
 
 /**********************************************************************************************************************
  Macro definitions
@@ -150,7 +162,7 @@ fsp_err_t print_to_console(char_t * p_data)
     jlink_console_write(p_data);
 
     /* Brief yield after write (jlink_console_write already waits for TX complete) */
-    vTaskDelay(1);
+    tk_dly_tsk(1);
 
     return (err);
 }
@@ -219,7 +231,7 @@ static void jlink_console_write(const char_t *buffer)
 
     while (!g_transfer_done)
     {
-        vTaskDelay(1);
+        tk_dly_tsk(1);
     }
 }
 /**********************************************************************************************************************
@@ -242,7 +254,7 @@ void input_from_any_console (int8_t *c)
         }
 */
     }
-    vTaskDelay(1);
+    tk_dly_tsk(1);
 }
 
 /**********************************************************************************************************************
@@ -255,9 +267,11 @@ void input_from_any_console (int8_t *c)
 int8_t input_from_console (void)
 {
     uint8_t ch;
+    UINT   intsts;   /* saved interrupt mask (BASEPRI) for DI()/EI() */
 
-    /* Check out-of-band buffer first (populated by ISR via UART_EVENT_RX_CHAR) */
-    taskENTER_CRITICAL();
+    /* Check out-of-band buffer first (populated by ISR via UART_EVENT_RX_CHAR).
+     * Protect against the UART RX ISR with an interrupt mask (not tk_dis_dsp). */
+    DI(intsts);
     if (s_g_out_of_band_index > 0)
     {
         ch = s_out_of_band_received[0];
@@ -266,10 +280,10 @@ int8_t input_from_console (void)
         {
             memmove(s_out_of_band_received, &s_out_of_band_received[1], s_g_out_of_band_index);
         }
-        taskEXIT_CRITICAL();
+        EI(intsts);
         return ((int8_t)ch);
     }
-    taskEXIT_CRITICAL();
+    EI(intsts);
 
     /* No out-of-band data; start a 1-byte UART Read and wait */
     start_key_check();
@@ -277,7 +291,7 @@ int8_t input_from_console (void)
     while (key_pressed() == false)
     {
         /* While waiting, check if ISR placed data in out-of-band buffer */
-        taskENTER_CRITICAL();
+        DI(intsts);
         if (s_g_out_of_band_index > 0)
         {
             ch = s_out_of_band_received[0];
@@ -286,15 +300,15 @@ int8_t input_from_console (void)
             {
                 memmove(s_out_of_band_received, &s_out_of_band_received[1], s_g_out_of_band_index);
             }
-            taskEXIT_CRITICAL();
+            EI(intsts);
 
             /* Cancel the pending UART Read that has not completed yet */
             R_SCI_B_UART_ReadStop(&g_jlink_console_ctrl, NULL);
             return ((int8_t)ch);
         }
-        taskEXIT_CRITICAL();
+        EI(intsts);
 
-        vTaskDelay(1);
+        tk_dly_tsk(1);
     }
 
     /* Cast to int8_t - will only be positive as a charcter */
@@ -379,6 +393,7 @@ uint32_t get_new_chars(uint8_t* pBuf)
 {
     uint8_t x    = 0U;
     uint32_t ret = 0U;
+    UINT   intsts;   /* saved interrupt mask (BASEPRI) for DI()/EI() */
 
     /* Check if single character received. */
     if (g_receive_done)
@@ -388,10 +403,11 @@ uint32_t get_new_chars(uint8_t* pBuf)
         return 1;
     }
 
-    taskENTER_CRITICAL();
+    /* Protect the out-of-band buffer against the UART RX ISR with an interrupt mask. */
+    DI(intsts);
     if (0 == s_g_out_of_band_index)
     {
-        taskEXIT_CRITICAL();
+        EI(intsts);
         return 0;
     }
 
@@ -404,7 +420,7 @@ uint32_t get_new_chars(uint8_t* pBuf)
 
     ret = s_g_out_of_band_index;
     s_g_out_of_band_index = 0U;
-    taskEXIT_CRITICAL();
+    EI(intsts);
 
     return ret;
 }

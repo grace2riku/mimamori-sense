@@ -490,6 +490,11 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 - [ ] `mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END = 0x221B0000`（CPU0 RAM 末尾）が維持されているか。
       既定値 `0` だとシステムメモリプールが CPU1 RAM 区画へはみ出して破壊される（→ 7.1）。**RAM 区画を変更したら
       追従させる**。再 vendoring 時も再適用要
+- [ ] （R-004）`usermain()` 先頭の `bsp_irq_cfg()` 呼び出しが維持され、SCI8（NT-Shell）割り込みが結線されるか。
+      `bsp_irq_cfg()` は FSP の **内部 API**（`ra/fsp/src/bsp/mcu/all/bsp_irq.h` で `// Used internally by BSP`）であり、
+      方式A で `SystemInit()` の `bsp_irq_cfg()`（`system.c:525`）が未実行になる代替として src 側から呼んでいる（→ 7.2）。
+      **FSP バージョンアップ時はシグネチャ/挙動（IELSR 設定内容・`g_interrupt_event_link_select[]` 形式）が
+      変わっていないかを確認**すること。未結線だと `jlink_console_write` がハングする
 - [ ] LLVM でビルドが通り、実機で μT-Kernel が起動するか（最低限 R-003 の LED + `tm_printf`）
 
 > 補足: e2 studio のビルド設定（include / マクロ / リンカ）は `.cproject` に保存され
@@ -614,10 +619,13 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
     で **同じ SCI8** を使用する（物理ポートは J-Link 上の VCOM で共通）。**両者は同一 SCI8 を共有する**。
   - R-003 では jlink_console を含む ntshell スレッドを起動しない（方式 A により FreeRTOS スレッド未生成）ため、
     SCI8 を初期化・使用するのは T-Monitor 側のみで**競合は発生しない**。
-  - **R-004（NT-Shell 移行）での注意**: ntshell の `R_SCI_B_UART_Open(g_jlink_console_ctrl)` と T-Monitor の
-    SCI8 直接初期化が**同一 SCI8 を二重に初期化・送受信して競合する**。R-004 では「T-Monitor 出力を
-    ntshell/jlink_console（FSP UART 経由）に一本化する」か「どちらか一方に SCI8 を専有させる」方針を決める必要がある。
-    最小構成 R-003 の段階ではこの競合は顕在化しない。
+  - **R-004（NT-Shell 移行）での注意 ― 確定**: ntshell の `R_SCI_B_UART_Open(g_jlink_console_ctrl)` と
+    T-Monitor の SCI8 直接初期化が**同一 SCI8 を二重に初期化・送受信して競合する**。
+    R-004 では **「起動バナーまで T-Monitor → NT-Shell が SCI8 を FSP UART で開いた後は jlink_console が専有」**
+    の段階的一本化方針を採用（→ 7.2 実装メモ「SCI8 一本化」）。さらに方式A では `bsp_irq_cfg()`（IELSR 設定）が
+    未実行のため、`usermain()` 先頭で FSP 公開関数 `bsp_irq_cfg()` を呼んで SCI8 の TXI/RXI/TEI/ERI 割り込みを
+    NVIC へ結線する（未実施だと `R_SCI_B_UART_Write` 後に `g_transfer_done` が立たずハングする）。詳細は 7.2 を参照。
+    最小構成 R-003 の段階ではこの競合・割り込み未結線は顕在化しない（ntshell 未起動・SCI8 割り込み未使用のため）。
 
 - **コードフラッシュ・オーバーフローと対処（R-003 実機ビルドで顕在化・確定）**:
   - 症状: `knl_start_mtkernel()` を**実際に呼ぶ**ようにした R-003 のリンクで、CPU0 のコードフラッシュ領域が
@@ -722,7 +730,100 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 
 確認: 既存デバッグコマンド（mr/md/mw/led, S-007〜S-011）が動作すること。
 
-実装メモ（R-004 完了時に記入）:
+実装メモ（R-004 / 2026-06-12 実装。実機確認はユーザー実施）:
+
+- **ntshell の uT-Kernel タスク化**:
+  - `src/ntshell_thread_entry.c` のスレッド本体を uT-Kernel タスク形式
+    `void ntshell_task(INT stacd, void *exinf)` へ移植。FreeRTOS 依存（`FreeRTOS.h`/`task.h`,
+    `FSP_PARAMETER_NOT_USED`, 起動バナーの `tskKERNEL_VERSION_NUMBER`）を除去/置換。
+  - `src/usermain.c` に NT-Shell タスクの生成情報 `T_CTSK ctsk_ntshell`（`TA_HLNG|TA_RNG3`,
+    `itskpri=12`（blink=10 より低優先度・数値大）, `stksz=4096`（FreeRTOS 版スレッドと同等）,
+    `bufptr=NULL`）を追加し、`tk_cre_tsk`+`tk_sta_tsk` で生成・起動。**`USE_OBJECT_NAME=0` のため
+    `T_CTSK.dsname` は初期化子に含めない**（R-003 と同様）。
+  - 旧 FreeRTOS エントリ `ntshell_thread_entry(void*)` は**削除せず**、本体を `ntshell_task(0, NULL)`
+    へ委譲する薄いラッパとして残置。理由: `ra_gen/ntshell_thread.c`（編集禁止）の
+    `ntshell_thread_func()` が `ntshell_thread_entry` を参照し、その参照鎖は startup が参照する
+    `main()` から辿れる（方式A で `main()` は実行されないが**リンク時には解決が必要**）。
+    `#if 0` で消すと未解決シンボルになるため、リンク可能なまま残す（FreeRTOS へ切り戻しても動作）。
+- **SCI8 一本化（T-Monitor と FSP UART の競合解決）**:
+  - 方針: 起動バナー（`usermain()` 序盤）までは T-Monitor（`tm_printf`/`tm_putstring`, SCI8 直接
+    レジスタ）を使用。NT-Shell タスクが `jlink_console_init()`（`R_SCI_B_UART_Open`, channel=8）で
+    SCI8 を FSP UART として開いた後は、**SCI8 を jlink_console が専有**し、`usermain()` 以降は
+    T-Monitor を使わない（同一 SCI8 への二重送信を避ける）。`tm_putstring` はポーリング送信
+    （TEND 待ち）でブロッキングのため、バナーは NT-Shell が SCI8 を開く前に送信完了済み。
+- **割り込み構成の解決（方式A で `bsp_irq_cfg()` 未実行への対処 ― 最重要）**:
+  - 調査結果: FSP の `R_SCI_B_UART_Open()` は内部で `R_BSP_IrqCfg`（NVIC 優先度 + ISR コンテキスト）と
+    `R_BSP_IrqEnable`（NVIC 有効化）を rxi/txi/tei/eri に対して行う（`r_sci_b_uart.c:1403-1408,382-392`）が、
+    **ELC イベント -> NVIC ベクタの対応（`R_ICU->IELSR[]`）は設定しない**。この IELSR 設定は FSP の
+    `bsp_irq_cfg()`（`bsp_irq.c:237`、`g_interrupt_event_link_select[]` を IELSR へ書く）が担い、
+    通常は `SystemInit()` が `__init_array` 実行**直後**（`system.c:525`）に呼ぶ。
+  - 方式A（静的コンストラクタ `mimamori_start_mtkernel` で `knl_start_mtkernel()` を呼び戻らない）では、
+    コンストラクタは `__init_array` の一部として実行されるため、その後の `bsp_irq_cfg()`（system.c:525）に
+    **到達しない**。結果 IELSR が未設定のままになり、`R_SCI_B_UART_Open` 後も SCI8 の TXI/RXI/TEI/ERI が
+    NVIC ベクタに結線されず割り込みが発火しない（`R_SCI_B_UART_Write` 後に `g_transfer_done` が立たず
+    `jlink_console_write` がハングする）。
+  - **対処（src 側・ra_gen 無編集）**: `usermain()` の先頭（uT-Kernel 初期タスク内・他タスク生成前 = 一度きり
+    保証）で **FSP 公開関数 `bsp_irq_cfg()` を呼ぶ**。`bsp_irq_cfg()` は `bsp_api.h`（→`hal_data.h` 経由で
+    可視）に宣言され、IELSR と ICU セキュリティ状態を書くだけで副作用が少なく一度呼べば足りる。これにより
+    以降の `R_SCI_B_UART_Open()`（NVIC 有効化）と組み合わさって SCI8 割り込みが正しく発火する。
+  - `g_hal_init()` は呼ばない: `g_hal_init()`→`g_common_init()` は **FreeRTOS の `xEventGroupCreateStatic`/
+    `xSemaphoreCreateBinaryStatic`（I2C 用、R-005 で使用）を生成するだけ**で（`common_data.c:908`）、
+    割り込み構成（IELSR）には寄与しない。むしろ未起動の FreeRTOS オブジェクトを生成するため R-004 では呼ばない。
+    SCI8 の FSP モジュール初期化は `jlink_console_init()` の `R_SCI_B_UART_Open` が単体で行う。
+- **`jlink_console.c` のクリティカルセクション置換**:
+  - `vTaskDelay(1)`（4 箇所: `print_to_console`/`jlink_console_write`/`input_from_any_console`/
+    `input_from_console`）→ `tk_dly_tsk(1)`。
+  - `taskENTER_CRITICAL()`/`taskEXIT_CRITICAL()`（3 箇所: `input_from_console` の 2 箇所・`get_new_chars` の 1 箇所）
+    → **`DI(intsts)`/`EI(intsts)`（割り込みマスク）**。これらは UART RX ISR（`jlink_console_callback()`）が
+    更新する `s_out_of_band_received[]`/`s_g_out_of_band_index` を保護しており、ISR と共有するため
+    `tk_dis_dsp()`（ディスパッチ禁止のみ）は不可（手順書 5 章の落とし穴）。ARMv8-M（Cortex-M85）の
+    `DI`/`EI` は BASEPRI を操作し、FreeRTOS の `taskENTER_CRITICAL()` と同一機構（カーネルレベル以下の
+    割り込みをマスク）。保護区間はごく短い（数バイトの pop/copy）ため全カーネルレベル割り込みの一時マスクで問題ない。
+  - `assert` は従来 FreeRTOS の include 連鎖経由で可視だったため、FreeRTOS include 除去に伴い
+    `#include <assert.h>` を明示追加。
+- **`usrcmd.c`**: `vTaskDelay(pdMS_TO_TICKS(100))`（`usrcmd_reset`）→ `tk_dly_tsk(100)`。
+  `tskKERNEL_VERSION_NUMBER`（info/version の RTOS 版数表示 2 箇所）→ 固定文字列 `"uT-Kernel 3.0"`
+  （`MTKERNEL_VERSION_NUMBER` マクロ。表示ラベルも `FreeRTOS` → `RTOS` に変更）。`<tk/tkernel.h>` を include、
+  FreeRTOS include を除去。**lvgl/camera/ai サブコマンドは R-005 以降の対象のため未変更**。
+- **`led_ctrl.c` の周期ハンドラ化**:
+  - FreeRTOS ソフトウェアタイマ（`xTimerCreate/Start/Stop/ChangePeriod`）→ uT-Kernel 3.0 周期ハンドラ
+    （`tk_cre_cyc`/`tk_sta_cyc`/`tk_stp_cyc`/`tk_del_cyc`）。**LED ごとに 1 つの周期ハンドラ**を持つ設計
+    （旧 1 タイマ/LED と対応）。1 つのハンドラ関数 `led_blink_cyc_handler(void *exinf)` を全 LED で共用し、
+    LED インデックスは `T_CCYC.exinf` で渡す。
+  - `T_CCYC`: `cycatr = TA_HLNG | TA_STA | TA_PHS`（C 記述・生成時即起動・位相保存）、`cyctim = cycphs = interval_ms`
+    （ミリ秒系 RELTIM, 最小 1ms）。**`USE_OBJECT_NAME=0` のため `dsname` は初期化子に含めない**。
+  - 周期ハンドラは割り込みコンテキスト相当で動作。中で呼ぶのは `R_IOPORT_PinRead`/`R_IOPORT_PinWrite`
+    （FSP・RTOS 非依存）のみで、待ち系システムコールは呼ばない（手順書 5.1 ISR 制約を満たす）。
+  - **uT-Kernel 3.0 には `tk_set_cyc` が無い**ため、blink interval 変更（旧 `xTimerChangePeriod`）は
+    既存ハンドラを `tk_stp_cyc`+`tk_del_cyc` で削除 → 新間隔で `tk_cre_cyc`+`tk_sta_cyc` し直す方式で実現
+    （`led_ctrl_blink()` 内で `led_stop_blink_timer()` を先に呼んで再生成）。
+  - 周期ハンドラはオンデマンド生成（`led_ctrl_blink()` 時に作成、停止時に削除）。`led_ctrl_init()` は
+    内部状態の初期化と全 LED OFF のみ行う（旧 init は全タイマを事前生成していたが、再生成方式に合わせて廃止）。
+    `led_ctrl.h` の `led_ctrl_init`/`led_ctrl_blink` の Doxygen コメントも FreeRTOS タイマ言及から更新。
+- **`config_func.h` 確認**: `USE_CYCLICHANDLER=1`/`USE_SEMAPHORE=1`/`USE_MUTEX=1`/`USE_EVENTFLAG=1`
+  は R-003 で保持済み（変更不要）。本実装で追加で必要な機能スイッチは無し。
+- **UART 送受信の排他について**: 本実装では NT-Shell は単一タスクから SCI8 を駆動し、複数タスクからの
+  同時アクセスは無いため、`tk_cre_mtx`/`tk_cre_sem` による UART 排他は導入していない（手順書の
+  「UART 送受信の排他は `tk_cre_mtx`/`tk_cre_sem` を用いる」は複数タスク競合時の指針。R-005 以降で
+  camera/lvgl 等が `print_to_console` を併用する場合に再検討する）。ISR と共有する状態の保護は上記の
+  割り込みマスク（`DI`/`EI`）で対応済み。
+- **`blink_task` と `led` コマンドの LED 競合解消（実機確認で発覚 → R-004 で修正）**:
+  - 症状: `led 0 off` 等を実行してもコマンドは成功表示するが LED が点滅したまま戻る。
+  - 原因: R-003 で `usermain.c` に作成した `blink_task` が、元の FreeRTOS `blinky_thread_entry.c` の
+    **マルチコア分岐（`#else`: 自コア `_RA_CORE` のインデックスの LED 1 個のみ点滅）を落として、
+    全ボード LED（Blue/Green/Red）を無条件で 500ms トグル**する実装になっていた。`led` コマンド
+    （`led_ctrl`）が同じ物理ピンを LOW にしても直後に `blink_task` が点滅へ戻すため、R-004 受け入れ条件
+    「既存デバッグコマンド（mr/md/mw/**led**）が動作する」を満たせていなかった。
+  - 移行前（FreeRTOS）の挙動: デュアルコアのため `#else` 側が有効で、CPU0 は `p_leds[0]`=LED1(Blue, P600)
+    のみ、CPU1 は `p_leds[1]`=LED2(Green) のみを点滅。`p_leds[2]`=LED3(Red) は誰も点滅させないため
+    `led 2` が自由に効いた（`led 0`/`led 1` は点滅タスクと競合する仕様）。
+  - 対処（移行前の挙動へ復元）: `blink_task` のループを元の blinky と同一の
+    `#if BSP_NUMBER_OF_CORES == 1 … #else …#endif` 構造に戻し、マルチコア構成では
+    `R_BSP_PinWrite(leds.p_leds[_RA_CORE], …)` で**自コアのインデックスの LED 1 個だけ**を点滅させる。
+    結果、CPU0 は Blue のみ点滅、Green は CPU1（FreeRTOS のまま・移行対象外）の blinky が点滅、
+    Red はどちらのコアも点滅させない。**`led` コマンドで自由に操作できるのは Red のみ**となり、
+    `led 0`(Blue) は CPU0 の `blink_task`、`led 1`(Green) は CPU1 の blinky と競合する
+    （いずれも移行前と同じ競合関係に戻る）。
 
 ### 7.3 カメラ（R-005）
 
@@ -828,4 +929,5 @@ FSP 再生成（Generate Project Content）を行うと `ra_gen/` の FreeRTOS �
 | 2026-06-12 | R-003 | **初期タスク生成失敗（`!ERROR! Initial Task can not creat`）を修正 ― RAM 不具合 2 件**。`sys_start.o` 逆アセンブルで `knl_lowmem_limit=0x220E0000`（実 RAM 使用末尾 `__mtk3_SYSMEM_START≒0x2211e100` より低位 → プール空/負 → `knl_Imalloc` NULL → `tk_cre_tsk` E_NOMEM）と判明。**原因①（主因・ベンダ不具合）**: `include/sys/sysdepend/ra_fsp/ek_ra8p1/sysdef.h` が誤って `cpu/ra8m1/sysdef.h`（`INTERNAL_RAM_SIZE=0xE0000`=896KB）を include していた（mtk3_bsp2 v1.00.04、ek_ra8m1 からのコピー取り違え）。`cpu/ra8p1/sysdef.h`（正値 `0x1D4000`=1872KB）へ修正。**原因②（①修正後に顕在化）**: 正しい `INTERNAL_RAM_END=0x221D4000` は SRAM 全域＝単一コア前提だが、本機マルチコアで CPU0 RAM 区画は `0x221B0000` まで。既定 `CNF_SYSTEMAREA_END=0` だとプールが CPU1 区画へはみ出し `knl_init_Imalloc` が高位境界を CPU0 非所有領域へ書いて破壊。`mtk3_bsp2/config/config.h` の `CNF_SYSTEMAREA_END=0x221B0000` で cap。両修正でプール `[≒0x2211e100,0x221B0000]`≒585KB が CPU0 RAM 内に収まる。7.1 に詳細・切り分け手順、6.2 にチェック 2 項目追加（再 vendoring 時 再適用要） |
 | 2026-06-12 | R-003 | **マルチコア・デバッグ起動失敗を修正**。`Debug_Multicore Launch Group` の CPU1 接続が `'monitor enable_stopped_notify_on_connect' is timed out` で失敗（区画変更とは無関係）。原因は方式A が `main()`/スケジューラ未到達で、元 FreeRTOS の `blinky_thread_entry.c` 先頭にあった `R_BSP_SecondaryCoreStart()` が実行されず CPU1 がリセット保持のままになり、CPU1 デバッガ接続がタイムアウトしていたこと。`src/usermain.c` の起動ログ直後に元と同一ガードで `R_BSP_SecondaryCoreStart()` を移設して CPU1 を解除（元挙動の復元）。7.1 実装メモに記録。代替は CPU0 単体デバッグ構成 |
 | 2026-06-12 | R-003 | **区画再配分で LLVM ビルド成功を確認**（Debug 構成・コンパイル＋リンク成功）。`solution.xml` Memories タブで `FLASH_CPU0_CPU0_S` を `0xF0000`（960KB）→ `0xF8000`（992KB）、CPU1 フラッシュを `0x10000`（64KB）→ `0x8000`（32KB）へ変更（合計 `0x100000`=1MB 維持）し Generate Project Content。これで R-003 のコードフラッシュ・オーバーフローが解消。実機 LED 点滅・シリアル出力確認はユーザー実施待ち |
+| 2026-06-12 | R-004 | **NT-Shell 関連を μT-Kernel 3.0 へ移行**。`ntshell_thread_entry.c` のスレッド本体を uT-Kernel タスク `ntshell_task(INT, void*)` へ移植し、`usermain.c` に `T_CTSK ctsk_ntshell`（`itskpri=12`/`stksz=4096`）を追加して `tk_cre_tsk`+`tk_sta_tsk` で起動。旧 `ntshell_thread_entry(void*)` は `ra_gen/ntshell_thread.c`（編集禁止）からの参照鎖が `main()` 経由でリンクに残るため**削除せず**本体を `ntshell_task` へ委譲する薄いラッパとして残置。**SCI8 競合を「起動バナーまで T-Monitor → NT-Shell が SCI8 を FSP UART で開いた後は jlink_console 専有」で一本化**。**方式A で未実行となる FSP `bsp_irq_cfg()`（ELC→NVIC の IELSR 設定）を `usermain()` 先頭で呼び SCI8 割り込み（TXI/RXI/TEI/ERI）を NVIC へ結線**（未実施だと `jlink_console_write` がハング）。`g_hal_init()` は FreeRTOS オブジェクト生成のみで割り込み構成に無関係のため呼ばない。`jlink_console.c`: `vTaskDelay(1)`×4→`tk_dly_tsk(1)`、`taskENTER/EXIT_CRITICAL`×3→**割り込みマスク `DI`/`EI`**（ISR と共有する `s_out_of_band_received[]` 保護のため `tk_dis_dsp` 不可）、`<assert.h>` 明示追加。`usrcmd.c`: `vTaskDelay(pdMS_TO_TICKS(100))`→`tk_dly_tsk(100)`、`tskKERNEL_VERSION_NUMBER`→`"uT-Kernel 3.0"`（reset/version 表示のみ。lvgl/camera/ai サブコマンドは R-005 以降）。`led_ctrl.c`: FreeRTOS ソフトウェアタイマ→uT-Kernel 周期ハンドラ（`tk_cre_cyc`/`tk_sta_cyc`/`tk_stp_cyc`/`tk_del_cyc`、LED ごと 1 ハンドラ・`exinf` で index 伝達・`TA_HLNG\|TA_STA\|TA_PHS`、`tk_set_cyc` 不在のため interval 変更は削除→再生成）。`config_func.h` は R-003 で必要機能（cyc/sem/mtx/flg）保持済みで変更不要。7.2 実装メモ・7.1 末尾「R-004 での注意」を確定内容で更新。**実機確認（ntshell 起動・mr/md/mw/led 各コマンド・LED blink）はユーザー実施待ち** |
 | 2026-06-11 | R-003 | **ブート・OS 起動を μT-Kernel 3.0 へ移行（最小構成）**。採用方式を**方式A**に確定（`src/hal_warmstart.c` の `R_BSP_WarmStart(POST_C)` 末尾で `knl_start_mtkernel()` を呼び、FreeRTOS `main()`/`vTaskStartScheduler()` に到達させない。切替マクロ `MIMAMORI_USE_MTKERNEL_BOOT` で切り戻し可）。`src/usermain.c` を新規作成し、BSP2 の WEAK `usermain()` を強い定義で上書き ― LED 点滅タスク（`tk_cre_tsk`+`tk_sta_tsk`、`vTaskDelay`→`tk_dly_tsk(500)`）生成と `tm_printf` 起動ログ、自身は `tk_slp_tsk(TMO_FEVR)`。`ra_gen/` 無編集で既存 FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）を `main()` 未到達により無効化。`g_hal_init()` は最小構成で不要（LED=BSP 直接 / `tm_printf`=SCI8 直接）。7.1 実装メモに方式 A 選定理由・`usermain` 配置・HAL 一度きり保証の移設方針・`USE_OBJECT_NAME=0` による `T_CTSK.dsname` 不在の注意・**SCI8 競合確認結果**（`tm_com.c` と `jlink_console.c`(`channel=8`) が同一 SCI8 を共有。R-003 は ntshell 未起動で非競合、R-004 で一本化方針が必要）を記録。実機 LED 点滅・シリアル出力確認はユーザー実施 |
