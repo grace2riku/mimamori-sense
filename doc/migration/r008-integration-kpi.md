@@ -168,7 +168,7 @@ KPI 定義の出典は `doc/product-requirements.md` 3.1 定量的指標（`:102
 
 | ID | KPI | 合格基準 | 出典（要件） | 測定方法 | 測定値 | 判定 |
 |----|-----|----------|--------------|----------|--------|------|
-| KPI-01 | フレームレート（F-001/F-002） | **30fps 以上** | PR 3.1 `:105` | 全機能同時動作で `camera status` の FPS（`camera_framebuffer.c` の 1 秒窓 FPS、`:170`）。表示更新側は LVGL refresh（`LV_DEF_REFR_PERIOD=16ms`、`lv_conf_user.h:139`） | 未測定 | 未判定 |
+| KPI-01 | フレームレート（F-001/F-002） | **30fps 以上**（**表示側 FPS で判定**） | PR 3.1 `:105` | 全機能同時動作で **3 系統を測る**: ①表示更新 FPS = `camera display` の `Display FPS`（`camera_display.c:337-338`）、②描画レンダ FPS = `display dbuf` の `Render FPS`（`glcdc_port.c:503-504`、Vsync Rate=`:498-499`）、③参考にキャプチャ FPS = `camera status`（`camera_framebuffer.c:170` の 1 秒窓）。F-001「カメラ表示の滑らかさ」は**①②（表示/レンダ側）を主判定**とする（③のみ 30fps でも①②が落ちれば不合格） | 未測定 | 未判定 |
 | KPI-02 | AI 推論時間（F-003） | **5ms 以内** | PR 3.1 `:106` | `ai time` で NPU inference 時間（DWT サイクル計測、`ai_inference_thread_entry.c:575-584`）。R-007 単独で 5ms 達成済み（更新履歴 R-007）→ R-008 は**全機能同時動作下で再測定** | 未測定 | 未判定 |
 | KPI-03 | 転倒検出精度（F-003） | **検出率 90% 以上** | PR 3.1 `:107` | 転倒シナリオを N 回実施し、`fall status` の Confirmed 数 / 実施回数。データセット・回数は別途定義 | 未測定 | 未判定 |
 | KPI-04 | 誤検出率（F-003） | **5% 以下** | PR 3.1 `:108` | 非転倒シナリオ（歩行・着座・しゃがみ等）M 回中の誤 Confirmed 数 / M | 未測定 | 未判定 |
@@ -189,9 +189,20 @@ KPI 定義の出典は `doc/product-requirements.md` 3.1 定量的指標（`:102
   - 検証ルール上の裏取り: 「実効 ~50fps」は LVGL の自律リフレッシュ周期に基づく**設計上の見積もり**で
     あり、実機の描画負荷（Dave2D/SW 描画時間・SDRAM 帯域）に依存する。**実測 KPI-01 が一次情報**。
     コメントの 50fps は無負荷時の上限であって測定値ではない。
-- **カメラ FPS と表示 FPS の別**: `camera status` の FPS は**センサ/VIN フレーム取得**の FPS
-  （`camera_framebuffer.c:170` の 1 秒窓カウント）。LCD 表示の滑らかさは別途、目視 + LVGL の
-  描画完了周期で評価する。KPI-01（F-001/F-002）は両者を区別して記録する。
+- **キャプチャ FPS ／ 表示 FPS ／ レンダ FPS の別（KPI-01 の判定基準）**: 3 系統は別物であり、
+  混同すると KPI-01 を誤判定する。
+  - **キャプチャ FPS** = `camera status`（`camera_framebuffer.c:170` の 1 秒窓）。センサ/VIN の
+    フレーム取得レートで、**表示の滑らかさは保証しない**。
+  - **表示更新 FPS** = `camera display` の `Display FPS`（`camera_display.c:337-338`、`s_fps`）。
+    カメラ画像を LCD へ反映した実効更新レート。
+  - **レンダ FPS / Vsync Rate** = `display dbuf`（`glcdc_cmd_dbuf()`、`glcdc_port.c:432`）の
+    `Render FPS`（バッファスワップ数の 1 秒差、`:503-504`）と `Vsync Rate`（`:498-499`）。
+    LVGL が毎フレーム invalidate しないと Render FPS は Vsync Rate（~59Hz）より低くなる
+    （コメント `glcdc_port.c:480-484`）。
+  - **判定**: F-001「カメラ表示の滑らかさ」の KPI-01 は **表示更新 FPS とレンダ FPS（①②）を
+    主判定**とする。VIN キャプチャが 30fps でも AI 並走で表示/描画パスが 30fps 未満に落ちる
+    ケース（R-007 の 20fps 懸念 = I-18）を**キャプチャ FPS だけでは検出できない**ため、
+    `camera status` の値のみで合格としないこと。3 系統すべてを 5. の表に記録する。
 
 ---
 
