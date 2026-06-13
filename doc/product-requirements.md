@@ -10,6 +10,11 @@
 - EK-RA8P1に付属しているカメラで人を認識し、異常を検出する
 - RTOSにμT-Kernel 3.0を使用する（TRONプログラミングコンテスト必須要件）
   - 2026/2/15現在、EK-RA8P1向けのμT-Kernel 3.0は未サポートのため移植が必要
+  - **状態（2026/6/13）**: FreeRTOS → μT-Kernel 3.0（BSP2 v1.00.04）への移植を実装完了
+    （R-001〜R-007）。ブート/NT-Shell/カメラ/LCD(LVGL)/AI 推論を CPU0 上で μT-Kernel 化済み。
+    移行方針・差分は `doc/migration/mtk3-migration-guide.md`、統合動作確認・KPI 検証シートは
+    `doc/migration/r008-integration-kpi.md`（R-008）参照。**全機能同時動作の結合確認・KPI 実測は
+    実機（EK-RA8P1）でユーザーが実施予定**。CPU1（Cortex-M33）は本移植のスコープ外で FreeRTOS のまま。
 - TRONプログラミングコンテスト2026 RTOSアプリケーション 一般部門で優秀賞以上を受賞する
 
 ### 1.3 コンテスト情報
