@@ -144,7 +144,31 @@ MIPI/VIN フレーム完了、NPU IRQ）のレイテンシを過度に増やさ�
 | I-09 | タッチ入力 | `touch read` / 画面タッチで座標が取れる（`lv_port_indev.c`） | 未測定 |
 | I-10 | AI 推論実行 | `ai status` で Inference count が増加・状態遷移（`ai_cmd.c`） | 未測定 |
 | I-11 | 転倒検出 | `fall status` でステートマシン遷移（SUSPECTED/COOLDOWN/Confirmed） | 未測定 |
-| I-12 | LED コマンド | `led <id> blink` で周期ハンドラ点滅（`led_ctrl.c:284`） | 未測定 |
+| I-12 | LED コマンド | **`led 2 blink`**（LED3/Red）で周期ハンドラ点滅（`tk_cre_cyc`、`led_ctrl.c:284`）。`led list` で状態が `BLINKING` になること。⚠ **id 0/1 は使用不可**（下記注記参照） | 未測定 |
+
+> **I-12 で `led 2` を使う理由（LED id と使用主体の対応）**
+>
+> | `led` id | 名称/色 | ピン | 常時書き込む主体 |
+> |---|---|---|---|
+> | 0 | LED1 / Blue | P600 | **CPU0** `blink_task`（`usermain.c:126`）＝ I-05 で点滅中 |
+> | 1 | LED2 / Green | P303 | **CPU1** `blinky_thread_entry`（`blinky_thread_entry.c:57`） |
+> | 2 | LED3 / Red | PA07 | **なし（空き）** → I-12 はこれを使う |
+>
+> この競合関係の経緯（R-004 の実機確認で発覚し、移行前の挙動へ復元した対処）は**手順書 7.2
+> 「`blink_task` と `led` コマンドの LED 競合解消」がマスタ**。本表は実施時の参照用の再掲。
+> id とピンの対応根拠: BSP 配列 `{P600, P303, PA07}`（`board_leds.c:37-42`）と `led_ctrl.c` の表
+> （`:58-61`）が同じ並びのため、`led` コマンドの id ＝ BSP インデックス。両コアが書くのは
+> `leds.p_leds[_RA_CORE]`（CPU0=0 / CPU1=1）で、`BSP_NUMBER_OF_CORES (2)` によりこのマルチコア枝が
+> **コンパイル時**に選択される（実行中に切り替わらない）。
+>
+> 実施上の注意:
+> - **id 0/1 はコマンド自体は成功表示する**（`LED_COUNT=3`、`led_ctrl.h:33` により id 0〜2 が有効）が、
+>   500ms 以内に上書きされるため見た目に反映されない。「コマンドが効かない」ではなく「上書きされる」。
+> - 特に `led 0 blink` / `led 1 blink` は周期ハンドラと既存の点滅ループが同じピンを非同期に書き合い、
+>   点滅が不規則になって**判定に使えない**ため実施しないこと。
+> - CPU1 側は FreeRTOS のまま（`xTaskCreateStatic`、`e2studio_CPU1/ra_gen/blinky_thread.c:29`）なので、
+>   LED2(Green) の点滅は μT-Kernel の動作証拠にならない。I-12（`led 2 blink`）は CPU0 側の `tk_cre_cyc`
+>   による**周期ハンドラ**を検証する項目で、I-05（`tk_dly_tsk` ループの**タスク**）とは別機構の確認にあたる。
 
 ### 4.3 リソース競合・デッドロック・優先度逆転の確認観点
 
