@@ -137,14 +137,14 @@ MIPI/VIN フレーム完了、NPU IRQ）のレイテンシを過度に増やさ�
 
 | # | 確認項目 | 手順 / 期待値 | 結果 |
 |---|----------|---------------|------|
-| I-05 | LED 点滅（blink） | LED1(Blue) が **500ms ごとにトグル**（点灯 500ms ＋消灯 500ms ＝ **フル点滅周期は約 1 秒**）。`blink_task` はトグル後に `tk_dly_tsk(500)`（`usermain.c:133-138`） | 未測定 |
-| I-06 | NT-Shell 応答 | シリアルで `help` がコマンド一覧を返す（`usrcmd.c:137-153`） | 未測定 |
-| I-07 | カメラフレーム取得 | `camera status` で Frame Complete / FPS が増加（`vin_port.c:515`） | 未測定 |
-| I-08 | LCD 表示 | カメラ画像が LCD に表示される（`display status` で状態確認） | 未測定 |
-| I-09 | タッチ入力 | `touch read` / 画面タッチで座標が取れる（`lv_port_indev.c`） | 未測定 |
-| I-10 | AI 推論実行 | `ai status` で Inference count が増加・状態遷移（`ai_cmd.c`） | 未測定 |
-| I-11 | 転倒検出 | `fall status` でステートマシン遷移（SUSPECTED/COOLDOWN/Confirmed） | 未測定 |
-| I-12 | LED コマンド | **`led 2 blink`**（LED3/Red）で周期ハンドラ点滅（`tk_cre_cyc`、`led_ctrl.c:284`）。`led list` で状態が `BLINKING` になること。⚠ **id 0/1 は使用不可**（下記注記参照） | 未測定 |
+| I-05 | LED 点滅（blink） | LED1(Blue) が **500ms ごとにトグル**（点灯 500ms ＋消灯 500ms ＝ **フル点滅周期は約 1 秒**）。`blink_task` はトグル後に `tk_dly_tsk(500)`（`usermain.c:133-138`） | **NG（調査中）**<br>2026-07-26: LED1 が LED2(Green, CPU1 FreeRTOS 500ms) より**明らかに速い**。コード上は同一周期のはずで未解明（→ 4.4） |
+| I-06 | NT-Shell 応答 | シリアルで `help` がコマンド一覧を返す（`usrcmd.c:137-153`） | **OK**<br>2026-07-26: 全コマンド（camera/display/touch/ai/fall/led）が応答 |
+| I-07 | カメラフレーム取得 | `camera status` で Frame Complete / FPS が増加（`vin_port.c:515`） | **OK（撮像）**<br>2026-07-26: Frames +967 / Frame Complete +967、エラー統計は全 0。⚠ ただし `FPS` 表示と `Status` 表示にバグ（→ 4.4） |
+| I-08 | LCD 表示 | カメラ画像が LCD に表示される（`display status` で状態確認） | **OK（表示）**<br>2026-07-26: `camera display` Active=Yes / Update Count +90、`display dbuf` Underflow=0。⚠ Display FPS は 20 で KPI-01 未達（→ KPI-01） |
+| I-09 | タッチ入力 | `touch read` / 画面タッチで座標が取れる（`lv_port_indev.c`） | **OK**<br>2026-07-26: `touch mon 10` で PRESSED/CONTACT/RELEASED と座標を取得（54 reads / 10s） |
+| I-10 | AI 推論実行 | `ai status` で Inference count が増加・状態遷移（`ai_cmd.c`） | **OK**<br>2026-07-26: Inference count 22221→22407 (+186)、ETHOSU_INIT/AI_INIT=SET、RESULT_UPD が SET へ遷移 |
+| I-11 | 転倒検出 | `fall status` でステートマシン遷移（SUSPECTED/COOLDOWN/Confirmed） | **OK**<br>2026-07-26: `fall log` に NORMAL→SUSPECTED→CONFIRMED→COOLDOWN→NORMAL を記録（frame 25953-26966）。⚠ 誤検出懸念（→ KPI-04） |
+| I-12 | LED コマンド | **`led 2 blink`**（LED3/Red）で周期ハンドラ点滅（`tk_cre_cyc`、`led_ctrl.c:284`）。`led list` で状態が `BLINKING` になること。⚠ **id 0/1 は使用不可**（下記注記参照） | **OK**<br>2026-07-26: `led 2 blink`→`BLINKING` 表示・`led list` 反映・500ms 目視確認、`led 2 off` で停止、`led 2 blink 100` で間隔変更が反映 |
 
 > **I-12 で `led 2` を使う理由（LED id と使用主体の対応）**
 >
@@ -184,6 +184,78 @@ MIPI/VIN フレーム完了、NPU IRQ）のレイテンシを過度に増やさ�
 > I-18 は R-007 時点で残された唯一の KPI 懸念。R-008 の主眼は「全機能同時動作で 30fps KPI を
 > 満たすか」の実測判定（→ 5. KPI-01）と、満たさない場合の調整方針（→ 6.）。
 
+### 4.4 実機確認（2026-07-26）で判明した不具合
+
+チェックリスト実施の結果、機能そのものは動作するが**表示値・タイミングに 4 件の問題**が判明した。
+いずれも別 Issue で対応する。
+
+#### D-01: `camera status` の FPS が約 2 倍に過大計上される（I-07）
+
+実測比率が決定的: Frame Complete +967 に対し End of Frame +484（**ちょうど 2.00 倍**）、
+Notify Events +1934（End of Frame の 4.00 倍）。＝ 実フレーム 1 枚あたり ISR が約 4 回発火し、
+そのうち 2 回で `frame_complete` ビットが立っている。
+
+原因は FSP のビット意味論。`vin_common_isr` は `R_VIN->INTS` を**その時点のステータス
+スナップショット**として読む（`ra/fsp/src/r_vin/r_vin.c:386`）。同 `:399` のコメントに
+「FOS, ARES, FIS2 are cleared by writing '1'. **Other bits are status/state, updated by the
+module.**」とあるとおり、`frame_complete` は割り込みごとにラッチ・クリアされるフラグでは
+**なく状態ビット**である。一方 `vin_port.c:445-446` は NOTIFY コールバックのたびに
+「その瞬間ビットが立っていれば加算」しているため 1 フレームを複数回数える。
+同じ経路で `camera_framebuffer_set_latest()`（`vin_port.c:461`）も呼ばれるため、
+FPS カウンタ（`camera_framebuffer.c:168-193`）も同様に重複する。
+
+→ **実キャプチャレートは表示値の約 1/2**（実測 65 → 実際は約 32.5fps）。OV5640 の 30fps 設定と整合。
+KPI-01 の測定方法④はこの前提で読むこと。
+
+#### D-02: `camera status` の `Status` が常に "Not initialized"（I-07）
+
+`s_vin_status` を `CAPTURING` にするのは `vin_port_start()` 内（`vin_port.c:238`）だけだが、
+実際のキャプチャ起動は `camera_thread_entry.c:468` が `R_VIN_CaptureStart()` を直接呼ぶ経路
+（`mipi_port.c:1993` のコメントも同旨）。状態変数が二重管理で更新されず、動作中でも
+"Not initialized" と表示される。実態は `VIN Open: Yes` / `HW State: IN_PROGRESS` が示す。表示のみの問題。
+
+#### D-03: GLCDC クロック定数が誤り（`display status` の表示値が不正）（I-08）
+
+`glcdc_port.h:134` は `GLCDC_LCDCLK_HZ (200000000UL) /* LCDCLK = PLL1R(400MHz) / 2 = 200MHz */`
+としているが、**実際の LCDCLK 源は PLL1R ではなく PLL2R**:
+
+- `ra_gen/bsp_clock_cfg.h:57` … `BSP_CFG_LCDCLK_SOURCE = BSP_CLOCKS_SOURCE_CLOCK_PLL2R`
+- `:27` … `BSP_CFG_PLL2R_FREQUENCY_HZ (480000000)`、`:58` … `LCDCLK_DIV = /2` → **LCDCLK = 240MHz**
+- パネル分周 `/4`（`ra_gen/common_data.c:664`）→ **ピクセルクロック 60MHz**（定義は 50MHz、`glcdc_port.h:136`）
+- 期待リフレッシュレート = 60MHz ÷ (1344 × 635)（`common_data.c:724-730`）＝ **70.30 Hz**
+
+実測 `Vsync Rate: 71 Hz` は**この 70.30Hz と 1% 以内で一致しており正しい**。
+影響は `display status` の表示値のみ（`glcdc_port.c:296` `:298` `:1066` `:1086`）で描画動作には影響しない。
+
+> **副産物（重要）**: `display dbuf` の測定窓は `tk_dly_tsk(1000)`（`glcdc_port.c:492`）である。
+> 理論値 70.30Hz に対し実測 71 ということは測定窓 ≒ 1.010 秒であり、これは
+> `knl_timer_insert_reltim()` の `event->time = knl_current_time + tmout + TIMER_PERIOD`
+> （`CNF_TIMER_PERIOD = 10`、`mtk3_bsp2/config/config.h:39`）と厳密に一致する。
+> **＝ μT-Kernel の時間基準は実時間どおりに動作している**ことの裏付けになる。
+
+#### D-04: LED1 の点滅周期が仕様より速い（I-05・未解明）
+
+LED1(Blue) が LED2(Green) より明らかに速い。しかし静的解析では**3 つとも 500ms トグルになるはず**:
+
+| LED | 駆動 | 周期の根拠 |
+|---|---|---|
+| LED1 Blue | CPU0 `blink_task` | `tk_dly_tsk(500)`（`usermain.c:138`）→ +TIMER_PERIOD で実質 510ms |
+| LED2 Green | CPU1 FreeRTOS blinky | `vTaskDelay(configTICK_RATE_HZ / 2)`（`blinky_thread_entry.c:73`）＝ 定義上 500ms |
+| LED3 Red | CPU0 `led 2 blink` | `tk_cre_cyc` `cyctim = interval_ms`（`led_ctrl.c:255,263`）、ハンドラは 1 回 1 トグル（`:99-126`） |
+
+P600 を書く経路は `usermain.c:126` のみ（`blink_task` は 1 度だけ生成: `usermain.c:307,314`）。
+CPU1 は `BSP_NUMBER_OF_CORES (2)`（`e2studio_CPU1/ra_cfg/.../bsp_mcu_device_pn_cfg.h:6`）のため
+`p_leds[1]`=P303 のみを書き、P600 には触れない。また D-03 のとおり時間基準自体は正常。
+**コードと観測が矛盾しており、静的解析だけでは原因を特定できていない。**
+
+切り分け手順（次回実機時）:
+1. `led 2 blink`（500ms）を実行し、**LED1(Blue) と LED3(Red) を並べて比較**する。
+   - LED1 が LED3 より速い → 同一コア・同一時間基準なので、原因は `tk_dly_tsk` 経路または
+     `blink_task` のループ側に限定される
+   - LED1 ≒ LED3 で両方が LED2 より速い → CPU0 と CPU1 の時間基準のズレを疑う（D-03 の
+     裏付けと矛盾するため、その場合は Vsync 実測から再検証する）
+2. 併せて LED1 のトグル 20 回をストップウォッチで計測（正常なら約 10 秒）
+
 ---
 
 ## 5. KPI 検証シート（ユーザー実機実施）
@@ -192,10 +264,10 @@ KPI 定義の出典は `doc/product-requirements.md` 3.1 定量的指標（`:102
 
 | ID | KPI | 合格基準 | 出典（要件） | 測定方法 | 測定値 | 判定 |
 |----|-----|----------|--------------|----------|--------|------|
-| KPI-01 | フレームレート（F-001/F-002） | **30fps 以上**（表示の滑らかさ） | PR 3.1 `:105` | ⚠ **現状のファームには物理的な描画完了フレーム数を数える計装がない**（下記「KPI-01 で使える指標の限界」参照）。当面は次の複合判定とする: ①`camera display` の `Display FPS`（`camera_display.c:337-338`）＝**表示更新要求**レート、②`display dbuf` の `Vsync Rate`（`glcdc_port.c:498-499`）と `Underflow count`（**0 であること**＝SDRAM 帯域不足なし）、③**目視でカクつき・ティアリングが無いこと**、④参考にキャプチャ FPS = `camera status`（`camera_framebuffer.c:170`）。**②の `Render FPS` は毎 Vsync カウントのため合格判定に使わない**（限界参照） | 未測定 | 未判定 |
+| KPI-01 | フレームレート（F-001/F-002） | **30fps 以上**（表示の滑らかさ） | PR 3.1 `:105` | ⚠ **現状のファームには物理的な描画完了フレーム数を数える計装がない**（下記「KPI-01 で使える指標の限界」参照）。当面は次の複合判定とする: ①`camera display` の `Display FPS`（`camera_display.c:337-338`）＝**表示更新要求**レート、②`display dbuf` の `Vsync Rate`（`glcdc_port.c:498-499`。**期待値は約 70.3Hz**＝ピクセルクロック 60MHz ÷ (1344×635)。→ 4.4 D-03）と `Underflow count`（**0 であること**＝SDRAM 帯域不足なし）、③**目視でカクつき・ティアリングが無いこと**、④参考にキャプチャ FPS = `camera status`（`camera_framebuffer.c:170`）。**ただし④は約 2 倍に過大計上される**ので実値は表示の 1/2 として読む（→ 4.4 D-01）。**②の `Render FPS` は毎 Vsync カウントのため合格判定に使わない**（限界参照） | **2026-07-26**<br>①Display FPS = **20**<br>②Vsync 71Hz / Underflow **0**<br>④camera status FPS 65（実値 ≒ 32.5） | **未達（NG）**<br>①が 30fps に届かない。②の Underflow=0 より **SDRAM 帯域不足ではなく描画・転送側がボトルネック**。R-007 の I-18（AI 並走時 20FPS）が再現。→ 6. の調整方針を適用 |
 | KPI-02 | AI 推論時間（F-003） | **5ms 以内** | PR 3.1 `:106` | `ai time` の NPU inference 時間。⚠ **現状は整数 ms 切り捨て表示のみで 5ms 境界（5.000〜5.999ms）を判定できない**（下記「KPI-02 の計測粒度」参照）。厳密判定には μs/サイクル単位の計装追加が必要（別 Issue）。R-007 単独では 5ms 表示を確認済み（更新履歴 R-007）→ R-008 は**全機能同時動作下で再測定** | 未測定 | 未判定 |
 | KPI-03 | 転倒検出精度（F-003） | **検出率 90% 以上** | PR 3.1 `:107` | 転倒シナリオを N 回実施し、`fall status` の Confirmed 数 / 実施回数。データセット・回数は別途定義 | 未測定 | 未判定 |
-| KPI-04 | 誤検出率（F-003） | **5% 以下** | PR 3.1 `:108` | 非転倒シナリオ（歩行・着座・しゃがみ等）M 回中の誤 Confirmed 数 / M | 未測定 | 未判定 |
+| KPI-04 | 誤検出率（F-003） | **5% 以下** | PR 3.1 `:108` | 非転倒シナリオ（歩行・着座・しゃがみ等）M 回中の誤 Confirmed 数 / M | 未測定 | 未判定<br>⚠ 2026-07-26 の I-11 で `fall log` 32 エントリ中の大半が `NORMAL↔SUSPECTED` の往復（AR 1.31〜1.66 / score 0.52〜0.79）。撮影対象が管理されていないため判定不可だが、**誤検出率が高い可能性**があり管理シナリオでの測定が必須 |
 | KPI-05 | 転倒検出（確定）→**警報音**通知時間（F-004） | **10 秒以内** | PR 3.1 `:109`（F-004 定義 `:175-181`） | **起点＝転倒確定（`fall_detection_update()` が `CONFIRMED` に達し通知コールバックを発火した時点、`fall_detection_logic.c:163-172`）**、終点＝**警報音（F-004）**が鳴った時点。この区間を実測する。**⚠ F-004（警報音）は現状未実装のため本 KPI は測定不可**（下記「KPI-05 と F-004 未実装」参照）。画面表示オーバーレイ遅延は参考値（F-003 検出→表示）であって本 KPI ではない | 測定不可（F-004 未実装） | 未判定 |
 
 ### KPI 測定上の注意（コード事実に基づく）
@@ -242,12 +314,13 @@ KPI 定義の出典は `doc/product-requirements.md` 3.1 定量的指標（`:102
     `s_swap_count` は **VPOS（Vsync/line-detect）割り込みごとに無条件でインクリメント**される
     （`lvgl_glcdc_callback`、`glcdc_port.c:862`）。コメント自身が「Not every Vsync results in a
     buffer swap ... We increment on every Vsync for simplicity」と認めている（`:852-858`）。
-    よって `Render FPS` は実質 `Vsync Rate`（~59Hz）を反映するだけで、**LVGL が実際に描画を完了した
+    よって `Render FPS` は実質 `Vsync Rate`（**~70.3Hz**。2026-07-26 実測 71Hz。→ 4.4 D-03）を
+    反映するだけで、**LVGL が実際に描画を完了した
     フレーム数ではない**。`display dbuf` の説明コメント（`:480-484`）の「actual rendered FPS」表現は
     実装（毎 Vsync カウント）と食い違っており、合格判定の根拠にしてはならない。
   - ⚠ **訂正（前版の誤り）**: 前版（commit 7dda415）は KPI-01 を「表示更新 FPS とレンダ FPS を主判定」と
     したが、上記のとおり**レンダ FPS は Vsync レートを数えているだけ**で、LCD が 30fps で描画できて
-    いなくても常に ~59 を返す。表示更新 FPS も**更新要求**の回数であり物理提示ではない。両者が 30 を
+    いなくても常に ~70 を返す（2026-07-26 実測 71）。表示更新 FPS も**更新要求**の回数であり物理提示ではない。両者が 30 を
     超えても実際の描画が 30fps 未満というケースを検出できない（P1 指摘）。
   - **当面の判定方針**: 物理描画 FPS の計装が入るまでは、①表示更新 FPS（更新要求レート）を目安に、
     ②`Underflow count = 0`（`display dbuf`、`glcdc_port.c` の `s_underflow_count`、`:866-879`。
