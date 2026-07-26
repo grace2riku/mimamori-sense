@@ -137,7 +137,7 @@ MIPI/VIN フレーム完了、NPU IRQ）のレイテンシを過度に増やさ�
 
 | # | 確認項目 | 手順 / 期待値 | 結果 |
 |---|----------|---------------|------|
-| I-05 | LED 点滅（blink） | LED1(Blue) が **500ms ごとにトグル**（点灯 500ms ＋消灯 500ms ＝ **フル点滅周期は約 1 秒**）。`blink_task` はトグル後に `tk_dly_tsk(500)`（`usermain.c:133-138`） | **NG（調査中）**<br>2026-07-26: LED1 が LED2(Green, CPU1 FreeRTOS 500ms) より**明らかに速い**。コード上は同一周期のはずで未解明（→ 4.4） |
+| I-05 | LED 点滅（blink） | LED1(Blue) が **500ms ごとにトグル**（点灯 500ms ＋消灯 500ms ＝ **フル点滅周期は約 1 秒**）。`blink_task` はトグル後に `tk_dly_tsk(500)`（`usermain.c:133-138`） | **NG → 原因特定・修正済み（再測定待ち）**<br>2026-07-26: LED1 が**明らかに速い**。追加観測（リセット後 3 秒間は正常、以降だけ速い）から原因を特定。**AI 推論インジケータが同じ P600 を叩いていた**（→ 4.4 D-04）。修正 PR #177 で `ENABLE_INFERENCE_RUNNING_LED` を無効化。**リビルド後の再測定で OK 化の見込み** |
 | I-06 | NT-Shell 応答 | シリアルで `help` がコマンド一覧を返す（`usrcmd.c:137-153`） | **OK**<br>2026-07-26: 全コマンド（camera/display/touch/ai/fall/led）が応答 |
 | I-07 | カメラフレーム取得 | `camera status` で Frame Complete / FPS が増加（`vin_port.c:515`） | **OK（撮像）**<br>2026-07-26: Frames +967 / Frame Complete +967、エラー統計は全 0。⚠ ただし `FPS` 表示と `Status` 表示にバグ（→ 4.4） |
 | I-08 | LCD 表示 | カメラ画像が LCD に表示される（`display status` で状態確認） | **OK（表示）**<br>2026-07-26: `camera display` Active=Yes / Update Count +90、`display dbuf` Underflow=0。⚠ Display FPS は 20 で KPI-01 未達（→ KPI-01） |
@@ -245,62 +245,62 @@ KPI-01 の測定方法④はこの前提で読むこと。
 > - μT-Kernel の時間基準そのものを測るなら `led 2 blink 1000` を実行し、
 >   **トグル 60 回の所要時間をストップウォッチで計測**する（正常なら約 60 秒）
 
-#### D-04: LED1 の点滅周期が仕様より速い（I-05・未解明）→ #175
+#### D-04: LED1 の点滅周期が仕様より速い（I-05）→ **原因特定・修正済み** #175 / PR #177
 
-LED1(Blue) が LED2(Green) より明らかに速い。しかし静的解析では**3 つとも 500ms トグルになるはず**:
+**原因**: μT-Kernel の周期精度の問題ではなく、**AI 推論の実行中インジケータと `blink_task` が
+同じ GPIO（P600）を奪い合っていた**。2026-07-26 の追加観測（リセット直後の約 3 秒間は正常で、
+以降だけ速くなる。NT-Shell のコマンドは未実行）から特定した。
 
-| LED | 駆動 | 周期の根拠 |
+| # | 事実 | 出典 |
 |---|---|---|
-| LED1 Blue | CPU0 `blink_task` | `tk_dly_tsk(500)`（`usermain.c:138`）→ +TIMER_PERIOD で実質 510ms |
-| LED2 Green | CPU1 FreeRTOS blinky | `vTaskDelay(configTICK_RATE_HZ / 2)`（`blinky_thread_entry.c:73`）＝ 定義上 500ms |
-| LED3 Red | CPU0 `led 2 blink` | `tk_cre_cyc` `cyctim = interval_ms`（`led_ctrl.c:255,263`）、ハンドラは 1 回 1 トグル（`:99-126`） |
+| 1 | `BOARD_RA8P1_EK` が定義される（`hal_data.h` 経由で `common_util.h` へ届く） | `ra/board/ra8p1_ek/board.h:32` |
+| 2 | よって `#elif` 枝が有効となり **`LED1_PIN = BSP_IO_PORT_06_PIN_00`（P600）** | `common_util.h:25-28` |
+| 3 | `ENABLE_INFERENCE_RUNNING_LED` が `(1)` | `ai_application/application_config.h:42` |
+| 4 | よって `INFERENCE_START/END_INDICATE_LED` が `LED1_ON` / `LED1_OFF` に展開 | `common_util.h:43-45` |
+| 5 | 実体は `R_IOPORT_PinWrite(NULL, LED1_PIN, HIGH/LOW)` | `common_util.h:36-37` |
+| 6 | **推論ループ内**でこれを実行（前処理〜推論〜後処理〜転倒判定の全区間を囲む） | `ai_inference_thread_entry.c:549` / `:618` |
+| 7 | `blink_task` は同じ P600 を 500ms ごとにトグル | `usermain.c:126` |
 
-`blink_task` は 1 度だけ生成される（`usermain.c:307,314`）。
-CPU1 は `BSP_NUMBER_OF_CORES (2)`（`e2studio_CPU1/ra_cfg/.../bsp_mcu_device_pn_cfg.h:6`）のため
-`p_leds[1]`=P303 のみを書き、P600 には触れない。
+**「3 秒」の境界は AI スレッドの初期化完了時刻に対応する**:
 
-> ⚠ **訂正（Codex レビュー指摘、2026-07-26）**: 前版は「P600 を書く経路は `usermain.c:126` のみ」と
-> 書いたが**誤り**。`led_ctrl` を呼び出すコードを grep してコンパイル時の呼び出し元が無いことだけを
-> 確認しており、**NT-Shell コマンド自身が実行時の呼び出し元である**ことを見落としていた。
->
-> **`led 0 blink` を一度でも実行すると、P600 を書く第 2 の経路が常駐する**:
-> `led_ctrl_blink()`（`led_ctrl.c:255`）が `tk_cre_cyc` で周期ハンドラを生成し、
-> `led_blink_cyc_handler()`（`:99-126`）が `led_set_pin(id, ...)` → `R_IOPORT_PinWrite` で
-> **`s_led_info[0].pin` = P600 を書く**（`led_ctrl.c:59`, `led_set_pin` 実装）。
-> このハンドラは **`led 0 off`（`led_stop_blink_cyc`）を実行するかリブートするまで残り続ける**。
->
-> **これは「LED1 が速い／不規則」の有力な原因候補**である。`blink_task` の 500ms トグルと
-> 周期ハンドラのトグルが非同期に重なれば、見かけの点滅は速くも不規則にもなる。
-> D-04 の切り分けは、まずこの経路を排除してから行うこと（下記手順 0.）。時間基準については D-03 の副産物として
-**数十%オーダーの狂いが無いこと**までは言えるが（量子化誤差込みで −0.4%〜+2.4% の範囲）、
-**「正確である」ことの証明にはなっていない**（Codex レビュー指摘により訂正、2026-07-26）。
-目視で「明らかに速い」と分かる差は通常 20% 以上を要するため時間基準が主因である可能性は低いが、
-**排除はできていない**ため下記 3. の直接計測を必ず行うこと。
-**コードと観測が矛盾しており、静的解析だけでは原因を特定できていない。**
+- 0〜3 秒: 初期化中（Ethos-U 初期化・モデルロード・`tk_wai_flg(IMAGE_READY)` 待ち）で
+  推論ループに入っていない → P600 を書くのは `blink_task` のみ → **正常な 1 秒周期**
+- 3 秒以降: 推論ループ突入 → 数十 Hz で P600 が重畳 → **見かけの周期が短くなる**
 
-切り分け手順（次回実機時）:
+**μT-Kernel 移行に起因する不具合ではない**。RUHMI 顔認識サンプル由来の `common_util.h` を
+そのまま移植したことで、サンプルの「LED1 = 推論インジケータ」と本プロジェクトの
+「LED1 = `blink_task` の生存表示」が衝突したもの。FreeRTOS 時代から同じ構造だったと考えられる。
 
-0. **【最初に必ず実施】LED コマンド由来の周期ハンドラを排除する。**
-   **リブートする**か、`led 0 off` を実行して P600 の周期ハンドラを確実に停止させる
-   （`led_stop_blink_cyc`、`led_ctrl.c`）。`led list` で id 0 が `BLINKING` でないことを確認する。
-   - この状態でも LED1 が速いなら、原因は `blink_task` 側にある
-   - **リブート直後は正常な速さに見えるなら、原因は過去に実行した `led 0 blink` の残存ハンドラ**
-     であり、実装上の周期バグではない（この場合は D-04 をクローズし、
-     「id 0/1 に blink を使わない」という運用注記＋ガード実装の検討に切り替える）
-1. `led 2 blink`（500ms）を実行し、**LED1(Blue) と LED3(Red) を並べて比較**する。
-   - LED1 が LED3 より速い → 同一コア・同一時間基準どうしの比較なので、原因は
-     `tk_dly_tsk` 経路または `blink_task` のループ側に限定される
-   - LED1 ≒ LED3 で両方が LED2 より速い → CPU0（μT-Kernel）と CPU1（FreeRTOS）の
-     時間基準のズレを疑う
-2. **LED1 のトグル 60 回をストップウォッチで計測**（正常なら約 30 秒）。
-   20 回だと人間の反応時間（±0.3 秒程度）が 3% の誤差になるため、60 回以上で測る
-3. **`led 2 blink 1000` でトグル 60 回を計測**（正常なら約 60 秒）。
-   これが μT-Kernel の時間基準そのものの直接計測になる。2. と 3. の比により
-   「`tk_dly_tsk` 固有の問題」か「時間基準全体のズレ」かを定量的に切り分けられる
+**修正（PR #177）**: `ENABLE_INFERENCE_RUNNING_LED` を `(0)` にして既定で無効化。
+推論の実行状況は `ai status`（Inference count）で確認できるため LED を占有する必要がない。
+オシロで推論周期を観測したいときだけ `(1)` に戻す運用とし、副作用をコメントに明記した。
 
-> ⚠ 1. の目視比較だけで結論を出さないこと。D-03 の Vsync 測定は量子化誤差のため
-> 時間基準を ±2.4% 程度までしか絞れておらず（→ D-03 の訂正）、**時間基準のズレを
-> 排除できていない**。必ず 2. / 3. のストップウォッチ計測で定量値を取ること。
+**実機での確認事項（PR #177 マージ前）**: リビルド後、**リセットから 3 秒経過しても LED1 が
+1 秒周期を保つ**こと。併せて `ai status` の Inference count が従来どおり増加すること。
+確認できれば I-05 は OK となる。
+
+##### 調査の教訓（同種の見落としを防ぐため）
+
+P600 を書く経路は最終的に **3 つ**あった。前版はこれを「`usermain.c:126` のみ」と誤って断定していた。
+
+| 経路 | 実体 | 見落とした理由 |
+|---|---|---|
+| ① `blink_task` | `R_BSP_PinWrite`（`usermain.c:126`） | — |
+| ② `led` コマンドの周期ハンドラ | `led_ctrl_blink()` → `led_blink_cyc_handler()` → `led_set_pin()`（`led_ctrl.c:255`, `:99-126`, `:121`） | `led_ctrl` の**コンパイル時**呼び出し元だけを grep し、**NT-Shell コマンド自身が実行時の呼び出し元**である点を見落とした（Codex 指摘） |
+| ③ AI 推論インジケータ | `LED1_ON/OFF` → `R_IOPORT_PinWrite`（`common_util.h:36-37`） | `R_BSP_PinWrite` だけを grep し、**別 API（`R_IOPORT_PinWrite`）を使う別系統のマクロ**を見逃した |
+
+**チェック観点**: GPIO の書き込み元を調べるときは、(a) `R_BSP_PinWrite` / `R_IOPORT_PinWrite` /
+`R_BSP_PinCfg` など**複数の API** を横断して grep する、(b) 関数名だけでなく**マクロ経由の展開**も追う、
+(c) コンパイル時の呼び出し元だけでなく**シェルコマンド等の実行時経路**も候補に入れる。
+
+##### 副次的に判明したこと
+
+- `ENABLE_CAMERA_CAPTURE_RUNNING_LED` は `(0)`（`application_config.h:43`）のため、
+  LED2(P303) と CPU1 blinky の競合は発生していない。**ただし `(1)` にすると衝突する**。
+- **`ERROR_INDICATE_LED_ON = LED3_ON`** で `LED3_PIN = BSP_IO_PORT_10_PIN_07`（PA07）＝
+  **`led 2 blink` の対象と同じピン**（`common_util.h:29`, `:60`）。I-12 実施時はエラーが
+  出ていなかったため影響しなかったが、`ERROR_INDICATE` は `__BKPT(0)` を伴う（`:63`）ため
+  発生すればデバッガで停止する。**I-12 の結果を読むときはエラー未発生が前提**である点に注意。
 
 #### D-05: `Underflow count = 0` から SDRAM 帯域を無罪放免にしてはならない（測定解釈の誤り）
 
