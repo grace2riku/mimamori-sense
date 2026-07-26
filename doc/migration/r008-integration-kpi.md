@@ -540,9 +540,9 @@ FSP は `ra_gen/main.c` で `vTaskStartScheduler()`（`:112`）と
 | `xSemaphoreCreateCounting`（FSP common init sem） | `ra_gen/main.c:90/92` | リンクされるが**実行されない** | 同上（`main()` 未到達） |
 | 旧 FreeRTOS blinky（`vTaskDelay(configTICK_RATE_HZ/2)`） | `blinky_thread_entry.c:73` | **未改変・未実行**。機能は `usermain.c` の `blink_task` が代替 | `ra_gen/blinky_thread.c:74` から `blinky_thread_entry()` が参照されリンクには残るが、`ra_gen/blinky_thread.c:55` の `blinky_thread_func` を呼ぶのは `main()` 経由のみ。`main()` 未到達のため実行されない。**blinky だけはラッパ化せず原本のまま残置**（他スレッドと異なる点） |
 | 旧 FreeRTOS スレッドエントリ（ntshell/camera/lvgl/ai） | 各 `*_thread_entry.c` 末尾 | **薄いラッパとして残置**（実行されない） | `ra_gen/*_thread.c`（編集禁止）が旧シンボルを参照し、その鎖は `main()` から辿れるため**リンク時に解決が必要**。よって削除せず μT-Kernel タスク本体へ委譲するラッパを残す（例: `lvgl_thread_entry.c:276-289` のコメント）。実行はされない |
-| `freertos_hooks.c`（`vApplicationMallocFailedHook`） | `src/freertos_hooks.c:22` | リンクされるが**呼ばれない** | FreeRTOS のヒープ確保失敗時のみ呼ばれるフック。FreeRTOS スケジューラ未起動・`pvPortMalloc` 未使用のため発火しない。FreeRTOS 設定を残す間は残置可（手順書 3.2） |
+| `freertos_hooks.c`（`vApplicationMallocFailedHook`） | `src/freertos_hooks.c:22` | ⚠ **到達可能（残置物ではない）** | **訂正（Codex レビュー指摘、2026-07-26）**: 前版は「`pvPortMalloc` 未使用のため発火しない」としていたが**誤り**。Dave2D が FreeRTOS ヒープを実行時に使用しており、確保失敗時に本フックが呼ばれる（`heap_4.c:330-341`）。→ 下記 **7.3 FreeRTOS ヒープは実行時に使用中** を参照 |
 | `User_FreeRTOSConfig.h` | `src/User_FreeRTOSConfig.h` | 残置（trace フックは R-006 で削除済み） | R-006 で LVGL の `lv_freertos_task_switch_in/out` trace フック定義を削除済み（`lv_freertos.c` 空化による未定義シンボル回避。更新履歴 2026-06-12 R-006）。FreeRTOS 設定を残すために本ファイル自体は保持 |
-| `ra/aws/FreeRTOS/...`（FreeRTOS カーネル本体） | FSP 管理 | リンクされるが未実行 | FSP が FreeRTOS 設定に基づき配置。スケジューラ未起動のため未実行。`gc-sections` で未参照部は除去される |
+| `ra/aws/FreeRTOS/...`（FreeRTOS カーネル本体） | FSP 管理 | **一部は実行時に使用中**（スケジューラは未実行） | タスク管理・スケジューラは未起動のため未実行。ただし**ヒープ管理（`heap_4.c`）は Dave2D 経由で実行される**（→ 7.3）。`gc-sections` で除去されるのは真に未参照の部分のみ |
 | `ra/lvgl/lvgl/src/osal/lv_freertos.c` | FSP 管理 | **空コンパイル** | `#if LV_USE_OS == LV_OS_FREERTOS` ガード（手順書 3.4）。`lv_conf_user.h` で `LV_USE_OS=LV_OS_CUSTOM` のため中身がコンパイルされない。R-006a 案A（自作 OSAL）採用 |
 
 > 検証ルール（裏取り）注記:
@@ -555,7 +555,56 @@ FSP は `ra_gen/main.c` で `vTaskStartScheduler()`（`:112`）と
 >   `vTaskDelay(configTICK_RATE_HZ/2)`（`:73`）を保持し、機能は `usermain.c` の `blink_task`
 >   （`:92-140`）が μT-Kernel API で代替している、というコード状態に基づく。
 
-### 7.3 切り戻し手段（FreeRTOS ブートへ戻す）
+### 7.3 FreeRTOS ヒープは実行時に使用中（残置物ではない）
+
+> **訂正（Codex レビュー指摘、2026-07-26）**: 前版の 7.2 は `vApplicationMallocFailedHook` を
+> 「`pvPortMalloc` 未使用のため発火しない残置物」と分類していたが**誤り**だった。
+> **FreeRTOS のヒープ管理は Dave2D 経由で実行時に使われている**。
+
+**Dave2D のメモリ確保が `pvPortMalloc()` にコンパイルされる**（すべてコンパイル時分岐で確定）:
+
+| # | 条件 | 実際の値 | 出典 |
+|---|---|---|---|
+| 1 | `#if DRW_CFG_CUSTOM_MALLOC` → **偽** | `((0))` | `ra_cfg/fsp_cfg/r_drw_cfg.h:12` |
+| 2 | `#elif (BSP_CFG_RTOS == 2)` → **真** | `(2)`（`#if (RA_NOT_DEFINED) != (5)` が真の枝） | `ra_cfg/fsp_cfg/bsp/bsp_cfg.h:14-16` |
+| 3 | `#if configSUPPORT_DYNAMIC_ALLOCATION` → **真** | `(1)` | `ra_cfg/aws/FreeRTOSConfig.h:127-128` |
+| 4 | → `d1_allocmem()` は **`pvPortMalloc()`** を呼ぶ | — | `ra/fsp/src/r_drw/r_drw_memory.c:58-76`（該当行 `:64`） |
+
+**実行時の呼び出し元**（Dave2D のディスプレイリスト／テクスチャ確保）:
+`ra/tes/dave2d/src/dave_memory.c:28`、`:126`、`ra/tes/dave2d/src/dave_texture.c:746`。
+
+**確保失敗時**は `configUSE_MALLOC_FAILED_HOOK (1)`（`FreeRTOSConfig.h:37-38`）により
+`heap_4.c:330-341` が **`vApplicationMallocFailedHook()` を呼ぶ**（実装は `src/freertos_hooks.c:22`）。
+＝ **FreeRTOS スケジューラが起動していなくてもフックは到達可能**である。
+
+#### 影響
+
+- **FreeRTOS ヒープ領域が実際に消費されている**: `configTOTAL_HEAP_SIZE (262144)`＝**256KB**
+  （`FreeRTOSConfig.h:130-131`、`configAPPLICATION_ALLOCATED_HEAP (0)` のため heap_4 が `ucHeap[]` を確保）。
+  B-02（メモリオーバーフロー確認）ではこの 256KB が RAM 使用量に含まれる点に注意。
+- **将来 FreeRTOS を外す場合、ヒープの置換が必須**。単純に削除すると Dave2D の描画が確保失敗する。
+  代替は `DRW_CFG_CUSTOM_MALLOC` を 1 にして `d1_malloc`／`d1_freemem` を μT-Kernel の
+  メモリプール（`tk_cre_mpl` 等）や標準 `malloc` へ差し替える方法（`r_drw_memory.c:58-60` の第 1 分岐）。
+  **7.2 の一覧だけを見て「FreeRTOS は全部未実行だから消せる」と判断してはならない。**
+
+#### ⚠ 未検証の懸念: ヒープの排他が μT-Kernel 環境で機能しない可能性
+
+`heap_4.c` の `pvPortMalloc` / `vPortFree` は **`vTaskSuspendAll()` / `xTaskResumeAll()`**
+（`heap_4.c:220`, `:328`, `:565`, `:595`）で排他する。これは **FreeRTOS スケジューラの停止**による
+排他であり、**μT-Kernel のタスク間では排他にならない**（スケジューラ未起動のため
+`uxSchedulerSuspended` を増減するだけで、μT-Kernel のディスパッチは止まらない）。
+
+同時に確保が走りうる経路として、少なくとも次の 2 つが存在する:
+
+- Dave2D 描画スレッド（優先度 13、LVGL OSAL が生成）
+- NT-Shell（優先度 12）の `dave2d` コマンド（`dave2d test|bench`。`usrcmd.c:140` →
+  `port/dave2d_port.c:2464`）
+
+**この 2 経路が同時に `d1_allocmem` を呼ぶとヒープが壊れる可能性がある。**
+ただし本項は**コード読解に基づく懸念であり、実際に競合が発生するか（`dave2d` コマンドが
+確保を伴うか、描画中に実行しうるか）は未検証**である。別途調査が必要。
+
+### 7.4 切り戻し手段（FreeRTOS ブートへ戻す）
 
 `hal_warmstart.c:70` の `#define MIMAMORI_USE_MTKERNEL_BOOT (1)` を `0` にすると、橋渡し
 （起動コンストラクタ）が `#if` で無効化され（`hal_warmstart.c:72/141` のコンパイル時分岐）、
@@ -569,7 +618,7 @@ FSP は `ra_gen/main.c` で `vTaskStartScheduler()`（`:112`）と
 > よって `MIMAMORI_USE_MTKERNEL_BOOT=0` は「起動経路の切替」であって「完全な FreeRTOS 復帰」では
 > ない点に注意。
 
-### 7.4 今後の運用上の注意
+### 7.5 今後の運用上の注意
 
 - **FSP 再生成（Generate Project Content）後**: `ra_gen/` の FreeRTOS 生成コードが復活するが、
   方式A により実行されないため μT-Kernel 化のやり直しは原則不要。ただし手順書 6.2
