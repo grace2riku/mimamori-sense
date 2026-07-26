@@ -39,7 +39,17 @@
 #define ENABLE_CAMERA_INPUT                          (1) // 0: Disabled, 1: Enabled
 #define ENABLE_LCD_DISPLAY_OUTPUT                    (1) // 0: Disabled, 1: Enabled
 
-#define ENABLE_INFERENCE_RUNNING_LED                 (1) // 0: Disabled, 1: Enabled
+/* ENABLE_INFERENCE_RUNNING_LED は LED1(P600) を推論の実行中インジケータとして
+ * ON/OFF する（common_util.h: INFERENCE_START/END_INDICATE_LED →
+ * ai_inference_thread_entry.c の推論ループ内で使用）。
+ * しかし P600 は usermain.c の blink_task が 500ms ごとにトグルする
+ * μT-Kernel 生存確認用 LED と同一ピンであり、有効にすると両者が同じ GPIO を
+ * 奪い合って blink_task の点滅周期が観測できなくなる（#175）。
+ * 推論の実行状況は NT-Shell の `ai status`（Inference count）で確認できるため
+ * 既定は無効とする。オシロで推論周期・実行時間を観測したいときだけ (1) に戻すこと
+ * （その間は LED1 の点滅による生存確認ができなくなる点に注意）。 */
+#define ENABLE_INFERENCE_RUNNING_LED                 (0) // 0: Disabled, 1: Enabled
+/* LED2(P303) は CPU1(FreeRTOS) の blinky が点滅させるため、こちらも既定は無効。 */
 #define ENABLE_CAMERA_CAPTURE_RUNNING_LED            (0) // 0: Disabled, 1: Enabled
 
 #define ENABLE_CONSOLE_OUTPUT_SCREEN_CLEAR           (1) // 0: Disabled, 1: Enabled. If you'd like to keep a log data, set 0 (disabled).
