@@ -189,7 +189,7 @@ MIPI/VIN フレーム完了、NPU IRQ）のレイテンシを過度に増やさ�
 チェックリスト実施の結果、機能そのものは動作するが**表示値・タイミングに 4 件の問題**が判明した。
 いずれも別 Issue で対応する。
 
-#### D-01: `camera status` の FPS が約 2 倍に過大計上される（I-07）
+#### D-01: `camera status` の FPS が約 2 倍に過大計上される（I-07）→ #172
 
 実測比率が決定的: Frame Complete +967 に対し End of Frame +484（**ちょうど 2.00 倍**）、
 Notify Events +1934（End of Frame の 4.00 倍）。＝ 実フレーム 1 枚あたり ISR が約 4 回発火し、
@@ -207,14 +207,14 @@ FPS カウンタ（`camera_framebuffer.c:168-193`）も同様に重複する。
 → **実キャプチャレートは表示値の約 1/2**（実測 65 → 実際は約 32.5fps）。OV5640 の 30fps 設定と整合。
 KPI-01 の測定方法④はこの前提で読むこと。
 
-#### D-02: `camera status` の `Status` が常に "Not initialized"（I-07）
+#### D-02: `camera status` の `Status` が常に "Not initialized"（I-07）→ #173
 
 `s_vin_status` を `CAPTURING` にするのは `vin_port_start()` 内（`vin_port.c:238`）だけだが、
 実際のキャプチャ起動は `camera_thread_entry.c:468` が `R_VIN_CaptureStart()` を直接呼ぶ経路
 （`mipi_port.c:1993` のコメントも同旨）。状態変数が二重管理で更新されず、動作中でも
 "Not initialized" と表示される。実態は `VIN Open: Yes` / `HW State: IN_PROGRESS` が示す。表示のみの問題。
 
-#### D-03: GLCDC クロック定数が誤り（`display status` の表示値が不正）（I-08）
+#### D-03: GLCDC クロック定数が誤り（`display status` の表示値が不正）（I-08）→ #174
 
 `glcdc_port.h:134` は `GLCDC_LCDCLK_HZ (200000000UL) /* LCDCLK = PLL1R(400MHz) / 2 = 200MHz */`
 としているが、**実際の LCDCLK 源は PLL1R ではなく PLL2R**:
@@ -233,7 +233,7 @@ KPI-01 の測定方法④はこの前提で読むこと。
 > （`CNF_TIMER_PERIOD = 10`、`mtk3_bsp2/config/config.h:39`）と厳密に一致する。
 > **＝ μT-Kernel の時間基準は実時間どおりに動作している**ことの裏付けになる。
 
-#### D-04: LED1 の点滅周期が仕様より速い（I-05・未解明）
+#### D-04: LED1 の点滅周期が仕様より速い（I-05・未解明）→ #175
 
 LED1(Blue) が LED2(Green) より明らかに速い。しかし静的解析では**3 つとも 500ms トグルになるはず**:
 
