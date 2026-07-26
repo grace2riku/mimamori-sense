@@ -585,8 +585,16 @@ FSP は `ra_gen/main.c` で `vTaskStartScheduler()`（`:112`）と
   （`FreeRTOSConfig.h:130-131`、`configAPPLICATION_ALLOCATED_HEAP (0)` のため heap_4 が `ucHeap[]` を確保）。
   B-02（メモリオーバーフロー確認）ではこの 256KB が RAM 使用量に含まれる点に注意。
 - **将来 FreeRTOS を外す場合、ヒープの置換が必須**。単純に削除すると Dave2D の描画が確保失敗する。
-  代替は `DRW_CFG_CUSTOM_MALLOC` を 1 にして `d1_malloc`／`d1_freemem` を μT-Kernel の
-  メモリプール（`tk_cre_mpl` 等）や標準 `malloc` へ差し替える方法（`r_drw_memory.c:58-60` の第 1 分岐）。
+  代替は `DRW_CFG_CUSTOM_MALLOC` を 1 にして、**ユーザ実装が必要になる 2 つのフック
+  `d1_malloc` / `d1_free`**（`r_drw_memory.c:33-35` の `extern` 宣言）を μT-Kernel の
+  メモリプール（`tk_cre_mpl` 等）や標準 `malloc`／`free` へ差し替える方法。
+  - ⚠ **差し替える対象を間違えないこと**（Codex レビュー指摘により訂正、2026-07-26）。
+    `d1_allocmem`（`:57`）と `d1_freemem`（`:85`）は**ドライバ側が既に定義しているラッパ**であり、
+    `DRW_CFG_CUSTOM_MALLOC=1` のとき前者が `d1_malloc`（`:61`）を、後者が `d1_free`（`:89`）を呼ぶ。
+    ユーザが `d1_freemem` を実装すると**多重定義**になり、`d1_free` は**未解決**のまま残る（どちらもリンクエラー）。
+  - 実装が必要なシンボルは**この 2 つのみ**である（`DRW_CFG_CUSTOM_MALLOC` で切り替わるのは
+    `:33-35` の宣言と `:59` / `:87` の分岐だけで、`d1_memsize`（`:115`）や
+    ビデオメモリ系（`d1_allocvidmem` `:133` 等）は本フラグの対象外）。
   **7.2 の一覧だけを見て「FreeRTOS は全部未実行だから消せる」と判断してはならない。**
 
 #### ⚠ 未検証の懸念: ヒープの排他が μT-Kernel 環境で機能しない可能性
