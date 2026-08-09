@@ -306,6 +306,12 @@ CLI の標準出力だけでは成功に見えるため、実行後に `<basenam
 python3 dataset/scripts/colab_cli/check_notebook_errors.py <basename>_output.ipynb
 ```
 
+さらに、**例外を投げずに処理を飛ばすセルもある**点に注意する。学習ノートブックの
+cell[10]（データセットクリーニング）と cell[12]（hard negative mining）は、前提ファイルが
+無いと `print('ERROR: ...')` / `print('SKIP: ...')` を出すだけで学習に進む。
+`output_type: "error"` にならないため、上記スクリプトは出力テキスト中の
+`ERROR:` / `SKIP:` / `WARNING:` も検出対象にしている（該当すれば終了コード 1）。
+
 ### 6.4 ノートブックのセルを部分実行すると暗黙の依存が壊れる
 
 `train_yolo_fastest_darknet_colab.ipynb` では cell[7] が `data/person` や `backup` を作成しており、
@@ -386,14 +392,55 @@ colab download {remote_path} {local_path}     ← リモートが先
 さらに checkpoint が VM 上にしか残らないため、数時間の学習中に切断されると失われる。
 
 **本番学習は元ノートブックをそのまま実行する。** 必要な手順が正しい順序で揃っている。
+ただし実行前に次の 2 点を満たすこと。
+
+#### (a) Drive 上に前提ファイルを配置する
+
+チェックリストは `doc/report/f003_03j_person_detection_phase3_plan.md` 5.4 節が正。要点のみ再掲する。
+
+| 配置先 | ファイル |
+|--------|---------|
+| `/content/drive/MyDrive/` | `fall_detection_dataset.zip` |
+| `/content/drive/MyDrive/yolo_fastest_darknet_person/` | `dataset_cleaning.py`（リポジトリの `dataset/scripts/` から） |
+| 同上 | `hard_negative_mining.py`（同上） |
+| 同上 `backup/` | Phase 2 の `_best.weights` または `_final.weights`（finetune 起点） |
+
+**⚠️ これらが無くてもノートブックは例外を投げない。** cell[10] は
+`print('ERROR: dataset_cleaning.py が見つかりません')` を出して**クリーニングを飛ばし**、
+cell[12] は `print('SKIP: Phase 2 weights が見つかりません')` を出して
+**hard negative mining を飛ばした**まま学習に進む。
+`output_type: "error"` にならないため、実行後のノートブック検査でも見逃しやすい。
+
+そのため `check_notebook_errors.py` は例外だけでなく、出力テキスト中の
+`ERROR:` / `SKIP:` / `WARNING:` も検出して終了コード 1 を返すようにしてある。**実行後は必ず通すこと。**
 
 ```bash
-colab --auth=adc exec -s trainer -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 900
+python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_darknet_colab_output.ipynb
 ```
 
+#### (b) `--timeout` は学習時間を上回る値にする
+
+cell[26] は darknet を起動したあと `for line in proc.stdout:` で**同期的にブロック**し、
+学習が終わるまでセルが返らない。したがって `--timeout` は全体の所要時間を上回る必要がある。
+
+| GPU | 100k iteration の目安（手順書 5.5 節） |
+|-----|--------------------------------------|
+| T4 | 3.5〜5 時間 |
+| L4 / A100 | 1.5〜3 時間 |
+
+```bash
+colab --auth=adc exec -s trainer \
+  -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb \
+  --timeout 21600     # 6 時間。GPU に応じて余裕をもたせる
+```
+
+これは 6.2 で述べた「長時間ジョブはバックグラウンド化する」という方針とは逆になるが、
+ノートブックの学習セルが同期実行である以上、この形を取らざるを得ない。
+**打ち切られても学習成果は失われない。** cell[25] が `backup` を Drive へのシンボリックリンクに
+置き換えるため checkpoint は Drive に残り、`.issue137_started` マーカーと `_last.weights` により
+再実行で続きから再開できる（これが元ノートブックの切断対策）。
+
 > ノートブックは `colab exec -f` で直接実行でき、`!` や `%%bash` のセルも動作する（6.4 参照）。
-> 実行後は `check_notebook_errors.py` で `*_output.ipynb` のセルエラーを確認すること（6.3 参照）。
-> なお学習セルは数時間かかるため、`--timeout` の扱いは 6.2 を踏まえて検討すること。
 
 `MAX_BATCHES = None` にしても本番学習にはならない。cfg の `max_batches` がそのまま使われるだけで、
 上表のセルは実行されない。

@@ -76,7 +76,18 @@ colab --auth=adc stop -s trainer
   (cell[10]) / hard negative mining (cell[12]) / アンカー再計算 (cell[18-20]) /
   事前学習重み (cell[22-23]) / Drive への checkpoint 退避 (cell[25]) を含まない。
   これらは Phase 3 手順書 5.5 節で本番学習に必須とされている。
-  本番学習は元ノートブックをそのまま実行する:
-  `colab --auth=adc exec -s trainer -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 900`
+  本番学習は元ノートブックをそのまま実行する。その際は
+  (a) Drive に `dataset_cleaning.py` / `hard_negative_mining.py` / Phase 2 weights を配置し、
+  (b) `--timeout` を学習時間（L4 で 1.5〜3 時間）を上回る値にする。
+  詳細はガイド 6.10 節を参照
+
+  ```bash
+  colab --auth=adc exec -s trainer \
+    -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 21600
+  ```
+
+- **`check_notebook_errors.py` は実行後に必ず通すこと。** 学習ノートブックの cell[10] / cell[12] は
+  前提ファイルが無いと例外ではなく `ERROR:` / `SKIP:` を print して処理を飛ばすため、
+  本スクリプトは出力テキスト中のこれらのマーカーも検出する
 - 成果物のダウンロード先パスは `train_launch.py` の `BACKUP_DIR` と揃えること。
   `BACKUP_DIR` は VM 上の一時領域のため、**`colab stop` の前に回収する**
