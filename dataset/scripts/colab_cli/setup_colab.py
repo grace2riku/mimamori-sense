@@ -74,16 +74,24 @@ ls -la ./darknet
 echo "darknet ビルド成功"
 
 echo "=== [3/4] dataset 展開 ==="
-mkdir -p "$DATASET_DIR"
+# 既存ディレクトリへ unzip -o で上書きすると、新しい zip に含まれない古い画像・ラベルが
+# 残り続ける。再実行時や zip を差し替えたとき（データ拡充・クリーニング後など）に
+# 複数バージョンのデータセットが混ざったまま学習が走るため、
+# 必ず空のステージングディレクトリへ展開し、検証を通ってから入れ替える。
+STAGE="$DATASET_DIR.staging"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
 # unzip は警告（Windows 製 zip のバックスラッシュ区切り等）で終了コード 1 を返す。
 # set -e で中断しないよう 1 までは許容する。
-time unzip -q -o "$ZIP" -d "$DATASET_DIR" || [ $? -le 1 ]
+time unzip -q "$ZIP" -d "$STAGE" || [ $? -le 1 ]
+
+# 検証はステージング側で行う。不正なら既存のデータセットを壊さずに終了できる。
 # 件数取得そのものはディレクトリ欠損で止めない（pipefail 下では ls の失敗が
 # パイプライン全体に伝播するため || true を付ける）。判定は下のチェックで行う。
 layout_ng=0
 for s in train val test; do
-  ic=$(ls "$DATASET_DIR/images/$s" 2>/dev/null | wc -l || true)
-  lc=$(ls "$DATASET_DIR/labels/$s" 2>/dev/null | wc -l || true)
+  ic=$(ls "$STAGE/images/$s" 2>/dev/null | wc -l || true)
+  lc=$(ls "$STAGE/labels/$s" 2>/dev/null | wc -l || true)
   echo "  $s: images=$ic labels=$lc"
   if [ "$ic" -eq 0 ] || [ "$lc" -eq 0 ]; then
     echo "  ERROR: $s の images/labels が空、またはディレクトリがありません"
@@ -96,10 +104,20 @@ done
 # ここで検出せずに SETUP DONE を出すと、準備セルや学習が後段で失敗する。
 if [ "$layout_ng" -ne 0 ]; then
   echo "ERROR: データセットの展開結果が想定の構成ではありません。"
-  echo "       期待する構成: $DATASET_DIR/images/{{train,val,test}} と $DATASET_DIR/labels/{{train,val,test}}"
+  echo "       期待する構成: zip のルート直下に images/{{train,val,test}} と labels/{{train,val,test}}"
   echo "       zip のルート構成を確認してください。"
+  rm -rf "$STAGE"
   exit 1
 fi
+
+# 検証を通ってから入れ替える（同一ファイルシステム上の rename なので瞬時）。
+rm -rf "$DATASET_DIR.old"
+if [ -d "$DATASET_DIR" ]; then
+  mv "$DATASET_DIR" "$DATASET_DIR.old"
+fi
+mv "$STAGE" "$DATASET_DIR"
+rm -rf "$DATASET_DIR.old"
+echo "データセットを入れ替えました: $DATASET_DIR"
 df -h /content | tail -1
 
 echo "=== [4/4] darknet 用ディレクトリ作成（元ノートブック cell[7] 相当） ==="
