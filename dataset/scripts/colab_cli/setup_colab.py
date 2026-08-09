@@ -103,26 +103,41 @@ for s in train val test; do
     continue
   fi
 
-  # 画像とラベルの対応も確認する。ラベルが 1 件も対応しない場合は展開結果が壊れている。
-  # （一部だけ欠けるのは darknet が負例として扱うため異常とはしない）
-  nolabel=$(comm -23 \
-    <(find "$STAGE/images/$s" -maxdepth 1 -type f -regextype posix-extended -regex "$IMG_RE" | sed 's|.*/||; s|[.][^.]*$||' | sort) \
-    <(find "$STAGE/labels/$s" -maxdepth 1 -type f -name '*.txt' | sed 's|.*/||; s|[.]txt$||' | sort) | wc -l)
-  if [ "$nolabel" -eq "$ic" ]; then
-    echo "  ERROR: $s の画像に対応するラベルが 1 件もありません（ファイル名の対応を確認してください）"
+  # 画像とラベルの対応を双方向で確認する。
+  # dataset/scripts/quality_check.py の Check 3 は images without labels /
+  # labels without images をいずれも FAIL としており、それに合わせる。
+  # 意図的な負例は hard_negative_mining.py が「空ラベル(.txt)付き」で追加するため
+  # ラベルファイル自体は存在する。したがって欠損は許容しない。
+  img_stems=$(mktemp)
+  lbl_stems=$(mktemp)
+  find "$STAGE/images/$s" -maxdepth 1 -type f -regextype posix-extended -regex "$IMG_RE" | sed 's|.*/||; s|[.][^.]*$||' | sort > "$img_stems"
+  find "$STAGE/labels/$s" -maxdepth 1 -type f -name '*.txt' | sed 's|.*/||; s|[.]txt$||' | sort > "$lbl_stems"
+
+  nolabel=$(comm -23 "$img_stems" "$lbl_stems" | wc -l)
+  if [ "$nolabel" -ne 0 ]; then
+    echo "  ERROR: $s にラベルの無い画像が $nolabel 件あります"
+    comm -23 "$img_stems" "$lbl_stems" | head -3 | sed 's|^|    例: |'
     layout_ng=1
-  elif [ "$nolabel" -ne 0 ]; then
-    echo "  NOTE: $s に対応ラベルの無い画像が $nolabel 件あります（darknet は負例として扱います）"
   fi
+
+  noimage=$(comm -13 "$img_stems" "$lbl_stems" | wc -l)
+  if [ "$noimage" -ne 0 ]; then
+    echo "  ERROR: $s に画像の無いラベルが $noimage 件あります"
+    comm -13 "$img_stems" "$lbl_stems" | head -3 | sed 's|^|    例: |'
+    layout_ng=1
+  fi
+
+  rm -f "$img_stems" "$lbl_stems"
 done
 
 # zip 自体は展開できても、ルート構成が想定と異なる場合や、警告(終了コード1)を
 # 許容した結果として一部の split が欠ける場合がある。
 # ここで検出せずに SETUP DONE を出すと、準備セルや学習が後段で失敗する。
 if [ "$layout_ng" -ne 0 ]; then
-  echo "ERROR: データセットの展開結果が想定の構成ではありません。"
-  echo "       期待する構成: zip のルート直下に images/{{train,val,test}} と labels/{{train,val,test}}"
-  echo "       zip のルート構成を確認してください。"
+  echo "ERROR: データセットの展開結果に問題があります。zip を確認してください。"
+  echo "       - ルート直下に images/{{train,val,test}} と labels/{{train,val,test}} があること"
+  echo "       - 画像(*.jpg *.png *.jpeg)とラベル(*.txt)がファイル名で 1 対 1 に対応すること"
+  echo "         （負例は空の .txt を置く。ラベルファイル自体の欠損は不可）"
   rm -rf "$STAGE"
   exit 1
 fi
