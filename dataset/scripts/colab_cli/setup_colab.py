@@ -13,6 +13,7 @@
   4. cell[7] が作っていたディレクトリ（data/person, backup）を作成
 """
 import os
+import shlex
 import subprocess
 import sys
 
@@ -50,9 +51,9 @@ finish() {{
 }}
 trap finish EXIT
 
-DARKNET_DIR={DARKNET_DIR}
-DATASET_DIR={DATASET_DIR}
-ZIP={DRIVE_ZIP}
+DARKNET_DIR={shlex.quote(DARKNET_DIR)}
+DATASET_DIR={shlex.quote(DATASET_DIR)}
+ZIP={shlex.quote(DRIVE_ZIP)}
 
 echo "=== [1/4] Yolo-Fastest clone ==="
 if [ -d "$DARKNET_DIR" ]; then
@@ -77,14 +78,28 @@ mkdir -p "$DATASET_DIR"
 # unzip は警告（Windows 製 zip のバックスラッシュ区切り等）で終了コード 1 を返す。
 # set -e で中断しないよう 1 までは許容する。
 time unzip -q -o "$ZIP" -d "$DATASET_DIR" || [ $? -le 1 ]
-# 件数の表示は情報提供が目的なので、ディレクトリ欠損で止めない。
-# pipefail 下では ls の失敗がパイプライン全体に伝播するため || true を付ける
-# （欠損時は 0 と表示され、後続の展開結果チェックで気づける）。
+# 件数取得そのものはディレクトリ欠損で止めない（pipefail 下では ls の失敗が
+# パイプライン全体に伝播するため || true を付ける）。判定は下のチェックで行う。
+layout_ng=0
 for s in train val test; do
   ic=$(ls "$DATASET_DIR/images/$s" 2>/dev/null | wc -l || true)
   lc=$(ls "$DATASET_DIR/labels/$s" 2>/dev/null | wc -l || true)
   echo "  $s: images=$ic labels=$lc"
+  if [ "$ic" -eq 0 ] || [ "$lc" -eq 0 ]; then
+    echo "  ERROR: $s の images/labels が空、またはディレクトリがありません"
+    layout_ng=1
+  fi
 done
+
+# zip 自体は展開できても、ルート構成が想定と異なる場合や、警告(終了コード1)を
+# 許容した結果として一部の split が欠ける場合がある。
+# ここで検出せずに SETUP DONE を出すと、準備セルや学習が後段で失敗する。
+if [ "$layout_ng" -ne 0 ]; then
+  echo "ERROR: データセットの展開結果が想定の構成ではありません。"
+  echo "       期待する構成: $DATASET_DIR/images/{{train,val,test}} と $DATASET_DIR/labels/{{train,val,test}}"
+  echo "       zip のルート構成を確認してください。"
+  exit 1
+fi
 df -h /content | tail -1
 
 echo "=== [4/4] darknet 用ディレクトリ作成（元ノートブック cell[7] 相当） ==="

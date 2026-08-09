@@ -1,7 +1,15 @@
-"""Colab VM 上で darknet 学習をバックグラウンド起動する。
+"""Colab VM 上で darknet 学習をバックグラウンド起動する（★検証専用）。
 
 実行場所: Colab VM
 起動方法: colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/train_launch.py --timeout 300
+
+★用途の限定: 本スクリプトは「環境が正しく組み上がっているか」の疎通確認用である。
+  #148 Phase 3 のような本番学習には使わないこと。本番の実行順序は
+  doc/report/f003_03j_person_detection_phase3_plan.md の 5.5 節が正であり、
+  データセットクリーニング(Step 2.5) / hard negative mining(Step 2.6) /
+  アンカー再計算(Step 4) / 事前学習重み(Step 5) / Drive への checkpoint 退避 が必要になる。
+  これらは元ノートブック train_yolo_fastest_darknet_colab.ipynb に一式そろっているため、
+  本番学習はノートブックをそのまま実行すること（colab exec -f で .ipynb を直接渡せる）。
 
 ★安全設計: Google Drive には一切書き込まない
   元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[25] は、darknet の保存先を
@@ -22,6 +30,7 @@
 """
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -34,17 +43,18 @@ LOG_PATH = "/content/train.log"
 
 # 検証用に max_batches を縮小する。None にすると cfg の値をそのまま使う。
 #
-# ★本番学習（MAX_BATCHES = None）では PRETRAINED_WEIGHTS の設定が必須。
-#   cfg は max_batches=100000 / burn_in=1000 の finetune 前提で生成されており、
-#   重みを渡さないとランダム初期化から始まるため、設計と異なる実験を数時間かけて回すことになる。
-#   本番では checkpoint の保存先も要検討（BACKUP_DIR は VM 停止で消える。元ノートブックは
-#   cell[25] で Drive へ逃がしている。ただし cell[25] は既存の重みを上書きしうる点に注意）。
+# ★None にしても「本番学習」にはならない。
+#   cfg の max_batches はそのまま使われるが、データセットのクリーニング・hard negative
+#   mining・アンカー再計算が行われず、checkpoint も VM 上に残るだけになるため、
+#   Phase 3 手順書 5.5 節が定める実験とは別物になる。長時間の実験を無駄にしないこと。
+#   本番学習は元ノートブックを実行する（本ファイル冒頭の説明を参照）。
 MAX_BATCHES = 100
 
 # 転移学習の起点となる重み。空文字ならスクラッチ学習。
 # DARKNET_DIR からの相対パスまたは絶対パスで指定する。
 # 例: "yolo-fastest-coco-pretrained.weights"（元ノートブック cell[23] が生成）
 #     "/content/drive/MyDrive/yolo_fastest_darknet_person/backup/xxx_final.weights"
+# 空白を含むパスも扱えるよう、コマンド組み立て時に shlex.quote でクォートする。
 PRETRAINED_WEIGHTS = ""
 
 # --- 安全確認: darknet の backup が Drive を指していないこと ---
@@ -78,7 +88,7 @@ if PRETRAINED_WEIGHTS:
     if not os.path.isfile(wp):
         print("ERROR: 事前学習重みが見つかりません:", wp)
         sys.exit(1)
-    weights_arg = " " + PRETRAINED_WEIGHTS
+    weights_arg = " " + shlex.quote(PRETRAINED_WEIGHTS)
     # 元ノートブック cell[26] と同じ判断。
     # finetune の起点として別の重みを渡す場合、seen カウンタが max_batches を超えていると
     # 「既に完了」と判定され学習ループが 0 回になるため -clear でリセットする。
@@ -87,8 +97,9 @@ if PRETRAINED_WEIGHTS:
         clear_arg = " -clear"
     print(f"転移学習の起点: {PRETRAINED_WEIGHTS}{' (-clear あり)' if clear_arg else ' (-clear なし / 再開)'}")
 elif MAX_BATCHES is None:
-    print("WARNING: 本番設定(MAX_BATCHES=None)で PRETRAINED_WEIGHTS が未設定です。")
-    print("         cfg は finetune 前提のためスクラッチ学習になります。意図した設定か確認してください。")
+    print("WARNING: MAX_BATCHES=None かつ PRETRAINED_WEIGHTS が未設定です。")
+    print("         cfg は finetune 前提のためスクラッチ学習になります。")
+    print("         なお本スクリプトは検証専用です。Phase 3 の本番学習は元ノートブックを使ってください。")
 else:
     print("事前学習重みなし → スクラッチ学習（検証用途）")
 
@@ -118,12 +129,19 @@ print(open(os.path.join(DARKNET_DIR, "data", "person", data_name)).read().strip(
 # --- 起動 ---
 # 完了マーカーは終了コード 0 のときだけ出す。
 # 無条件に出すと OOM・cfg 不正・データセット異常で落ちた場合でも poll.py が完了と判定してしまう。
+#
+# 設定値由来のパスは空白を含みうるため、すべて shlex.quote でクォートしてから埋め込む。
+darknet_dir_sh = shlex.quote(DARKNET_DIR)
+backup_dir_sh = shlex.quote(BACKUP_DIR)
+data_path_sh = shlex.quote(os.path.join("data", "person", data_name))
+cfg_path_sh = shlex.quote(os.path.join("cfg", cfg_name))
+
 sh = f"""#!/bin/bash
-cd {DARKNET_DIR}
-./darknet detector train data/person/{data_name} cfg/{cfg_name}{weights_arg} -dont_show -gpus 0{clear_arg}
+cd {darknet_dir_sh}
+./darknet detector train {data_path_sh} {cfg_path_sh}{weights_arg} -dont_show -gpus 0{clear_arg}
 rc=$?
 echo "TRAIN EXIT CODE: $rc"
-ls -la {BACKUP_DIR}
+ls -la {backup_dir_sh}
 if [ "$rc" -eq 0 ]; then
   echo "TRAIN DONE"
 else

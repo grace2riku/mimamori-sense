@@ -71,8 +71,12 @@ colab --auth=adc stop -s trainer
   `obj.data` と cfg は元ノートブックの cell[8] / cell[14-16] が生成する
 - `train_launch.py` は元ノートブックの cell[25]（`backup` を Drive へ symlink）を**使わない**。
   検証実行で Phase 3 の重みを上書きしないための隔離設計になっている
-- `train_launch.py` の既定は検証用（`MAX_BATCHES = 100`、スクラッチ学習）。
-  **本番学習では `MAX_BATCHES = None` と `PRETRAINED_WEIGHTS` の設定が必要**。
-  cfg は finetune 前提のため、重みを渡さないとランダム初期化から数時間走ることになる
+- **⚠️ 本スクリプト群は疎通確認専用。本番学習には使わないこと。**
+  `make_prep_nb.py` が抜き出すのは cell[8] / cell[14-16] のみで、データセットクリーニング
+  (cell[10]) / hard negative mining (cell[12]) / アンカー再計算 (cell[18-20]) /
+  事前学習重み (cell[22-23]) / Drive への checkpoint 退避 (cell[25]) を含まない。
+  これらは Phase 3 手順書 5.5 節で本番学習に必須とされている。
+  本番学習は元ノートブックをそのまま実行する:
+  `colab --auth=adc exec -s trainer -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 900`
 - 成果物のダウンロード先パスは `train_launch.py` の `BACKUP_DIR` と揃えること。
   `BACKUP_DIR` は VM 上の一時領域のため、**`colab stop` の前に回収する**

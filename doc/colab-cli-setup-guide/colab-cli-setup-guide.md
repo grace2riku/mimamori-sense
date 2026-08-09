@@ -364,24 +364,39 @@ colab upload   {local_path}  {remote_path}
 colab download {remote_path} {local_path}     ← リモートが先
 ```
 
-### 6.10 `train_launch.py` の既定は検証用。本番学習では設定変更が必要
+### 6.10 ⚠️ 本スクリプト群は疎通確認専用。本番学習には元ノートブックを使う
 
-既定値は `MAX_BATCHES = 100` / `PRETRAINED_WEIGHTS = ""`（スクラッチ学習）で、
-疎通確認のための設定になっている。本番学習では次の 2 点を必ず設定する。
+`train_launch.py` と `make_prep_nb.py` は「環境が正しく組み上がっているか」を確かめるための
+最小構成であり、**#148 Phase 3 のような本番学習には使えない**。
 
-| 設定 | 本番での値 | 未設定だとどうなるか |
-|------|-----------|--------------------|
-| `MAX_BATCHES` | `None`（cfg の値をそのまま使う） | 100 iteration で終わる |
-| `PRETRAINED_WEIGHTS` | finetune の起点となる重み | **ランダム初期化から数時間走る** |
+`make_prep_nb.py` が抜き出すのは cell[8] / cell[14-16] だけで、次のセルを含まない。
 
-cfg は `max_batches=100000` / `burn_in=1000` の **finetune 前提**で生成されるため、
-重みを渡さないと設計と異なる実験になる。`PRETRAINED_WEIGHTS` を設定すると、
-元ノートブック cell[26] と同じ判断で `-clear` の有無を切り替える
-（`_last.weights` からの中断再開では seen カウンタを保持し、それ以外では `-clear` でリセット）。
+| 除外セル | Phase 3 手順書での位置づけ |
+|---------|--------------------------|
+| cell[10] データセットクリーニング | Step 2.5 |
+| cell[12] hard negative mining | Step 2.6 |
+| cell[18-20] アンカー再計算 | Step 4 |
+| cell[22-23] 事前学習重み取得 | Step 5 |
+| cell[25] backup を Drive へ退避 | 学習中の checkpoint 保全 |
 
-あわせて **checkpoint の保存先**も検討すること。`BACKUP_DIR` は VM 上の一時領域のため、
-数時間の学習中に切断されると失われる。元ノートブックは cell[25] で Drive へ逃がしているが、
-そのセルは既存の重みを上書きしうる（6.5 参照）。
+いずれも疎通確認には不要だが、**本番学習では必須**である
+（`doc/report/f003_03j_person_detection_phase3_plan.md` 5.5 節「実行順序」）。
+これらを飛ばして 100,000 iteration の finetune を回すと、クリーニング前のデータと
+既定アンカーで学習することになり、定義された実験とは別物になる。
+さらに checkpoint が VM 上にしか残らないため、数時間の学習中に切断されると失われる。
+
+**本番学習は元ノートブックをそのまま実行する。** 必要な手順が正しい順序で揃っている。
+
+```bash
+colab --auth=adc exec -s trainer -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 900
+```
+
+> ノートブックは `colab exec -f` で直接実行でき、`!` や `%%bash` のセルも動作する（6.4 参照）。
+> 実行後は `check_notebook_errors.py` で `*_output.ipynb` のセルエラーを確認すること（6.3 参照）。
+> なお学習セルは数時間かかるため、`--timeout` の扱いは 6.2 を踏まえて検討すること。
+
+`MAX_BATCHES = None` にしても本番学習にはならない。cfg の `max_batches` がそのまま使われるだけで、
+上表のセルは実行されない。
 
 ---
 

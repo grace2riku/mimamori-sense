@@ -26,15 +26,27 @@ SRC = os.path.join(
     "train_yolo_fastest_darknet_colab.ipynb",
 )
 
-# 抜き出すセル番号
+# ★このセル選択は「疎通確認専用」であり、本番学習の準備には使えない。
+#
+# 抜き出すセル番号（学習を起動できる最小構成）
 #   [8]  darknet 用ラベル配置(symlink) / train.txt / valid.txt / obj.data / obj.names
 #   [14] リポジトリ内 cfg の一覧
 #   [15] yolo-fastest-person-192.cfg を直接生成
 #   [16] リポジトリの基準 cfg をベースに再生成（15 を上書き）
-# 除外したセル
-#   [10] データセットクリーニング, [12] hard negative mining, [18-20] アンカー再計算,
-#   [22-23] 事前学習重み取得 … いずれも精度目的。疎通確認では不要
-#   [25] backup を Drive へ symlink + 再開ロジック … ★Drive の重みを壊す
+#
+# 意図的に除外したセル
+#   [25] backup を Drive へ symlink + 再開ロジック … ★Drive の既存の重みを壊す
+#   [10] データセットクリーニング (Phase 3 手順書 Step 2.5)
+#   [12] hard negative mining     (同 Step 2.6)
+#   [18-20] アンカー再計算         (同 Step 4)
+#   [22-23] 事前学習重み取得       (同 Step 5)
+#
+# 後半4つは疎通確認には不要だが、**本番学習では必須**である
+# （doc/report/f003_03j_person_detection_phase3_plan.md 5.5 節「実行順序」）。
+# これらを飛ばして 100k iteration の finetune を回すと、クリーニング前のデータと
+# 既定アンカーで学習することになり、定義された実験とは別物になる。
+# 本番学習は元ノートブックをそのまま実行すること:
+#     colab --auth=adc exec -s <name> -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb
 PICK = [8, 14, 15, 16]
 
 dst = sys.argv[1] if len(sys.argv) > 1 else "prep_cells.ipynb"
