@@ -469,38 +469,55 @@ Drive へのシンボリックリンクに置き換えるため checkpoint は D
 > ノートブック側の恒久対策（checkpoint が存在してからマーカーを作る、あるいはマーカーがあって
 > `_last.weights` が無ければ Phase 2 起点として扱う）は #148 の課題とする。
 
-#### (c) 実行後の確認
+#### (c) 実行後の確認（事後確認には原理的な限界がある）
 
 **前処理セルはスクリプトの終了コードを捨てる。** cell[10] / cell[12] は
 `subprocess.run(..., check=False)` で呼び出しているため、`dataset_cleaning.py` や
-`hard_negative_mining.py` が異常終了しても学習に進む。
-`check_notebook_errors.py` は子プロセスの `Traceback` までは拾えるが、
-Traceback を出さずに終了した場合は検出できない。
+`hard_negative_mining.py` が異常終了しても、そのまま 100k iteration の学習セルに進む。
 
-そのため実行後に**成果物の側から**確認する。
+**確実にするにはノートブック側で exit code を伝播させ、学習前に止める必要がある。
+これは #148 の課題とする。** 以下は、それが入るまでの間に取りうる最良の確認手順であり、
+「これを通れば安全」と言い切れるものではない。
+
+**手順1: ノートブックの検査**
 
 ```bash
-# 1. ノートブックのセルエラー・ERROR:/SKIP:/Traceback・途中終了を検査
 python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_darknet_colab_output.ipynb
-
-# 2. 前処理が「適用」まで済んでいるかを、apply でしか作られない成果物で確認する
-colab --auth=adc ls -s trainer /content/dataset/_removed_phase2
-#    dataset_cleaning.py --apply が退避先として作るディレクトリ
-#    （クリーニングが実際に適用された証跡）
-
-colab --auth=adc ls -s trainer /content/dataset/hard_negatives
-#    hard_negative_mining.py --apply が原本の退避先として作るディレクトリ
-#    （hard negative が train に追加された証跡。images/train/hardneg_* も増える）
 ```
 
-> **⚠️ レポート JSON の存在・日時だけでは確認にならない。**
-> cell[10] / cell[12] は `--apply` の前に**同じ `--report` パスで dry-run を実行する**
-> （`cmd_apply = cmd_dry + ['--apply']`）。さらに両スクリプトともレポートは `--apply` 処理より
-> 前に書き出す。したがって **apply が失敗しても、dry-run が書いた新しい日時のレポートが残る。**
-> `phase2_cleaning_report.json` / `phase3_hardneg_report.json` は「dry-run までは走った」ことしか
-> 示さないため、上記の apply 限定の成果物で確認すること。
+例外・`ERROR:` / `SKIP:` / `Traceback`・途中終了を検出する。
 
-これらが存在しない場合、その前処理は適用されていない。学習をやり直すこと。
+**手順2: 前処理が「完了」したことを示す出力を確認する**
+
+両スクリプトとも、apply 処理が**完了した後にのみ**次の行を出力する。
+出力ノートブック（`*_output.ipynb`）でこれらを確認する。
+
+| 前処理 | 完了時にのみ出力される行 |
+|--------|------------------------|
+| クリーニング（cell[10]） | `[APPLY] 退避結果:` とそれに続く統計行 / `NOTE: 退避ファイルは _removed_phase2/ 以下にあります。` |
+| hard negative（cell[12]） | `追加枚数 : N` / `train.txt 再生成 : N 枚 -> ...` / `NOTE: 追加分の原本は hard_negatives/ に残ります。` |
+
+> hard negative は候補が 0 件のとき `[APPLY] hard negative 候補が 0 件のため追加なし` を出して
+> 正常終了する。この場合は追加が行われないのが正しい挙動。
+
+> **⚠️ ディレクトリの存在やレポート JSON では確認にならない。**
+>
+> - `_removed_phase2` は退避処理の**前**に作られる（`removed_root.mkdir()` → `apply_cleaning()`）
+> - `hard_negatives` も候補処理の**前**に作られる（`hn_dir.mkdir()` → 候補ループ）
+> - どちらも途中で失敗すると空または部分的な状態で残り、**再実行時にも残存する**
+> - レポート JSON は `--apply` の前に同じパスで dry-run が書く
+>   （`cmd_apply = cmd_dry + ['--apply']`、レポート書き出しは `if args.apply:` より前）
+>
+> したがって、これらの存在は「起動はした」ことしか示さない。**完了行で判断すること。**
+
+**手順3: 学習の起点が意図どおりか確認する**
+
+前述の再開マーカーの項を参照。`[Phase 3] Phase 2 weights を finetune 起点として使用` が
+出ていれば正しい。
+
+完了行が見当たらない場合、その前処理は途中で失敗している。データセットが部分的に
+書き換わっている可能性があるため、**データセットを展開し直してからやり直すこと**
+（`setup_colab.py` は staging 方式で入れ替えるため、再実行すれば元の状態に戻る）。
 
 > ノートブックは `colab exec -f` で直接実行でき、`!` や `%%bash` のセルも動作する（6.4 参照）。
 
