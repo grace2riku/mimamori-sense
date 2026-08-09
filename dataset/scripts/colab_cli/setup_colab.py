@@ -36,7 +36,11 @@ print("dataset zip: {:,} bytes".format(os.path.getsize(DRIVE_ZIP)))
 # set -eu で途中終了した場合も必ず失敗マーカーを残す。
 # マーカーが無いと poll.py 側で「失敗」と「まだ実行中」を区別できない。
 script = f"""#!/bin/bash
-set -eu
+# pipefail が無いと `make ... | tail` の終了コードが tail のもの(0)になり、
+# ビルド失敗を set -e も EXIT trap も検出できない。
+# 再実行時に古い darknet バイナリが残っていると ls も通ってしまい、
+# 失敗したビルドのまま SETUP DONE が出てしまう。
+set -euo pipefail
 
 finish() {{
   rc=$?
@@ -73,9 +77,12 @@ mkdir -p "$DATASET_DIR"
 # unzip は警告（Windows 製 zip のバックスラッシュ区切り等）で終了コード 1 を返す。
 # set -e で中断しないよう 1 までは許容する。
 time unzip -q -o "$ZIP" -d "$DATASET_DIR" || [ $? -le 1 ]
+# 件数の表示は情報提供が目的なので、ディレクトリ欠損で止めない。
+# pipefail 下では ls の失敗がパイプライン全体に伝播するため || true を付ける
+# （欠損時は 0 と表示され、後続の展開結果チェックで気づける）。
 for s in train val test; do
-  ic=$(ls "$DATASET_DIR/images/$s" 2>/dev/null | wc -l)
-  lc=$(ls "$DATASET_DIR/labels/$s" 2>/dev/null | wc -l)
+  ic=$(ls "$DATASET_DIR/images/$s" 2>/dev/null | wc -l || true)
+  lc=$(ls "$DATASET_DIR/labels/$s" 2>/dev/null | wc -l || true)
   echo "  $s: images=$ic labels=$lc"
 done
 df -h /content | tail -1
