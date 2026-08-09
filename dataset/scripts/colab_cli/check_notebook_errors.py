@@ -7,19 +7,28 @@
   1. セルの例外（`output_type: "error"`）
      `colab exec -f <nb>.ipynb` は**セルがエラーになっても後続セルを実行し続ける**ため、
      CLI の標準出力だけでは成功に見える。
-  2. 出力テキスト中の失敗マーカー（`ERROR:` / `SKIP:` / `WARNING:`）
+  2. 出力テキスト中の失敗マーカー（`ERROR:` / `SKIP:` / `WARNING:` / `Traceback`）
      学習ノートブックには、前提ファイルが無いときに例外を投げず
      `print('ERROR: ...')` や `print('SKIP: ...')` を出して処理を飛ばすセルがある
      （cell[10] データセットクリーニング、cell[12] hard negative mining）。
      例外にならないため 1. では検出できず、必須の前処理を飛ばしたまま学習が進みうる。
+     同じセルは前処理スクリプトを `subprocess.run(..., check=False)` で呼ぶため、
+     スクリプトが異常終了しても無視される。子プロセスの出力はセルに取り込まれるので、
+     クラッシュした場合は `Traceback` で捕捉できる。
 
 どちらか一方でも見つかれば終了コード 1 を返すので、シェルスクリプトからも判定できる。
+
+★検出できない範囲: `subprocess.run(..., check=False)` の終了コードは捨てられるため、
+  前処理スクリプトが Traceback を出さずに異常終了した場合（引数エラーで usage を出して
+  終了する等）は本スクリプトでは検出できない。実行後に Drive 上のレポート JSON
+  （phase2_cleaning_report.json / phase3_hardneg_report.json）が更新されているかを
+  必ず確認すること。手順はガイド 6.10 節「実行後の確認」を参照。
 """
 import json
 import sys
 
 # 出力テキスト中で失敗・スキップを示すマーカー
-MARKERS = ("ERROR:", "SKIP:", "WARNING:")
+MARKERS = ("ERROR:", "SKIP:", "WARNING:", "Traceback (most recent call last)")
 
 if len(sys.argv) != 2:
     print(__doc__)
@@ -71,6 +80,7 @@ if errors or flagged:
         print(f"例外が発生したセル: {errors} 件")
     if flagged:
         print(f"失敗・スキップを示す出力: {flagged} 件")
-        print("  前提ファイルの不足で処理が飛ばされていないか確認してください。")
+        print("  前提ファイルの不足や前処理スクリプトの失敗で、必要な処理が")
+        print("  飛ばされていないか確認してください。")
     sys.exit(1)
 print("エラーなし")

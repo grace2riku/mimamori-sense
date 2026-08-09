@@ -436,9 +436,61 @@ colab --auth=adc exec -s trainer \
 
 これは 6.2 で述べた「長時間ジョブはバックグラウンド化する」という方針とは逆になるが、
 ノートブックの学習セルが同期実行である以上、この形を取らざるを得ない。
-**打ち切られても学習成果は失われない。** cell[25] が `backup` を Drive へのシンボリックリンクに
-置き換えるため checkpoint は Drive に残り、`.issue137_started` マーカーと `_last.weights` により
-再実行で続きから再開できる（これが元ノートブックの切断対策）。
+
+打ち切られた場合、**`_last.weights` が書かれていれば**続きから再開できる。cell[25] が `backup` を
+Drive へのシンボリックリンクに置き換えるため checkpoint は Drive に残り、`.issue137_started`
+マーカーと `_last.weights` の組で再開が成立する（これが元ノートブックの切断対策）。
+
+> **⚠️ 最初の checkpoint が書かれる前に落ちた場合は再開できない。**
+> cell[25] は**学習を始める前に** `.issue137_started` を作成し、Phase 2 weights の選択は
+> `if not is_issue137_started:` の中でのみ行う。したがって初回が即時 OOM・cfg 不正・
+> 早期切断などで `_last.weights` を残さずに終わると、再実行時は
+> 「マーカーあり・`_last.weights` なし」となり、**Phase 2 起点が選ばれず COCO / backbone に
+> フォールバックする**。エラーにはならないため、気づかないまま別条件の実験が走る。
+>
+> 再実行の前に必ず確認する。
+>
+> ```bash
+> colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person
+> colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person/backup
+> ```
+>
+> `.issue137_started` があるのに `backup/` に `*_last.weights` が無ければ、マーカーを削除してから
+> 再実行する（Phase 2 起点の初回実行として扱わせる）。
+>
+> ```bash
+> colab --auth=adc rm -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person/.issue137_started
+> ```
+>
+> なお学習開始直後に `[Phase 3] Phase 2 weights を finetune 起点として使用` と表示されるか、
+> それとも `[新規] backbone 重みで学習` / `[新規] COCO フル重みで学習` になっているかで、
+> 起点が正しいかを判別できる。
+>
+> ノートブック側の恒久対策（checkpoint が存在してからマーカーを作る、あるいはマーカーがあって
+> `_last.weights` が無ければ Phase 2 起点として扱う）は #148 の課題とする。
+
+#### (c) 実行後の確認
+
+**前処理セルはスクリプトの終了コードを捨てる。** cell[10] / cell[12] は
+`subprocess.run(..., check=False)` で呼び出しているため、`dataset_cleaning.py` や
+`hard_negative_mining.py` が異常終了しても学習に進む。
+`check_notebook_errors.py` は子プロセスの `Traceback` までは拾えるが、
+Traceback を出さずに終了した場合は検出できない。
+
+そのため実行後に**成果物の側から**確認する。
+
+```bash
+# 1. ノートブックのセルエラー・ERROR:/SKIP:/Traceback を検査
+python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_darknet_colab_output.ipynb
+
+# 2. 前処理のレポートが今回の実行で更新されているか確認
+colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person
+#    phase2_cleaning_report.json   … cell[10] が生成（クリーニング実施の証跡）
+#    phase3_hardneg_report.json    … cell[12] が生成（hard negative mining 実施の証跡）
+```
+
+レポートが無い、または日時が古い場合は、その前処理が実行されていない。
+学習をやり直すこと。
 
 > ノートブックは `colab exec -f` で直接実行でき、`!` や `%%bash` のセルも動作する（6.4 参照）。
 
