@@ -1,7 +1,7 @@
 """Colab VM 上で darknet 学習をバックグラウンド起動する。
 
 実行場所: Colab VM
-起動方法: colab --auth=adc exec -s <name> -f train_launch.py --timeout 300
+起動方法: colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/train_launch.py --timeout 300
 
 ★安全設計: Google Drive には一切書き込まない
   元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[25] は、darknet の保存先を
@@ -14,9 +14,9 @@
       setup_colab.py はディレクトリを作るだけでこれらのファイルは作らないため、
       間に make_prep_nb.py で生成したサブノートブックを実行する必要がある:
 
-          python3 make_prep_nb.py prep_cells.ipynb
+          python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb
           colab --auth=adc exec -s <name> -f prep_cells.ipynb --timeout 900
-          python3 check_notebook_errors.py prep_cells_output.ipynb
+          python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb
 
 実行後は drive_guard.py で Drive が無傷であることを確認すること。
 """
@@ -63,9 +63,9 @@ for p in (SRC_CFG, SRC_DATA):
         print("ERROR: 見つかりません:", p)
         print("  setup_colab.py はディレクトリを作るだけで、これらのファイルは作りません。")
         print("  先に準備セル（元ノートブック cell[8] / cell[14-16]）を実行してください:")
-        print("    python3 make_prep_nb.py prep_cells.ipynb")
+        print("    python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb")
         print("    colab --auth=adc exec -s <name> -f prep_cells.ipynb --timeout 900")
-        print("    python3 check_notebook_errors.py prep_cells_output.ipynb")
+        print("    python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb")
         sys.exit(1)
 
 # --- 転移学習の起点となる重みの確認 ---

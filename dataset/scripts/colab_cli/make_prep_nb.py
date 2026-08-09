@@ -1,7 +1,7 @@
 """元の学習ノートブックから指定セルだけを抜き出したサブノートブックを生成する。
 
 実行場所: ローカル（WSL）
-使い方  : python3 make_prep_nb.py [出力先.ipynb]
+使い方  : python3 dataset/scripts/colab_cli/make_prep_nb.py [出力先.ipynb]
 
 生成したノートブックは次のように VM 上で実行する:
     colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900

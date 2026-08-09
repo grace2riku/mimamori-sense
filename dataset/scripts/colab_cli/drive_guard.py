@@ -1,7 +1,7 @@
 """Drive 上の学習成果物に書き込みが発生していないことを検証する。
 
 実行場所: Colab VM
-起動方法: colab --auth=adc exec -s <name> -f drive_guard.py --timeout 300
+起動方法: colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
 
 検証目的の学習を回したあとに実行し、#148 Phase 3 の重みが無傷であることを確認する。
 元ノートブックの cell[25] を誤って実行すると Drive の backup が書き換わるため、

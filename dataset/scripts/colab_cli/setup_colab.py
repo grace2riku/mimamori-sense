@@ -1,7 +1,7 @@
 """Colab VM 上で darknet ビルドとデータセット展開をバックグラウンド実行する。
 
 実行場所: Colab VM
-起動方法: colab --auth=adc exec -s <name> -f setup_colab.py --timeout 300
+起動方法: colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/setup_colab.py --timeout 300
 
 事前に `colab --auth=adc drivemount -s <name>` を済ませておくこと。
 進捗は poll.py で確認する。完了マーカーは "SETUP DONE"。
@@ -33,8 +33,19 @@ if not os.path.isfile(DRIVE_ZIP):
 
 print("dataset zip: {:,} bytes".format(os.path.getsize(DRIVE_ZIP)))
 
+# set -eu で途中終了した場合も必ず失敗マーカーを残す。
+# マーカーが無いと poll.py 側で「失敗」と「まだ実行中」を区別できない。
 script = f"""#!/bin/bash
 set -eu
+
+finish() {{
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "SETUP FAILED (exit=$rc)"
+  fi
+}}
+trap finish EXIT
+
 DARKNET_DIR={DARKNET_DIR}
 DATASET_DIR={DATASET_DIR}
 ZIP={DRIVE_ZIP}

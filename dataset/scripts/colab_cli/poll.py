@@ -1,7 +1,7 @@
 """バックグラウンドジョブの進捗を確認する。
 
 実行場所: Colab VM
-起動方法: colab --auth=adc exec -s <name> -f poll.py --timeout 300
+起動方法: colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/poll.py --timeout 300
 
 VM 側で WAIT_SEC 待ってからログ末尾を出す。ローカル端末は占有しない。
 完了判定はプロセスの有無ではなく、ログ中の完了マーカーで行う
@@ -16,7 +16,7 @@ WAIT_SEC = 60
 TAIL_LINES = 20
 LOG_CANDIDATES = ["/content/train.log", "/content/setup.log"]
 DONE_MARKERS = ["SETUP DONE", "TRAIN DONE"]
-FAIL_MARKERS = ["TRAIN FAILED"]
+FAIL_MARKERS = ["SETUP FAILED", "TRAIN FAILED"]
 BACKUP_DIR = "/content/backup_smoke"
 
 time.sleep(WAIT_SEC)

@@ -1,7 +1,7 @@
 """実行結果ノートブック（*_output.ipynb）にセルエラーが無いか検査する。
 
 実行場所: ローカル（WSL）
-使い方  : python3 check_notebook_errors.py <notebook>_output.ipynb
+使い方  : python3 dataset/scripts/colab_cli/check_notebook_errors.py <notebook>_output.ipynb
 
 `colab exec -f <nb>.ipynb` は**セルがエラーになっても後続セルを実行し続ける**。
 CLI の標準出力だけでは成功に見えるため、実行後に必ず本スクリプトで確認する。

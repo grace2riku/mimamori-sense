@@ -181,23 +181,31 @@ colab --auth=adc sessions   # エラーなく返れば成功（一覧が空で�
 
 学習 1 周の流れ。②のみ人手が必要で、③以降は自動化できる。
 
+**以下はすべてリポジトリルートで実行する。** 環境構築（STEP 4）の直後はホームディレクトリに
+いるため、まず移動すること。スクリプトのパスはリポジトリルートからの相対パスで示す。
+
+```bash
+cd /mnt/c/Users/<user>/github/mimamori-sense
+```
+
 ```
 【WSL】① colab --auth=adc new -s trainer --gpu L4
 【WSL】② colab --auth=adc drivemount -s trainer          ← TTY 必須。人が 1 回だけ実行
-【WSL】③ colab --auth=adc exec -s trainer -f setup_colab.py --timeout 300
+【WSL】③ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/setup_colab.py --timeout 300
               # Yolo-Fastest clone + darknet ビルド + データセット展開（バックグラウンド起動）
-【WSL】④ colab --auth=adc exec -s trainer -f poll.py --timeout 300
+【WSL】④ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
               # "SETUP DONE" が出るまで繰り返す
-【WSL】⑤ python3 make_prep_nb.py prep_cells.ipynb        ← ★省略不可
+              # "SETUP FAILED (exit=N)" が出たら中断されている。ログ末尾で原因を確認する
+【WSL】⑤ python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb     ← ★省略不可
         colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900
-        python3 check_notebook_errors.py prep_cells_output.ipynb
+        python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb
               # obj.data と cfg を生成する（元ノートブック cell[8] / cell[14-16]）
-【WSL】⑥ colab --auth=adc exec -s trainer -f train_launch.py --timeout 300
+【WSL】⑥ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/train_launch.py --timeout 300
               # 学習をバックグラウンド起動 → 即戻る
-【WSL】⑦ colab --auth=adc exec -s trainer -f poll.py --timeout 300
+【WSL】⑦ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
               # 任意のタイミングでログ確認。PC を閉じても学習は継続
               # "TRAIN DONE" なら成功、"TRAIN FAILED (exit=N)" なら失敗
-【WSL】⑧ colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights <local>
+【WSL】⑧ colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights ./xxx_final.weights
               # パスは train_launch.py の BACKUP_DIR と揃える。stop の前に回収すること
 【WSL】⑨ colab --auth=adc stop -s trainer                 ← 必須
 ```

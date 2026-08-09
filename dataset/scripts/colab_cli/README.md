@@ -5,21 +5,27 @@ google-colab-cli で Colab 上のモデル学習を回すための補助スク�
 
 ## 実行場所の区別
 
+パスはすべて**リポジトリルートからの相対**。リポジトリルートで実行すること。
+
 | ファイル | 実行場所 | 起動方法 |
 |----------|---------|---------|
-| `setup_colab.py` | Colab VM | `colab --auth=adc exec -s <name> -f setup_colab.py --timeout 300` |
-| `train_launch.py` | Colab VM | 同上 |
+| `setup_colab.py` | Colab VM | `colab --auth=adc exec -s <name> -f dataset/scripts/colab_cli/setup_colab.py --timeout 300` |
+| `train_launch.py` | Colab VM | 同上（ファイル名を差し替え） |
 | `poll.py` | Colab VM | 同上 |
 | `drive_guard.py` | Colab VM | 同上 |
-| `make_prep_nb.py` | ローカル（WSL） | `python3 make_prep_nb.py` |
-| `check_notebook_errors.py` | ローカル（WSL） | `python3 check_notebook_errors.py <nb>_output.ipynb` |
+| `make_prep_nb.py` | ローカル（WSL） | `python3 dataset/scripts/colab_cli/make_prep_nb.py [出力先.ipynb]` |
+| `check_notebook_errors.py` | ローカル（WSL） | `python3 dataset/scripts/colab_cli/check_notebook_errors.py <nb>_output.ipynb` |
 
 VM 側で動くスクリプトは `colab exec -f` でファイル内容が送られて実行される。
 **コマンドライン引数は渡らない**ため、設定はファイル先頭の定数を編集して使う。
 
 ## 典型的な流れ
 
+以下はすべて**リポジトリルート**で実行する（スクリプトのパスはリポジトリルートからの相対）。
+
 ```bash
+cd /mnt/c/Users/<user>/github/mimamori-sense
+
 # ① セッション作成
 colab --auth=adc new -s trainer --gpu L4
 
@@ -29,7 +35,8 @@ colab --auth=adc drivemount -s trainer
 # ③ ビルド + データセット展開（バックグラウンド起動）
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/setup_colab.py --timeout 300
 
-# ④ 完了するまで繰り返す（"SETUP DONE" が出れば完了）
+# ④ 完了するまで繰り返す
+#    "SETUP DONE" なら成功。"SETUP FAILED (exit=N)" なら中断されているのでログ末尾を確認する
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
 
 # ⑤ 準備セルの実行（obj.data と cfg を生成する。★この手順は省略できない）
