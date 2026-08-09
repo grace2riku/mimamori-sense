@@ -480,17 +480,27 @@ Traceback を出さずに終了した場合は検出できない。
 そのため実行後に**成果物の側から**確認する。
 
 ```bash
-# 1. ノートブックのセルエラー・ERROR:/SKIP:/Traceback を検査
+# 1. ノートブックのセルエラー・ERROR:/SKIP:/Traceback・途中終了を検査
 python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_darknet_colab_output.ipynb
 
-# 2. 前処理のレポートが今回の実行で更新されているか確認
-colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person
-#    phase2_cleaning_report.json   … cell[10] が生成（クリーニング実施の証跡）
-#    phase3_hardneg_report.json    … cell[12] が生成（hard negative mining 実施の証跡）
+# 2. 前処理が「適用」まで済んでいるかを、apply でしか作られない成果物で確認する
+colab --auth=adc ls -s trainer /content/dataset/_removed_phase2
+#    dataset_cleaning.py --apply が退避先として作るディレクトリ
+#    （クリーニングが実際に適用された証跡）
+
+colab --auth=adc ls -s trainer /content/dataset/hard_negatives
+#    hard_negative_mining.py --apply が原本の退避先として作るディレクトリ
+#    （hard negative が train に追加された証跡。images/train/hardneg_* も増える）
 ```
 
-レポートが無い、または日時が古い場合は、その前処理が実行されていない。
-学習をやり直すこと。
+> **⚠️ レポート JSON の存在・日時だけでは確認にならない。**
+> cell[10] / cell[12] は `--apply` の前に**同じ `--report` パスで dry-run を実行する**
+> （`cmd_apply = cmd_dry + ['--apply']`）。さらに両スクリプトともレポートは `--apply` 処理より
+> 前に書き出す。したがって **apply が失敗しても、dry-run が書いた新しい日時のレポートが残る。**
+> `phase2_cleaning_report.json` / `phase3_hardneg_report.json` は「dry-run までは走った」ことしか
+> 示さないため、上記の apply 限定の成果物で確認すること。
+
+これらが存在しない場合、その前処理は適用されていない。学習をやり直すこと。
 
 > ノートブックは `colab exec -f` で直接実行でき、`!` や `%%bash` のセルも動作する（6.4 参照）。
 

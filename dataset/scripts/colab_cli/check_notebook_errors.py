@@ -16,7 +16,13 @@
      スクリプトが異常終了しても無視される。子プロセスの出力はセルに取り込まれるので、
      クラッシュした場合は `Traceback` で捕捉できる。
 
-どちらか一方でも見つかれば終了コード 1 を返すので、シェルスクリプトからも判定できる。
+  3. 途中で打ち切られた形跡
+     タイムアウトやカーネル中断で `colab exec` が返ると、未実行のセルは outputs が
+     空のまま残る。`colab exec -f` は**実行済みのセルでも execution_count を null の
+     ままにする**（実測で確認）ため、実行の有無は outputs で判断する。
+     最後のコードセルに出力が無ければ最後まで走っていない可能性が高いのでエラーとする。
+
+いずれかが見つかれば終了コード 1 を返すので、シェルスクリプトからも判定できる。
 
 ★検出できない範囲: `subprocess.run(..., check=False)` の終了コードは捨てられるため、
   前処理スクリプトが Traceback を出さずに異常終了した場合（引数エラーで usage を出して
@@ -50,11 +56,16 @@ def stream_text(cell):
     return "".join(parts)
 
 
+code_cells = [
+    (i, c) for i, c in enumerate(nb.get("cells", [])) if c.get("cell_type") == "code"
+]
+# `colab exec -f` は実行済みのセルでも execution_count を null のままにする（実測で確認済み）。
+# そのため「実行されたか」の判断は outputs の有無で行う。
+no_output = [i for i, c in code_cells if not c.get("outputs")]
+
 errors = 0
 flagged = 0
-for i, cell in enumerate(nb.get("cells", [])):
-    if cell.get("cell_type") != "code":
-        continue
+for i, cell in code_cells:
     head = "".join(cell.get("source", []))[:50].replace("\n", " ")
     kinds = [o.get("output_type") for o in cell.get("outputs", [])]
     errs = [o for o in cell.get("outputs", []) if o.get("output_type") == "error"]
@@ -65,7 +76,15 @@ for i, cell in enumerate(nb.get("cells", [])):
         if any(m in line for m in MARKERS)
     ]
 
-    mark = "★ERROR" if errs else ("▲SKIP " if hits else "      ")
+    if errs:
+        mark = "★ERROR"
+    elif hits:
+        mark = "▲SKIP "
+    elif i in no_output:
+        mark = "◇未実行?"
+    else:
+        mark = "      "
+
     print(f"{mark} [{i}] {head!r:55s} outputs={kinds}")
     for e in errs:
         errors += 1
@@ -74,13 +93,37 @@ for i, cell in enumerate(nb.get("cells", [])):
         flagged += 1
         print(f"        {line[:120]}")
 
+# --- 途中で打ち切られていないかの判定 ---
+# タイムアウトやカーネル中断で `colab exec` が返ると、未実行のセルは
+# outputs が空のまま残る。最後のコードセルに出力が無ければ、
+# ノートブックが最後まで走っていない可能性が高い。
+truncated = False
+if code_cells:
+    last_index = code_cells[-1][0]
+    if not code_cells[0][1].get("outputs") and len(no_output) == len(code_cells):
+        print()
+        print("★ERROR: すべてのコードセルに出力がありません（ノートブックが実行されていません）")
+        truncated = True
+    elif last_index in no_output:
+        print()
+        print("★ERROR: 最後のコードセルに出力がありません")
+        print("  タイムアウトやカーネル中断で途中終了した可能性があります。")
+        print(f"  出力の無いセル: {no_output}")
+        truncated = True
+    elif no_output:
+        print()
+        print(f"NOTE: 出力の無いコードセルがあります: {no_output}")
+        print("  出力を出さないセルであれば問題ありませんが、意図した実行結果か確認してください。")
+
 print()
-if errors or flagged:
+if errors or flagged or truncated:
     if errors:
         print(f"例外が発生したセル: {errors} 件")
     if flagged:
         print(f"失敗・スキップを示す出力: {flagged} 件")
         print("  前提ファイルの不足や前処理スクリプトの失敗で、必要な処理が")
         print("  飛ばされていないか確認してください。")
+    if truncated:
+        print("ノートブックが最後まで実行されていない可能性があります。")
     sys.exit(1)
 print("エラーなし")
