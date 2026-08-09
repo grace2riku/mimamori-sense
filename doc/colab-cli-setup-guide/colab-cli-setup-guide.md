@@ -441,43 +441,45 @@ colab --auth=adc exec -s trainer \
 Drive へのシンボリックリンクに置き換えるため checkpoint は Drive に残り、`.issue137_started`
 マーカーと `_last.weights` の組で再開が成立する（これが元ノートブックの切断対策）。
 
-> **⚠️ 最初の checkpoint が書かれる前に落ちた場合は再開できない。**
-> cell[25] は**学習を始める前に** `.issue137_started` を作成し、Phase 2 weights の選択は
-> `if not is_issue137_started:` の中でのみ行う。したがって初回が即時 OOM・cfg 不正・
-> 早期切断などで `_last.weights` を残さずに終わると、再実行時は
-> 「マーカーあり・`_last.weights` なし」となり、**Phase 2 起点が選ばれず COCO / backbone に
-> フォールバックする**。エラーにはならないため、気づかないまま別条件の実験が走る。
+> **最初の checkpoint が書かれる前に落ちた場合の扱い（#179 で修正済み）**
 >
-> 再実行の前に必ず確認する。
+> cell[25] は**学習を始める前に** `.issue137_started` を作成する。以前は Phase 2 weights の選択を
+> `if not is_issue137_started:` の中でのみ行っていたため、初回が即時 OOM・cfg 不正・早期切断などで
+> `_last.weights` を残さずに終わると、再実行時に「マーカーあり・`_last.weights` なし」となり
+> **Phase 2 起点が選ばれず COCO / backbone に静かにフォールバック**していた。
 >
-> ```bash
-> colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person
-> colab --auth=adc ls -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person/backup
+> #179 で判定を次のように変更し、マーカーだけがある状態を初回実行として扱うようにした。
+>
+> ```python
+> _marker_exists = os.path.exists(ISSUE137_MARKER)
+> is_issue137_started = _marker_exists and os.path.exists(local_last)
 > ```
 >
-> `.issue137_started` があるのに `backup/` に `*_last.weights` が無ければ、マーカーを削除してから
-> 再実行する（Phase 2 起点の初回実行として扱わせる）。
+> これによりマーカーの手動削除は不要になった。学習開始直後の表示で起点を確認できる。
 >
-> ```bash
-> colab --auth=adc rm -s trainer /content/drive/MyDrive/yolo_fastest_darknet_person/.issue137_started
-> ```
->
-> なお学習開始直後に `[Phase 3] Phase 2 weights を finetune 起点として使用` と表示されるか、
-> それとも `[新規] backbone 重みで学習` / `[新規] COCO フル重みで学習` になっているかで、
-> 起点が正しいかを判別できる。
->
-> ノートブック側の恒久対策（checkpoint が存在してからマーカーを作る、あるいはマーカーがあって
-> `_last.weights` が無ければ Phase 2 起点として扱う）は #148 の課題とする。
+> - `[Phase 3] Phase 2 weights を finetune 起点として使用` → 正しい
+> - `[新規] backbone 重みで学習` / `[新規] COCO フル重みで学習` → Phase 2 weights が Drive に無い
 
-#### (c) 実行後の確認（事後確認には原理的な限界がある）
+#### (c) 前処理の失敗は学習前に止まる（#179 でノートブックを修正済み）
 
-**前処理セルはスクリプトの終了コードを捨てる。** cell[10] / cell[12] は
-`subprocess.run(..., check=False)` で呼び出しているため、`dataset_cleaning.py` や
-`hard_negative_mining.py` が異常終了しても、そのまま 100k iteration の学習セルに進む。
+以前の `train_yolo_fastest_darknet_colab.ipynb` は、前処理スクリプトを
+`subprocess.run(..., check=False)` で呼んで**終了コードを捨てていた**ため、
+`dataset_cleaning.py` や `hard_negative_mining.py` が異常終了しても
+そのまま 100k iteration の学習に進んでいた。#179 で次のように修正した。
 
-**確実にするにはノートブック側で exit code を伝播させ、学習前に止める必要がある。
-これは #148 の課題とする。** 以下は、それが入るまでの間に取りうる最良の確認手順であり、
-「これを通れば安全」と言い切れるものではない。
+| セル | 修正内容 |
+|------|---------|
+| cell[10] / cell[12] | 前処理スクリプトの終了コードを確認し、0 以外なら例外を送出する |
+| cell[10] / cell[12] | 前提ファイル（スクリプト・Phase 2 weights）が無い場合も例外にする（従来は `SKIP:` を出して継続） |
+| cell[10] / cell[12] | 適用が完了したときにだけ完了マーカーを書く |
+| cell[25] | 完了マーカーを確認し、未完了なら**学習準備に入る前に停止**する |
+| cell[26] | 準備セルが正常終了していなければ学習を開始しない |
+
+`colab exec -f` はセルがエラーでも後続を実行し続けるため、cell[25] / cell[26] の
+両方でガードしている。意図的に前処理なしで学習する場合のみ、cell[25] の
+`ALLOW_SKIP_PREPROCESS = True` を設定する。
+
+以下は、それでも実行後に確認しておくとよい項目。
 
 **手順1: ノートブックの検査**
 
