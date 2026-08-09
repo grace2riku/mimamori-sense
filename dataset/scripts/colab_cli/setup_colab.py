@@ -88,14 +88,31 @@ time unzip -q "$ZIP" -d "$STAGE" || [ $? -le 1 ]
 # 検証はステージング側で行う。不正なら既存のデータセットを壊さずに終了できる。
 # 件数取得そのものはディレクトリ欠損で止めない（pipefail 下では ls の失敗が
 # パイプライン全体に伝播するため || true を付ける）。判定は下のチェックで行う。
+# 数える対象は cell[8] が train.txt 生成に使う条件（*.jpg / *.png / *.jpeg）に合わせる。
+# ディレクトリや Thumbs.db 等を数えてしまうと、実質空の split でもチェックを通過し、
+# 空の train.txt が作られたまま学習に進んでしまう。
+IMG_RE='.*[.](jpg|png|jpeg)'
 layout_ng=0
 for s in train val test; do
-  ic=$(ls "$STAGE/images/$s" 2>/dev/null | wc -l || true)
-  lc=$(ls "$STAGE/labels/$s" 2>/dev/null | wc -l || true)
+  ic=$(find "$STAGE/images/$s" -maxdepth 1 -type f -regextype posix-extended -regex "$IMG_RE" 2>/dev/null | wc -l || true)
+  lc=$(find "$STAGE/labels/$s" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | wc -l || true)
   echo "  $s: images=$ic labels=$lc"
   if [ "$ic" -eq 0 ] || [ "$lc" -eq 0 ]; then
-    echo "  ERROR: $s の images/labels が空、またはディレクトリがありません"
+    echo "  ERROR: $s に利用可能な画像/ラベルがありません（*.jpg *.png *.jpeg と *.txt を対象）"
     layout_ng=1
+    continue
+  fi
+
+  # 画像とラベルの対応も確認する。ラベルが 1 件も対応しない場合は展開結果が壊れている。
+  # （一部だけ欠けるのは darknet が負例として扱うため異常とはしない）
+  nolabel=$(comm -23 \
+    <(find "$STAGE/images/$s" -maxdepth 1 -type f -regextype posix-extended -regex "$IMG_RE" | sed 's|.*/||; s|[.][^.]*$||' | sort) \
+    <(find "$STAGE/labels/$s" -maxdepth 1 -type f -name '*.txt' | sed 's|.*/||; s|[.]txt$||' | sort) | wc -l)
+  if [ "$nolabel" -eq "$ic" ]; then
+    echo "  ERROR: $s の画像に対応するラベルが 1 件もありません（ファイル名の対応を確認してください）"
+    layout_ng=1
+  elif [ "$nolabel" -ne 0 ]; then
+    echo "  NOTE: $s に対応ラベルの無い画像が $nolabel 件あります（darknet は負例として扱います）"
   fi
 done
 
