@@ -187,14 +187,26 @@ colab --auth=adc sessions   # エラーなく返れば成功（一覧が空で�
 【WSL】③ colab --auth=adc exec -s trainer -f setup_colab.py --timeout 300
               # Yolo-Fastest clone + darknet ビルド + データセット展開（バックグラウンド起動）
 【WSL】④ colab --auth=adc exec -s trainer -f poll.py --timeout 300
-              # 完了まで繰り返す
-【WSL】⑤ colab --auth=adc exec -s trainer -f train_launch.py --timeout 300
+              # "SETUP DONE" が出るまで繰り返す
+【WSL】⑤ python3 make_prep_nb.py prep_cells.ipynb        ← ★省略不可
+        colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900
+        python3 check_notebook_errors.py prep_cells_output.ipynb
+              # obj.data と cfg を生成する（元ノートブック cell[8] / cell[14-16]）
+【WSL】⑥ colab --auth=adc exec -s trainer -f train_launch.py --timeout 300
               # 学習をバックグラウンド起動 → 即戻る
-【WSL】⑥ colab --auth=adc exec -s trainer -f poll.py --timeout 300
+【WSL】⑦ colab --auth=adc exec -s trainer -f poll.py --timeout 300
               # 任意のタイミングでログ確認。PC を閉じても学習は継続
-【WSL】⑦ colab --auth=adc download -s trainer /content/backup/xxx.weights <local>
-【WSL】⑧ colab --auth=adc stop -s trainer                 ← 必須
+              # "TRAIN DONE" なら成功、"TRAIN FAILED (exit=N)" なら失敗
+【WSL】⑧ colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights <local>
+              # パスは train_launch.py の BACKUP_DIR と揃える。stop の前に回収すること
+【WSL】⑨ colab --auth=adc stop -s trainer                 ← 必須
 ```
+
+**⑤ を飛ばすと ⑥ が必ず失敗する。** `setup_colab.py` が作るのはディレクトリ
+（`data/person` と `backup`）だけで、`obj.data` と cfg は元ノートブックのセルが生成する。
+
+**⑧ は ⑨ より前に必ず行う。** `BACKUP_DIR`（既定 `/content/backup_smoke`）は VM 上の
+一時領域のため、`colab stop` で VM ごと消える。
 
 **`--auth=adc` はサブコマンドより前に置く**（グローバルフラグのため）。
 
@@ -343,6 +355,25 @@ base64 変換後 100 MB の制限と推定される。実効速度は約 3.05 MB
 colab upload   {local_path}  {remote_path}
 colab download {remote_path} {local_path}     ← リモートが先
 ```
+
+### 6.10 `train_launch.py` の既定は検証用。本番学習では設定変更が必要
+
+既定値は `MAX_BATCHES = 100` / `PRETRAINED_WEIGHTS = ""`（スクラッチ学習）で、
+疎通確認のための設定になっている。本番学習では次の 2 点を必ず設定する。
+
+| 設定 | 本番での値 | 未設定だとどうなるか |
+|------|-----------|--------------------|
+| `MAX_BATCHES` | `None`（cfg の値をそのまま使う） | 100 iteration で終わる |
+| `PRETRAINED_WEIGHTS` | finetune の起点となる重み | **ランダム初期化から数時間走る** |
+
+cfg は `max_batches=100000` / `burn_in=1000` の **finetune 前提**で生成されるため、
+重みを渡さないと設計と異なる実験になる。`PRETRAINED_WEIGHTS` を設定すると、
+元ノートブック cell[26] と同じ判断で `-clear` の有無を切り替える
+（`_last.weights` からの中断再開では seen カウンタを保持し、それ以外では `-clear` でリセット）。
+
+あわせて **checkpoint の保存先**も検討すること。`BACKUP_DIR` は VM 上の一時領域のため、
+数時間の学習中に切断されると失われる。元ノートブックは cell[25] で Drive へ逃がしているが、
+そのセルは既存の重みを上書きしうる（6.5 参照）。
 
 ---
 

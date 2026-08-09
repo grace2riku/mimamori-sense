@@ -9,9 +9,14 @@
   学習を再開する。短いテスト実行でこれを踏むと #148 Phase 3 の重みを上書きするため、
   本スクリプトは cell[25] を使わず、保存先を隔離した obj.data を生成して使う。
 
-前提: setup_colab.py の完了後、darknet 用の obj.data / cfg が生成済みであること
-      （obj.data は元ノートブック cell[8]、cfg は cell[14][15][16] が生成する。
-        make_prep_nb.py でそれらのセルだけを抜き出して実行できる）
+前提: setup_colab.py の完了後、**準備セルの実行まで済ませておくこと**。
+      darknet 用の obj.data は元ノートブック cell[8]、cfg は cell[14][15][16] が生成する。
+      setup_colab.py はディレクトリを作るだけでこれらのファイルは作らないため、
+      間に make_prep_nb.py で生成したサブノートブックを実行する必要がある:
+
+          python3 make_prep_nb.py prep_cells.ipynb
+          colab --auth=adc exec -s <name> -f prep_cells.ipynb --timeout 900
+          python3 check_notebook_errors.py prep_cells_output.ipynb
 
 実行後は drive_guard.py で Drive が無傷であることを確認すること。
 """
@@ -25,8 +30,22 @@ DARKNET_DIR = "/content/Yolo-Fastest"
 BACKUP_DIR = "/content/backup_smoke"      # 保存先。Drive の外に置くこと
 SRC_CFG = os.path.join(DARKNET_DIR, "cfg", "yolo-fastest-person-192.cfg")
 SRC_DATA = os.path.join(DARKNET_DIR, "data", "person", "obj.data")
-MAX_BATCHES = 100                          # 本番学習では None にして cfg の値をそのまま使う
 LOG_PATH = "/content/train.log"
+
+# 検証用に max_batches を縮小する。None にすると cfg の値をそのまま使う。
+#
+# ★本番学習（MAX_BATCHES = None）では PRETRAINED_WEIGHTS の設定が必須。
+#   cfg は max_batches=100000 / burn_in=1000 の finetune 前提で生成されており、
+#   重みを渡さないとランダム初期化から始まるため、設計と異なる実験を数時間かけて回すことになる。
+#   本番では checkpoint の保存先も要検討（BACKUP_DIR は VM 停止で消える。元ノートブックは
+#   cell[25] で Drive へ逃がしている。ただし cell[25] は既存の重みを上書きしうる点に注意）。
+MAX_BATCHES = 100
+
+# 転移学習の起点となる重み。空文字ならスクラッチ学習。
+# DARKNET_DIR からの相対パスまたは絶対パスで指定する。
+# 例: "yolo-fastest-coco-pretrained.weights"（元ノートブック cell[23] が生成）
+#     "/content/drive/MyDrive/yolo_fastest_darknet_person/backup/xxx_final.weights"
+PRETRAINED_WEIGHTS = ""
 
 # --- 安全確認: darknet の backup が Drive を指していないこと ---
 bk = os.path.join(DARKNET_DIR, "backup")
@@ -42,8 +61,36 @@ else:
 for p in (SRC_CFG, SRC_DATA):
     if not os.path.isfile(p):
         print("ERROR: 見つかりません:", p)
-        print("  元ノートブックの cell[8] / cell[14-16] を実行してください（make_prep_nb.py 参照）")
+        print("  setup_colab.py はディレクトリを作るだけで、これらのファイルは作りません。")
+        print("  先に準備セル（元ノートブック cell[8] / cell[14-16]）を実行してください:")
+        print("    python3 make_prep_nb.py prep_cells.ipynb")
+        print("    colab --auth=adc exec -s <name> -f prep_cells.ipynb --timeout 900")
+        print("    python3 check_notebook_errors.py prep_cells_output.ipynb")
         sys.exit(1)
+
+# --- 転移学習の起点となる重みの確認 ---
+weights_arg = ""
+clear_arg = ""
+if PRETRAINED_WEIGHTS:
+    wp = PRETRAINED_WEIGHTS
+    if not os.path.isabs(wp):
+        wp = os.path.join(DARKNET_DIR, wp)
+    if not os.path.isfile(wp):
+        print("ERROR: 事前学習重みが見つかりません:", wp)
+        sys.exit(1)
+    weights_arg = " " + PRETRAINED_WEIGHTS
+    # 元ノートブック cell[26] と同じ判断。
+    # finetune の起点として別の重みを渡す場合、seen カウンタが max_batches を超えていると
+    # 「既に完了」と判定され学習ループが 0 回になるため -clear でリセットする。
+    # 中断再開（_last.weights）ではカウンタを保持したいので付けない。
+    if "_last.weights" not in PRETRAINED_WEIGHTS:
+        clear_arg = " -clear"
+    print(f"転移学習の起点: {PRETRAINED_WEIGHTS}{' (-clear あり)' if clear_arg else ' (-clear なし / 再開)'}")
+elif MAX_BATCHES is None:
+    print("WARNING: 本番設定(MAX_BATCHES=None)で PRETRAINED_WEIGHTS が未設定です。")
+    print("         cfg は finetune 前提のためスクラッチ学習になります。意図した設定か確認してください。")
+else:
+    print("事前学習重みなし → スクラッチ学習（検証用途）")
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
@@ -69,12 +116,19 @@ print("--- 使用する obj.data ---")
 print(open(os.path.join(DARKNET_DIR, "data", "person", data_name)).read().strip())
 
 # --- 起動 ---
+# 完了マーカーは終了コード 0 のときだけ出す。
+# 無条件に出すと OOM・cfg 不正・データセット異常で落ちた場合でも poll.py が完了と判定してしまう。
 sh = f"""#!/bin/bash
 cd {DARKNET_DIR}
-./darknet detector train data/person/{data_name} cfg/{cfg_name} -dont_show -gpus 0
-echo "TRAIN EXIT CODE: $?"
+./darknet detector train data/person/{data_name} cfg/{cfg_name}{weights_arg} -dont_show -gpus 0{clear_arg}
+rc=$?
+echo "TRAIN EXIT CODE: $rc"
 ls -la {BACKUP_DIR}
-echo "TRAIN DONE"
+if [ "$rc" -eq 0 ]; then
+  echo "TRAIN DONE"
+else
+  echo "TRAIN FAILED (exit=$rc)"
+fi
 """
 open("/content/train.sh", "w").write(sh)
 os.chmod("/content/train.sh", 0o755)

@@ -16,6 +16,7 @@ WAIT_SEC = 60
 TAIL_LINES = 20
 LOG_CANDIDATES = ["/content/train.log", "/content/setup.log"]
 DONE_MARKERS = ["SETUP DONE", "TRAIN DONE"]
+FAIL_MARKERS = ["TRAIN FAILED"]
 BACKUP_DIR = "/content/backup_smoke"
 
 time.sleep(WAIT_SEC)
@@ -35,7 +36,10 @@ with open(log) as f:
     lines = f.read().splitlines()
 
 done = [m for m in DONE_MARKERS if any(m in ln for ln in lines)]
+failed = [ln for ln in lines if any(m in ln for m in FAIL_MARKERS)]
 print("log lines:", len(lines))
+if failed:
+    print("★失敗:", failed[-1])
 print("完了マーカー:", done or "(まだ)")
 print("--- tail ---")
 print("\n".join(lines[-TAIL_LINES:]))
