@@ -154,17 +154,50 @@ os.chmod("/content/train.sh", 0o755)
 # 二重起動の防止。
 # CLI の応答が失われて起動コマンドを再実行すると、同じ GPU・同じログ・同じ保存先で
 # darknet が 2 つ走り、OOM や checkpoint の同時上書きが起きる。
+#
+# 判定は「darknet 本体が動いているか」で行う。記録した PID は train.sh
+# ラッパのものであり、ラッパだけが先に消えても darknet は動き続けるため、
+# PID ファイルだけを見ると生存を取りこぼす。
 PID_FILE = "/content/train.pid"
-if os.path.exists(PID_FILE):
-    try:
-        _old_pid = int(open(PID_FILE).read().strip())
-    except ValueError:
-        _old_pid = None
-    if _old_pid and os.path.exists(f"/proc/{_old_pid}"):
-        print(f"ERROR: 学習が既に実行中です (pid={_old_pid})。二重起動は行いません。")
-        print("  進捗は poll.py で確認してください。")
-        print(f"  意図的に停止する場合は kill {_old_pid} を実行してから再度起動してください。")
-        sys.exit(1)
+
+
+def _running_darknet_pids():
+    """/proc を走査して darknet 本体の PID を集める。"""
+    pids = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            exe = os.path.realpath(f"/proc/{name}/exe")
+        except OSError:
+            continue
+        if os.path.basename(exe) == "darknet":
+            pids.append(int(name))
+    return pids
+
+
+_alive = _running_darknet_pids()
+if _alive:
+    # 記録があればプロセスグループ単位での停止方法を案内する。
+    # start_new_session=True で起動しているため train.sh がグループリーダーになり、
+    # kill -TERM -<pid> でラッパと darknet の両方を確実に落とせる。
+    # ラッパの PID だけを kill すると darknet が孤児として走り続ける。
+    _grp = None
+    if os.path.exists(PID_FILE):
+        try:
+            _grp = int(open(PID_FILE).read().strip())
+        except ValueError:
+            _grp = None
+    print(f"ERROR: darknet が既に実行中です (pid={_alive})。二重起動は行いません。")
+    print("  進捗は poll.py で確認してください。")
+    print("  意図的に停止する場合は、プロセスグループごと落としてください:")
+    if _grp:
+        print(f"    kill -TERM -{_grp}    # 先頭の - はプロセスグループを表す")
+    else:
+        print("    kill -TERM " + " ".join(str(p) for p in _alive))
+    print("  停止後、darknet が消えたことを確認してから再度起動してください:")
+    print("    pgrep -a darknet    # 何も出なければ停止済み")
+    sys.exit(1)
 
 proc = subprocess.Popen(
     ["/content/train.sh"],
