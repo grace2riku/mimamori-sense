@@ -177,6 +177,7 @@ def load_ground_truth(
         "image_size_resolved": 0,
         "image_size_missing": 0,
         "malformed_lines": 0,
+        "float_class_id_lines": 0,
     }
 
     for txt_path in sorted(lbl_dir.iterdir()):
@@ -211,7 +212,14 @@ def load_ground_truth(
                 stats["malformed_lines"] += 1
                 continue
             try:
-                _cls = int(parts[0])
+                # augment_offline.py:81 が生成する _aug ラベルはクラス ID を
+                # "0.0" (float 表記) で書く。int() では ValueError になるため
+                # float 経由で受ける。件数は float_class_id_lines で可視化する
+                # (darknet の read_boxes は "%d %f %f %f %f" で読むため、
+                #  この表記は学習側で誤読される。詳細は方針書 8 章 R8)。
+                if "." in parts[0] or "e" in parts[0].lower():
+                    stats["float_class_id_lines"] += 1
+                _cls = int(float(parts[0]))
                 cx, cy, w, h = (float(v) for v in parts[1:])
             except ValueError:
                 stats["malformed_lines"] += 1
@@ -437,6 +445,11 @@ def main():
     print(f"  空ラベル       : {gt_stats['empty_label_files']}")
     if gt_stats["malformed_lines"]:
         print(f"  不正行 (無視)  : {gt_stats['malformed_lines']}")
+    if gt_stats["float_class_id_lines"]:
+        print(f"  クラスID が float 表記 : {gt_stats['float_class_id_lines']} 行")
+        print("    WARNING: darknet の read_boxes は \"%d %f %f %f %f\" で読むため、")
+        print("             \"0.0\" 表記は学習時に誤読される恐れがある (方針書 8 章 R8)。")
+        print("             学習前に fix_float_class_ids.py で正規化すること。")
     if not args.no_image_size:
         print(f"  実寸取得 成功/失敗 : {gt_stats['image_size_resolved']}"
               f"/{gt_stats['image_size_missing']}")

@@ -112,11 +112,21 @@ R-a と R-b/R-c は**同時には切り分けられない**ため、まず構造
 
 ## 4. 確定方針
 
-**Phase 4 は「案G: データ拡充によるフロンティア拡張」を単独で実施する。**
-hard negative は Recall に無力であることが確定しているため **無効化**し、
-データ拡充の効果だけを測れるようにする (交絡を避ける)。
+**Phase 4 は Round A / Round B の 2 段構えで実施する。**
+hard negative は Recall に無力であることが確定しているため両ラウンドとも **無効化**し、
+変数を 1 つに絞る (交絡を避ける)。
 
-### 4.1 案G の具体設計
+| ラウンド | 変更点 | 狙い | 学習 |
+|---|---|---|---|
+| **Round A** | **`_aug` ラベルのクラス ID 正規化のみ** (データ量は変えない) | 学習データの 57% を占める破損ラベルの影響を単独で測る (8 章 R8) | 2.5h |
+| **Round B** | Round A + **COCO 追加 5,182 枚** | データ拡充によるフロンティア拡張 (案G) | 2.5h |
+
+> **Round A を先に置く理由**: R8 の破損は train の 57% に及び、
+> 横長 bbox として誤読される可能性がある。これを抱えたままデータを増やすと、
+> Recall が改善しても「破損修正の効果」と「データ増量の効果」を区別できない。
+> **Round A だけで KPI を満たす可能性もあり、その場合 Round B は不要になる。**
+
+### 4.1 案G の具体設計 (Round B の内容)
 
 #### 4.1.1 ① 倒れ姿勢サブセットの recall 診断 (系統的見逃しの確認方法)
 
@@ -193,9 +203,22 @@ python dataset/scripts/expand_coco_person.py --coco-split both --max-add 6000
 - val2017 が丸ごと未使用なのは、`download_coco_person.py:84` が
   `instances_train2017.json` のみを読んでいるため。train2017 側も
   `--max-images` 既定 5,000 (`download_coco_person.py:175`) しか使っていない。
-- **Round A の推奨設定**: `--max-add 6000 --fallen-ratio 0.5`
-  -> 6,000 画像 / 24,278 bbox / 倒れ姿勢を含む画像 3,000 (実測、dry-run)。
-  train が 32,853 -> 38,853 (**+18.3%**) になる。
+- **Round B の設定**: `--max-add 6000 --fallen-ratio 0.5`
+
+**`--apply` の実測結果 (2026-08、実行済み)**:
+
+| 段階 | 枚数 |
+|---|---|
+| 選定 | 6,000 画像 / bbox 24,278 / 倒れ姿勢を含む 3,000 |
+| ダウンロード | 6,000（**失敗 0 件**） |
+| near-duplicate で破棄 | **818**（13.6%。val/test と ahash hamming <= 4） |
+| **実際に追加** | **5,182 画像 / bbox 20,465** |
+| train 枚数 | 32,853 -> **38,035**（**+15.8%**） |
+
+> `--max-add` は**選定枚数の上限**であり、追加枚数ではない。
+> near-duplicate 破棄は選定後・ダウンロード後に効くため、
+> 実際の追加枚数は指定値より少なくなる。Round B で 20,000 枚に増やす場合も
+> 同様に 13〜14% 程度は落ちる前提で見積もること。
 
 **リーク防止 (同一画像が split をまたがない設計)**:
 
@@ -223,31 +246,28 @@ python dataset/scripts/expand_coco_person.py --coco-split both --max-add 6000
 
 #### 4.1.3 ③ 再学習 cfg / 起点重み / 手順
 
-| 項目 | Phase 3 (#137) | **Phase 4 Round A (#148)** | 理由 |
-|---|---|---|---|
-| データセット | merged (train 32,853) | **merged + COCO 追加 6,000 (train 38,853)** | 案G 本体 |
-| データセット zip | `fall_detection_dataset.zip` | **`fall_detection_dataset_v2.zip`** | 旧 zip との取り違え防止 |
-| hard negative | round1 0.15 / round2 0.08 | **無効 (`RUN_HARD_NEGATIVE = False`)** | Recall に無力 (#137 6.1.3)。データ拡充の効果を単独で測る |
-| 学習起点 | Phase 2 best (snapshot) | **Phase 2 best (同じ)** | round1/round2 と同じ起点にして比較可能にする。round1 の重みから始めると抑制学習を引きずる |
-| `max_batches` | 100,000 | **100,000 (据え置き)** | 比較可能性を優先。データが +18% でも 1 iteration のコストは batch=64 固定で変わらない |
-| cfg のその他 | `mosaic=0 / mixup=0 / cutmix=0`, `burn_in=1000`, `iou_loss=ciou`, `policy=sgdr` | **据え置き** | 変数を 1 つに絞る |
-| アンカー | Step 4 で再計算 | **再計算する** (bbox 分布が変わるため必須) | 6,000 画像 24,278 bbox の追加で分布が動く |
-| クリーニング | hamming=3 | **hamming=3 (据え置き)** | val の状態を固定するため (4.1.4) |
-| 再開マーカー | `.issue137_started` | **`.issue148_started`** | Phase 3 の再開制御と分離 |
-| Drive 保存先 | `yolo_fastest_darknet_person/` 直下と `backup/` | **`yolo_fastest_darknet_person/issue148/` 配下のみ** | **Phase 3 成果物の上書き防止 (8 章 R1)** |
+| 項目 | Phase 3 (#137) | **Round A (#148)** | **Round B (#148)** | 理由 |
+|---|---|---|---|---|
+| ラベル形式 | `_aug` が `0.0` (破損) | **`0` に正規化** | 正規化済み | **Round A の唯一の変更点** (8 章 R8) |
+| データセット | merged (train 32,853) | **変更なし (32,853)** | +COCO 5,182 (**38,035**) | Round A で破損修正の効果を単独測定 |
+| データセット zip | `fall_detection_dataset.zip` | **同じ zip のまま** | `fall_detection_dataset_v2.zip` | Round A は画像が変わらないため再アップロード不要 |
+| hard negative | round1 0.15 / round2 0.08 | **無効 (`RUN_HARD_NEGATIVE = False`)** | 無効 | Recall に無力 (#137 6.1.3) |
+| 学習起点 | Phase 2 best (snapshot) | **Phase 2 best (同じ)** | Phase 2 best | round1/round2 と同じ起点にして比較可能にする |
+| `max_batches` | 100,000 | **100,000 (据え置き)** | 100,000 | 比較可能性を優先 |
+| cfg のその他 | `mosaic=0 / mixup=0 / cutmix=0`, `burn_in=1000`, `iou_loss=ciou`, `policy=sgdr` | **据え置き** | 据え置き | 変数を 1 つに絞る |
+| アンカー | Step 4 で再計算 | **再計算する** | 再計算する | Round A でも bbox の読み取り値が変わるため必須 |
+| クリーニング | hamming=3 | **hamming=3 (据え置き)** | hamming=3 | val の状態を固定するため (4.1.4) |
+| 再開マーカー | `.issue137_started` | **`.issue148_started`** | 同左 | Phase 3 の再開制御と分離 |
+| Drive 保存先 | `yolo_fastest_darknet_person/` 直下と `backup/` | **`.../issue148/` 配下のみ** | 同左 | **Phase 3 成果物の上書き防止 (8 章 R1)** |
+
+> **Round A でもアンカー再計算が必要な理由**: R8 の破損により、これまでの学習・
+> アンカー計算は誤読された bbox (極端な横長) を見ていた可能性がある。
+> 正規化後は bbox の分布そのものが変わるため、Step 4 の再計算は必須。
 
 > **mosaic/mixup について**: Phase 3 で無効化したのは、負例 (bbox ゼロ) 画像と mosaic の併用で
-> darknet が SIGSEGV するため (`f003_03j` 8 章 R7)。Round A は負例を追加しないため理屈上は
-> mosaic を戻せるが、**変数を増やさないため Round A では 0 のまま据え置く**。
-> mosaic の復活は Round C の候補として 6.2 に記載する。
-
-**Round B / C (Round A の結果を見てから)**:
-
-| 条件 | ラウンド | 変更点 |
-|---|---|---|
-| Recall >= 60% かつ Precision >= 60% | 完了 | Phase D (MCU 反映) へ |
-| Recall 改善したが Precision < 60% | **Round B** | hard negative を `--max-add-ratio 0.05` / `--fp-conf-threshold 0.45` で復活 |
-| Recall がほぼ伸びない (< +2pt) | **Round C** | (a) 追加を 6,000 -> 20,000 に増量して再試行、(b) mosaic=1 復活、(c) `max_batches` 150,000。それでも駄目なら案H (Phase E とセット) へ |
+> darknet が SIGSEGV するため (`f003_03j` 8 章 R7)。Round A/B とも負例を追加しないため
+> 理屈上は mosaic を戻せるが、**変数を増やさないため 0 のまま据え置く**。
+> mosaic の復活は Round D の候補として 6.2 に記載する。
 
 #### 4.1.4 ④ 評価条件の固定
 
@@ -298,6 +318,22 @@ GT に対応が無い画像の検出はすべて FP として数える。
 | レポート | `--report <path>` で JSON |
 | 切り戻し | merged の `cocoext_*` を削除してリストを再生成すればよい (原本は `coco_person_ext/` に残る) |
 
+### 5.2.1 `dataset/scripts/fix_float_class_ids.py` (新規・Round A の本体)
+
+| 項目 | 内容 |
+|---|---|
+| 目的 | YOLO ラベルのクラス ID が float 表記 (`0.0`) の行を整数 (`0`) に正規化する (8 章 R8) |
+| 入力 | `--dataset` (既定 `dataset/merged`) / `--splits` (既定 `train,val,test`) |
+| dry-run | **既定**。件数を出すだけで書き換えない |
+| apply | `--apply` でラベルファイルを上書き。**bbox 座標には触れず行頭トークンのみ置換**。行順・桁は保持 |
+| 冪等性 | 2 回目以降は修正対象 0 行。Colab で毎回実行しても安全 |
+| 安全側の判断 | クラス ID が非整数 (`0.5` 等) の行は「想定外の壊れ方」として**自動修正せず** `lines_malformed` に計上する |
+| レポート | `--report <path>` で JSON |
+| 実行済み | ローカル `dataset/merged` に適用済み (train 38,135 行 / val・test 0 行、再検査 0 件) |
+
+**根本原因も修正済み**: `augment_offline.py:81` を `int(cls_id)` に変更し、
+以後の `augment_offline.py` 実行では正しい表記が生成される。
+
 ### 5.3 ノートブック変更点 (`dataset/scripts/train_yolo_fastest_darknet_colab.ipynb`)
 
 セル番号は**更新後**のもの。今回 6 セル (markdown 3 / code 3) を位置 7 / 32 / 48 に挿入したため、
@@ -306,9 +342,9 @@ GT に対応が無い画像の検出はすべて FP として数える。
 
 | cell | 種別 | 変更内容 |
 |---|---|---|
-| 0 | markdown | Phase 4 (#148) のサマリ表と警告を追記 |
+| 0 | markdown | Phase 4 (#148) のサマリ表と警告を追記。Round A / Round B の 2 段構えと R8 を明記 |
 | **7 / 8** | **新規** | **Step 2.0 実行スコープ設定**。`GDRIVE_RUN_DIR` (= `.../yolo_fastest_darknet_person/issue148`)、`DATASET_ZIP`、`ISSUE_MARKER`、`DATASET_ID_NAME` を決めて環境変数に出す。隔離先が Phase 3 の保存先と一致していたら `RuntimeError`。Phase 3 成果物のサイズ/更新時刻をベースラインとして `/content/.issue148_drive_baseline.json` に記録 (監視対象 `_PROTECTED_ROOTS` = ルート直下 / `backup/` / `model/` / `phase2_source/`) |
-| 9 | code | `DATASET_ZIP` / `GDRIVE_BACKUP` を環境変数から取得するよう変更 |
+| **9** | code | `DATASET_ZIP` / `GDRIVE_BACKUP` を環境変数から取得するよう変更。**末尾に Round A の本体である `fix_float_class_ids.py --apply` を追加**（セルを新設せず既存セルに追記したのは、セル挿入で番号が再びずれて 5.3.1 の参照が壊れるのを避けるため） |
 | 12 | code | 再開判定のマーカーと Drive パスを隔離先に変更。クリーニングレポートの保存先を `issue148/cleaning_report.json` に変更。`--dup-hamming-threshold 3` の据え置き理由をコメント化 |
 | 13 | markdown | Round A では hard negative 無効であることを明記 |
 | 14 | code | `RUN_HARD_NEGATIVE = False` (Round A)。`MARK_SKIP_AS_DONE = True` を追加し、意図的スキップ時に完了マーカーを書く。Phase 2 weights の**読み取り元は Phase 3 ルート、書き込みは隔離先**に分離 |
@@ -359,22 +395,18 @@ Phase 3 の成果物 (`_80000.weights` / `_90000.weights` / `*-phase3r1.weights`
 
 ### 5.4 ユーザー実行前チェックリスト
 
-**ローカル (データ拡充)**
+#### Round A (ラベル正規化のみ) — **データセットの再アップロードは不要**
 
-- [ ] `python dataset/scripts/expand_coco_person.py --coco-split both --max-add 6000` (dry-run) で候補数を確認
-- [ ] `... --apply --report issue148_expand_report.json` で実行 (画像 6,000 枚のダウンロードが走る)
-- [ ] `python dataset/scripts/quality_check.py` で 1:1 対応と座標範囲を確認
-- [ ] `python dataset/scripts/fallen_pose_recall_eval.py --dataset dataset/merged --split train --dry-run` で train 側の倒れ姿勢比率が上がったことを確認
-- [ ] `cd dataset/merged && zip -r fall_detection_dataset_v2.zip images/ labels/`
-- [ ] **zip の検証**: `python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]); print('OK')" fall_detection_dataset_v2.zip`
-      (`file` コマンドでは破損を検出できない。#179 コメント ③ 参照)
-- [ ] `fall_detection_dataset_v2.zip` を Drive のマイドライブ直下にアップロード
+Round A は画像が 1 枚も変わらないため、Drive にある既存の
+`fall_detection_dataset.zip` (4.87GB) をそのまま使う。ラベル正規化は
+Colab 上で cell[9] が実行する。
 
 **Drive (スクリプト配置)**
 
 - [ ] `/content/drive/MyDrive/yolo_fastest_darknet_person/dataset_cleaning.py` (最新)
 - [ ] `.../fallen_pose_recall_eval.py` (**新規**)
-- [ ] `hard_negative_mining.py` は Round A では不要 (Round B で使う)
+- [ ] `.../fix_float_class_ids.py` (**新規・Round A の本体。無いと cell[9] が停止する**)
+- [ ] `hard_negative_mining.py` は Round A/B では不要 (Round C で使う)
 - [ ] Phase 2 の finetune 起点が読める場所にあること
       (`.../phase2_source/yolo-fastest-person-192_phase2.weights` または
       `.../yolo-fastest-person-192_best.weights` / `_final.weights`)
@@ -383,22 +415,40 @@ Phase 3 の成果物 (`_80000.weights` / `_90000.weights` / `*-phase3r1.weights`
 
 - [ ] ランタイムが GPU (L4 推奨。L4 で約 0.09 秒/iteration、100k で約 2.5 時間。#179 コメント ②)
 - [ ] **Step 2.0 の設定セル (cell[8]) を必ず実行する**。飛ばすと Phase 3 と同じ場所に書き込む
+- [ ] cell[9] の出力で「修正しました: 38,135 行」を確認する。
+      **0 行だった場合は正規化済みの zip を掴んでいるか、スクリプトが古い**
 - [ ] Phase 3 の `.issue137_started` は残してよい (Phase 4 は `.issue148_started` を使う)
 - [ ] 同一 VM で #137 を回した直後の場合は `/content/dataset` を削除してから再展開する
       (`RUN_HARD_NEGATIVE = False` のとき既存 `hardneg_*` を除去する処理 (2.6.0) は走らないため)
-- [ ] `colab_cli` を使う場合は `dataset/scripts/colab_cli/setup_colab.py:21` の `DRIVE_ZIP` を
-      `fall_detection_dataset_v2.zip` に書き換える
+
+#### Round B (データ拡充) — Round A の結果を見てから
+
+ローカルの `dataset/merged` は**拡充とラベル正規化の両方が適用済み** (2026-08 実施) なので、
+zip を作り直してアップロードするだけでよい。
+
+- [x] `expand_coco_person.py --coco-split both --max-add 6000 --apply` (実行済み。5,182 枚追加)
+- [x] `quality_check.py` (実行済み。ALL CHECKS PASSED)
+- [x] `fix_float_class_ids.py --apply` (実行済み。38,135 行)
+- [ ] `cd dataset/merged && zip -r fall_detection_dataset_v2.zip images/ labels/`
+- [ ] **zip の検証**: `python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]); print('OK')" fall_detection_dataset_v2.zip`
+      (`file` コマンドでは破損を検出できない。#179 コメント ③ 参照)
+- [ ] `fall_detection_dataset_v2.zip` を Drive のマイドライブ直下にアップロード
+- [ ] cell[8] の `DATASET_ZIP` を `fall_detection_dataset_v2.zip` に変更
+- [ ] `colab_cli` を使う場合は `dataset/scripts/colab_cli/setup_colab.py:21` の `DRIVE_ZIP` も変更
+- [ ] Round A とは**別の `GDRIVE_RUN_DIR`** (例: `RUN_NAME = 'issue148_roundB'`) にするか、
+      Round A の成果物を退避してから実行する (同名ファイルの上書きを避けるため)
 
 ### 5.5 実行順序 (Colab)
 
 1. Step 1: darknet セットアップ
 2. Step 2: Drive マウント
 3. **Step 2.0 (新規): 実行スコープ設定** — 保存先の隔離とベースライン記録
-4. Step 2 続き: データセット展開 (`fall_detection_dataset_v2.zip`)、darknet 形式ファイル生成
+4. Step 2 続き: データセット展開 (Round A は `fall_detection_dataset.zip`)、
+   **ラベルのクラス ID 正規化 (Round A の本体、cell[9] 末尾)**、darknet 形式ファイル生成
 5. Step 2.5: `dataset_cleaning.py` (hamming=3、dry-run -> apply)
-6. Step 2.6: hard negative — **Round A では自動スキップ** (完了マーカーは書かれる)
+6. Step 2.6: hard negative — **Round A/B では自動スキップ** (完了マーカーは書かれる)
 7. Step 3: cfg 生成 (Phase 3 と同一パラメータ)
-8. Step 4: **アンカー再計算 (必須)** — 追加データで bbox 分布が変わる
+8. Step 4: **アンカー再計算 (必須)** — 正規化で bbox の読み取り値が変わる (Round B では追加データでも変わる)
 9. Step 5: 事前学習重み (Phase 2 起点なので予備)
 10. Step 6: 学習 (100k iter finetune、`.issue148_started` 制御、L4 で約 2.5 時間)
 11. Step 7: `darknet detector map` (conf 0.25 / IoU 50)。**`unique_truth` を記録し 3,763 と一致するか確認**
@@ -429,13 +479,28 @@ Phase 3 の成果物 (`_80000.weights` / `_90000.weights` / `*-phase3r1.weights`
 
 ### 6.2 未達時の分岐
 
+**Round A (ラベル正規化のみ) の結果による分岐**:
+
 | 状況 | 次アクション |
 |---|---|
-| 全 KPI 達成 | Phase D (MCU 反映) へ。手順は `f003_03j` 7 章 |
-| Recall 60% 到達・Precision < 60% | **Round B**: hard negative を `--max-add-ratio 0.05` / `--fp-conf-threshold 0.45` で復活。Precision を戻しつつ Recall の低下幅を確認 |
-| Recall +2〜+8pt だが 60% 未満 | **Round C-(a)**: 追加を 6,000 -> 20,000 に増量 (プールは 60,873 あるので可能)。倒れ姿勢比率を 0.7 に上げる |
-| Recall がほぼ伸びない (< +2pt) | データ量が律速ではない。**Round C-(b)/(c)**: mosaic=1 復活 / `max_batches` 150,000。それでも駄目なら **案H へ移行 (Phase E とセット、7 章)** |
-| 診断で `fallen` の Recall だけ極端に低い | 倒れ姿勢データをさらに重点追加 (`--fallen-ratio 0.8`)。Roboflow Fall 以外の転倒データセット追加も検討 |
+| 全 KPI 達成 (Recall >= 60%) | **Round B は不要**。Phase D (MCU 反映) へ。手順は `f003_03j` 7 章 |
+| Recall が大きく改善したが 60% 未満 | **Round B へ** (データ拡充 5,182 枚)。R8 が主因だったと判断でき、データ増量が上積みになる見込み |
+| Recall がほぼ伸びない (< +2pt) | R8 は主因ではなかった。**Round B へ** (データ量が律速かを検証)。R8 の修正自体は仕様準拠なので巻き戻さない |
+| Precision が 60% を割った | Round B の後に **Round C** で hard negative を `--max-add-ratio 0.05` / `--fp-conf-threshold 0.45` で復活 |
+
+**Round B (データ拡充) の結果による分岐**:
+
+| 状況 | 次アクション |
+|---|---|
+| 全 KPI 達成 | Phase D (MCU 反映) へ |
+| Recall +2〜+8pt だが 60% 未満 | **Round D-(a)**: 追加を 6,000 -> 20,000 に増量 (プールは 60,873 あるので可能)。倒れ姿勢比率を 0.7 に上げる。near-duplicate 破棄 13〜14% を見込むこと |
+| Recall がほぼ伸びない (< +2pt) | データ量が律速ではない。**Round D-(b)/(c)**: mosaic=1 復活 / `max_batches` 150,000。それでも駄目なら **案H へ移行 (Phase E とセット、7 章)** |
+
+**診断 (Step 7.5) の結果による分岐 (両ラウンド共通)**:
+
+| 状況 | 次アクション |
+|---|---|
+| 診断で `fallen` の Recall だけ極端に低い | 倒れ姿勢データをさらに重点追加 (`--fallen-ratio 0.8`)。Roboflow Fall 以外の転倒データセット追加も検討。**R8 で横長 bbox が汚染されていたため、Round A 前後の `fallen` Recall 比較は特に重要** |
 | 診断で `small` の Recall だけ低い | 解像度律速。**案H を最優先に切り替え、Phase E を先に実施** |
 | `unique_truth` が 3,763 と一致しない | 比較不能。クリーニングの実行状態と閾値を揃えて再評価する (数値を KPI 判定に使わない) |
 
@@ -532,6 +597,51 @@ Phase 3 の成果物 (`_80000.weights` / `_90000.weights` / `*-phase3r1.weights`
 - どうしても作り直す場合は、val/test の画像名リストを保存しておき、
   同じ割り当てを復元する仕組みを別途作ること (本 Issue では未実装)
 
+### R8. `_aug` ラベルのクラス ID が float 表記 (Round A で判明・最重要)
+
+**事実 (実測)**:
+
+| 項目 | 値 |
+|---|---|
+| 該当ファイル | `dataset/merged/labels/train/*_aug<N>.txt` **21,803 ファイル** |
+| 該当行 | **38,135 行** (train 全 78,536 行の **48.6%**) |
+| train 画像に占める割合 | 21,803 / 38,035 = **57.3%** |
+| 表記 | `0.0 0.726047 ...` (正しくは `0 0.726047 ...`) |
+| 原因 | `augment_offline.py:81` が albumentations の返す float をそのまま f-string 出力 |
+| val / test | **該当 0 行** (`augment_offline.py` は train のみ拡張するため) |
+
+**darknet への影響 (推定・未確定)**:
+
+darknet の `read_boxes` は `fscanf(file, "%d %f %f %f %f", ...)` で読むとされる。
+C の `scanf` 意味論では `%d` が `0` だけを消費して `.0` が次の `%f` に流れ込み、
+フィールドが 1 つずつずれる。実際に同じ意味論を再現して確認した結果:
+
+```
+正しい形式 (0)   : id=0 x=0.273953 y=0.859979 w=0.111750 h=0.280042
+_aug の形式(0.0) : id=0 x=.0       y=0.726047 w=0.859979 h=0.111750  ← 本来の h が余る
+```
+
+座標がずれるだけでなく、**w/h 比が 7.7 倍の極端な横長 bbox** として読まれる。
+横長 = 本 Issue が重視する「倒れ姿勢」の形状であり、
+**倒れ姿勢の学習を系統的に汚染していた可能性がある**。
+
+**未確定な点 (正直に記録する)**:
+
+- 本リポジトリに darknet のソースは無く、**書式文字列そのものは未確認**である
+- 上記は C の `scanf` 意味論の再現であって、darknet を実行した検証ではない
+- 確実に言えるのは「YOLO 仕様 (クラス ID は整数) から外れており、
+  同一データセット内の非 `_aug` ラベルは `0` を使っている」ことのみ
+
+**対処**:
+
+- 根本原因: `augment_offline.py:81` を `int(cls_id)` に修正済み (以後の生成は正しくなる)
+- 既存データ: `dataset/scripts/fix_float_class_ids.py` で正規化 (dry-run 既定)。
+  ローカルの `dataset/merged` は適用済み (38,135 行、再検査 0 件)
+- Colab: データセット展開セル (cell[9]) の末尾で `--apply` を実行する。
+  **Round A の変更点はこれだけ**であり、スキップすると実験の意味が無くなる
+- 評価への影響: val/test は該当 0 行のため、**過去ラウンドの評価数値は汚染されていない**。
+  汚染されていたのは学習データ側のみ
+
 ---
 
 ## 9. 変更ファイル一覧 (Phase A/B コミット対象)
@@ -541,6 +651,8 @@ Phase 3 の成果物 (`_80000.weights` / `_90000.weights` / `*-phase3r1.weights`
 | `doc/report/f003_03l_person_detection_recall_plan.md` | 新規 | 本ドキュメント (Phase A 成果物) |
 | `dataset/scripts/fallen_pose_recall_eval.py` | 新規 | 倒れ姿勢サブセット Recall 診断 (dry-run / JSON レポート) |
 | `dataset/scripts/expand_coco_person.py` | 新規 | COCO からの人物データ追加取り込み (dry-run / --apply / リーク防止) |
+| `dataset/scripts/fix_float_class_ids.py` | 新規 | ラベルのクラス ID 正規化 (**Round A の本体**、8 章 R8) |
+| `dataset/scripts/augment_offline.py` | 更新 | **R8 の根本原因を修正** (`f"{cls_id}"` -> `f"{int(cls_id)}"`) |
 | `dataset/scripts/train_yolo_fastest_darknet_colab.ipynb` | 更新 | Issue #148 対応 (実行スコープ設定 / 保存先隔離 / hard negative 無効 / Step 7.5 診断 / Step 11.5 検証) |
 | `dataset/scripts/colab_cli/make_prep_nb.py` | 更新 | セル番号ずれ (+2) の修正 + `EXPECT` によるずれ検出 (5.3.1) |
 | `dataset/scripts/colab_cli/train_launch.py` | 更新 | セル番号参照を +2 に更新 |
@@ -563,28 +675,44 @@ MCU 側 C/H (`e2studio_CPU0/src/ai_application/**`, `mera/*`)、`configuration.x
 | `expand_coco_person.py` | `python -m py_compile` / `--help` | OK |
 | 同 | `--coco-split val2017 --max-add 3000` (dry-run) | OK (候補 2,653) |
 | 同 | `--coco-split both --max-add 6000` (dry-run) | OK (候補 60,873 / 選定 6,000。4.1.2 の表) |
+| 同 | `--apply` の実行 (**実施済み**) | OK (DL 6,000 / 失敗 0 / near-dup 破棄 818 / **追加 5,182**。train 32,853 -> 38,035) |
+| `quality_check.py` | 拡充後の merged 全体 | **ALL CHECKS PASSED** (1:1 対応・座標範囲・空ラベルすべて OK) |
+| `fix_float_class_ids.py` | `py_compile` / dry-run / `--apply` (**実施済み**) | OK (train 38,135 行を修正 / val・test 0 行。再検査 0 件) |
+| 同 | 適用後の `fallen_pose_recall_eval.py --split train` | OK (GT 78,536・空ラベル 0 で実データと一致。**修正前は 40,401 しか数えられていなかった**) |
+| darknet の誤読 (R8) | C の `scanf` 意味論を再現して確認 | フィールドが 1 つずれることを確認。**ただし darknet 本体は未参照** |
 | ノートブック | JSON パース / `nbformat.validate` | OK (52 セル) |
 | 同 | 全 Python セルを IPython 変換後に `compile()` | OK |
 | 同 | 全 `%%bash` セルを `bash -n` | OK (5 セル) |
 | `make_prep_nb.py` | 実行して抜き出しセルを確認 | OK (`cell[10]/[16]/[17]/[18]` を取得。`EXPECT` 照合も通過) |
 | セル番号の +2 対応 | 更新前ノートブックとの本文突き合わせ | OK (5.3.1) |
 
-`--apply` を伴う実行 (画像ダウンロード) と Colab 学習は本セッションでは実行していない。
+Colab 学習は本セッションでは実行していない (ローカルのデータ準備は完了済み)。
 
 ---
 
 ## 10. 次のステップ (ユーザー作業)
 
-1. **ローカル**: `expand_coco_person.py` を dry-run -> `--apply` でデータ拡充 (5.4 のチェックリスト)
-2. **ローカル**: `fall_detection_dataset_v2.zip` を作成・検証し Drive にアップロード
-3. **Drive**: `fallen_pose_recall_eval.py` と最新の `dataset_cleaning.py` を配置
-4. **Colab (診断のみ・任意)**: Step 7.5 の `DIAGNOSE_WEIGHTS` に Phase 3 round1 の重みを指定し、
-   拡充前モデルの姿勢別 Recall を先に取っておく (Round A との差分が見える)。
+**Round A (ラベル正規化のみ) — いまここ**
+
+1. **Drive**: `fix_float_class_ids.py` (**新規・必須**)、`fallen_pose_recall_eval.py` (新規)、
+   最新の `dataset_cleaning.py` を `yolo_fastest_darknet_person/` に配置
+   ※ データセット zip は既存の `fall_detection_dataset.zip` のままでよい (再アップロード不要)
+2. **Colab (診断のみ・任意)**: Step 7.5 の `DIAGNOSE_WEIGHTS` に Phase 3 round1 の重みを指定し、
+   修正前モデルの姿勢別 Recall を先に取っておく (Round A との差分が見える)。
    その際 cfg のアンカーが round1 学習時の値であることを必ず確認する
-5. **Colab**: 5.5 の順序で Round A を実行 (L4 で約 2.5 時間)
-6. **判定**: 6.1 の KPI と 6.2 の分岐表に従って Round B/C または Phase D へ
-7. Round A の実測値が出たら、本ドキュメントに「6.1.1 Round A 実測結果」節を追記する
+3. **Colab**: 5.5 の順序で Round A を実行 (L4 で約 2.5 時間)。
+   cell[9] の「修正しました: 38,135 行」を必ず確認する
+4. **判定**: 6.1 の KPI と 6.2 の分岐表に従う。
+   **Recall >= 60% ならここで完了** (Round B 不要)
+5. 実測値が出たら本ドキュメントに「6.1.1 Round A 実測結果」節を追記する
    (`f003_03j` 6.1.1 / 6.1.3 と同じ書き方)
+
+**Round B (データ拡充) — Round A の結果を見てから**
+
+6. **ローカル**: `fall_detection_dataset_v2.zip` を作成・検証し Drive にアップロード
+   (データ拡充と正規化は適用済みなので zip 作成だけでよい)
+7. **Colab**: `DATASET_ZIP` と `RUN_NAME` を切り替えて Round B を実行
+8. **判定**: 6.2 の Round B 分岐表に従って Round C/D または Phase D へ
 
 ---
 
