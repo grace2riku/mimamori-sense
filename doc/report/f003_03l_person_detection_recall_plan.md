@@ -250,7 +250,8 @@ python dataset/scripts/expand_coco_person.py --coco-split both --max-add 6000
 |---|---|---|---|---|
 | ラベル形式 | `_aug` が `0.0` (破損) | **`0` に正規化** | 正規化済み | **Round A の唯一の変更点** (8 章 R8) |
 | データセット | merged (train 32,853) | **変更なし (32,853)** | +COCO 5,182 (**38,035**) | Round A で破損修正の効果を単独測定 |
-| データセット zip | `fall_detection_dataset.zip` | **同じ zip のまま** | `fall_detection_dataset_v2.zip` | Round A は画像が変わらないため再アップロード不要 |
+| データセット zip | `fall_detection_dataset.zip` | **同じ zip のまま** | **同じ zip のまま** | Round B の追加画像は **Colab 上で COCO から直接取得**する (下記) |
+| `-map` | なし | なし (`_final` を評価) | **あり (`_best` を保存)** | 途中の最良点を拾う (6.1.2 A3) |
 | hard negative | round1 0.15 / round2 0.08 | **無効 (`RUN_HARD_NEGATIVE = False`)** | 無効 | Recall に無力 (#137 6.1.3) |
 | 学習起点 | Phase 2 best (snapshot) | **Phase 2 best (同じ)** | Phase 2 best | round1/round2 と同じ起点にして比較可能にする |
 | `max_batches` | 100,000 | **100,000 (据え置き)** | 100,000 | 比較可能性を優先 |
@@ -421,22 +422,28 @@ Colab 上で cell[9] が実行する。
 - [ ] 同一 VM で #137 を回した直後の場合は `/content/dataset` を削除してから再展開する
       (`RUN_HARD_NEGATIVE = False` のとき既存 `hardneg_*` を除去する処理 (2.6.0) は走らないため)
 
-#### Round B (データ拡充) — Round A の結果を見てから
+#### Round B (データ拡充) — **拡充は Colab 上で行う。巨大 zip の受け渡しは不要**
 
-ローカルの `dataset/merged` は**拡充とラベル正規化の両方が適用済み** (2026-08 実施) なので、
-zip を作り直してアップロードするだけでよい。
+当初は「ローカルで拡充 -> zip 作成 -> Drive にアップロード」を想定していたが、
+**この経路は成立しない**:
 
-- [x] `expand_coco_person.py --coco-split both --max-add 6000 --apply` (実行済み。5,182 枚追加)
-- [x] `quality_check.py` (実行済み。ALL CHECKS PASSED)
-- [x] `fix_float_class_ids.py --apply` (実行済み。38,135 行)
-- [ ] `cd dataset/merged && zip -r fall_detection_dataset_v2.zip images/ labels/`
-- [ ] **zip の検証**: `python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]); print('OK')" fall_detection_dataset_v2.zip`
-      (`file` コマンドでは破損を検出できない。#179 コメント ③ 参照)
-- [ ] `fall_detection_dataset_v2.zip` を Drive のマイドライブ直下にアップロード
-- [ ] cell[8] の `DATASET_ZIP` を `fall_detection_dataset_v2.zip` に変更
-- [ ] `colab_cli` を使う場合は `dataset/scripts/colab_cli/setup_colab.py:21` の `DRIVE_ZIP` も変更
-- [ ] Round A とは**別の `GDRIVE_RUN_DIR`** (例: `RUN_NAME = 'issue148_roundB'`) にするか、
-      Round A の成果物を退避してから実行する (同名ファイルの上書きを避けるため)
+- 拡充後の zip は約 6GB。`colab upload` は **1 ファイル 64MB が上限**
+  (ガイド 6.8。80MB 以上は 400 Bad Request) のため CLI では送れない
+- ブラウザから Drive へ 6GB を上げるのは時間がかかりすぎる
+
+一方 **COCO の画像取得は Colab 側の方が速い** (ローカル実測 約 1.0 枚/秒 = 100 分)。
+そこで `expand_coco_person.py --apply` を **Colab 上の cell[9] で実行**する方式に変更した。
+データセット zip は Round A と同じ `fall_detection_dataset.zip` のままでよい。
+
+- [x] ローカルでの `--apply` 実行と検証 (2026-08。選定 6,000 -> 破棄 818 -> **追加 5,182 枚**)
+      — Colab 側は同じ seed・同じ元データなのでほぼ同じ選定になる
+- [ ] Drive に `expand_coco_person.py` を配置 (**Round B の本体。無いと cell[9] が停止する**)
+- [ ] cell[8] の `ROUND = 'B'` を確認 (保存先が `issue148_roundB/` に切り替わり、
+      Round A の成果物と混ざらない)
+- [ ] cell[8] の `USE_MAP = True` を確認 (`_best.weights` を作る)
+
+> ローカルの `dataset/merged` は拡充・正規化とも適用済みだが、**Colab 側は元 zip から
+> 展開して拡充をやり直す**ため、ローカルの状態は Round B の実行に影響しない。
 
 ### 5.5 実行順序 (Colab)
 
@@ -510,7 +517,7 @@ zip を作り直してアップロードするだけでよい。
 |---|---|---|---|
 | A1 | **サブプロセスの出力がセル出力に残らない** (`subprocess.run` はカーネルの fd に直接書くため `colab exec` の記録に載らない) | ラベル正規化の修正行数・クリーニング統計・**Step 7.5 の姿勢別 Recall の表**をすべて取りこぼした | cell[9] / cell[12] / cell[33] を `capture_output=True` + `print` に変更済み |
 | A2 | ラベル正規化レポートが VM 上 (`/content/issue148_labelfix.json`) にしか残らない | セッション停止で失われる | cell[9] で Drive (`issue148/`) にコピーするよう変更済み |
-| A3 | 学習コマンドに **`-map` が無い**ため `_best.weights` が生成されない | cell[31] が `_final.weights` (100,000 iter 時点) を評価する。途中に最良点があっても拾えない | 未対処 (6.2 の Round B 検討事項)。Phase 3 も同条件のため比較の公平性は保たれている |
+| A3 | 学習コマンドに **`-map` が無い**ため `_best.weights` が生成されない | cell[31] が `_final.weights` (100,000 iter 時点) を評価する。途中に最良点があっても拾えない | **Round B で対処**。cell[28] に `-map` を追加 (`USE_MAP`)。評価対象が `_best` に変わると「データ拡充の効果」と「best 選択の効果」が混ざるため、cell[31] で **`_final` も参考評価**して切り分ける |
 | A4 | クリーニングで train 32,853 -> **22,214** (-32%) まで減る | `_aug` 画像が near-duplicate として大量に除去されている可能性 | 未検証。Round B で `cleaning_report.json` (Drive の `issue148/`) を確認する |
 
 ### 6.2 未達時の分岐
@@ -743,12 +750,24 @@ Colab 学習は本セッションでは実行していない (ローカルのデ
 5. 実測値が出たら本ドキュメントに「6.1.1 Round A 実測結果」節を追記する
    (`f003_03j` 6.1.1 / 6.1.3 と同じ書き方)
 
-**Round B (データ拡充) — Round A の結果を見てから**
+**Round B (データ拡充) — いまここ**
 
-6. **ローカル**: `fall_detection_dataset_v2.zip` を作成・検証し Drive にアップロード
-   (データ拡充と正規化は適用済みなので zip 作成だけでよい)
-7. **Colab**: `DATASET_ZIP` と `RUN_NAME` を切り替えて Round B を実行
-8. **判定**: 6.2 の Round B 分岐表に従って Round C/D または Phase D へ
+6. **Drive**: Round A の 3 本に加えて **`expand_coco_person.py`** を配置する
+   (データセット zip は Round A と同じものでよい)
+7. **Colab**: cell[8] が `ROUND = 'B'` / `USE_MAP = True` であることを確認して実行。
+   cell[9] が COCO から追加画像を取得し (数分〜十数分)、保存先は `issue148_roundB/`
+8. **判定**: `_best` の値で 6.1 の KPI を判定し、`_final` の参考値と見比べて
+   「データ拡充の効果」と「best 選択の効果」を切り分ける。
+   6.2 の Round B 分岐表に従って Round C/D または Phase D へ
+9. 実測値が出たら「6.1.3 Round B 実測結果」節を追記する
+
+**Round A の診断 JSON の回収 (未実施)**
+
+`issue148/issue148_fallen_recall.json` は Drive にあるが、VM 上の `/content` は
+アイドル回収で消えるため `colab download /content/...` では取れない。
+Drive の Web UI から直接ダウンロードするか、Drive をマウントした状態で
+`colab download -s <name> /content/drive/MyDrive/yolo_fastest_darknet_person/issue148/issue148_fallen_recall.json ./`
+とする。**この中身 (fallen / upright / small 別の Recall) が案G と案H の分岐材料になる。**
 
 ---
 
