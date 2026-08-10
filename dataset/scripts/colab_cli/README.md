@@ -46,19 +46,22 @@ python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb
 colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900
 python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb
 
-# ⑥ 学習をバックグラウンド起動
+# ⑥ Drive の基準スナップショットを取得（★学習より前に実行する）
+#    drive_guard.py は 1 回目で基準を記録し、2 回目で差分を報告する。
+#    学習の後にしか実行しないと、学習後の状態を基準にしてしまい書き込みを検出できない。
+colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
+
+# ⑦ 学習をバックグラウンド起動
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/train_launch.py --timeout 300
 
-# ⑦ 進捗確認（PC を閉じても学習は継続する）
+# ⑧ 進捗確認（PC を閉じても学習は継続する）
 #    "TRAIN DONE" なら成功、"TRAIN FAILED (exit=N)" なら失敗
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
 
-# ⑧ Drive を汚していないことの確認（検証実行時）
-#    ★前後で2回実行する。1回目で基準スナップショットを取得し、2回目で差分を報告する
-#    （⑥の前に1回目を実行しておくこと）
+# ⑨ Drive を汚していないことの確認（⑥との差分。差分があれば終了コード 1）
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
 
-# ⑨ 成果物の回収とセッション停止
+# ⑩ 成果物の回収とセッション停止
 #    パスは train_launch.py の BACKUP_DIR と揃えること（既定は /content/backup_smoke）
 colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights ./xxx_final.weights
 colab --auth=adc stop -s trainer

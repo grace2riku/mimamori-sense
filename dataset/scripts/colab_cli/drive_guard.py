@@ -49,18 +49,19 @@ def fmt(entry):
     return f"{size:,} bytes  {ts:%Y-%m-%d %H:%M:%S}"
 
 
-if not os.path.isdir(TARGET):
-    print("対象ディレクトリが存在しません:", TARGET)
-    print("（本セッションでは Drive 上に成果物が作られていない）")
-    raise SystemExit(0)
-
-current = snapshot(TARGET)
+# 対象ディレクトリがまだ無い場合も「空の状態」として基準に記録する。
+# ここで基準を残さずに終了すると、検証対象の操作がディレクトリごと作成した場合に、
+# 2 回目の実行がその状態を初期状態とみなしてしまい、検出したい書き込みを見逃す。
+exists = os.path.isdir(TARGET)
+current = snapshot(TARGET) if exists else {}
 
 if not os.path.exists(BASELINE):
     with open(BASELINE, "w") as f:
         json.dump(current, f)
     print("=== 基準スナップショットを取得しました ===")
     print("  対象  :", TARGET)
+    if not exists:
+        print("  状態  : ディレクトリはまだ存在しない（空の基準として記録）")
     print("  ファイル数:", len(current))
     print("  保存先:", BASELINE)
     print()
@@ -76,6 +77,8 @@ changed = sorted(k for k in set(base) & set(current) if base[k] != current[k])
 
 print("=== 基準スナップショットとの比較 ===")
 print("  対象      :", TARGET)
+if not exists:
+    print("  状態      : ディレクトリが存在しない")
 print("  基準       :", len(base), "ファイル")
 print("  現在       :", len(current), "ファイル")
 print()
