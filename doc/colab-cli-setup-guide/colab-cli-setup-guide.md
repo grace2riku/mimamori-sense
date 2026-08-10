@@ -562,7 +562,8 @@ python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_da
 | `/mnt/c` の読み出し | 129 MB/s |
 | `colab upload` の実効速度 | 3.05 MB/s（50 MB: 16.5 秒 / 64 MB: 20.1 秒） |
 | 895 MB の分割アップロード（64 MB × 14） | 293 秒、md5 一致 |
-| データセット 4.87 GB の展開（Drive → VM） | 1 分 37 秒 |
+| データセット 4.87 GB の展開（Drive → VM） | 1 分 37 秒（staging 方式では 2 分 11 秒） |
+| データセット識別子の計算（cell[25]） | **18.6 秒**（画像 37,590 枚 / 5.2 GB + sidecar + labels） |
 | darknet ビルド（GPU=1 / CUDNN=1 / OPENCV=0） | 数分（バイナリ 2,408,832 バイト） |
 | 学習速度（L4 / 192x192 / batch=64） | **約 0.09 秒/iteration** |
 | 本番 100,000 iteration の見積もり | **約 2.5 時間** |
