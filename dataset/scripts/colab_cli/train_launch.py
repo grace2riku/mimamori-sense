@@ -151,11 +151,29 @@ fi
 open("/content/train.sh", "w").write(sh)
 os.chmod("/content/train.sh", 0o755)
 
+# 二重起動の防止。
+# CLI の応答が失われて起動コマンドを再実行すると、同じ GPU・同じログ・同じ保存先で
+# darknet が 2 つ走り、OOM や checkpoint の同時上書きが起きる。
+PID_FILE = "/content/train.pid"
+if os.path.exists(PID_FILE):
+    try:
+        _old_pid = int(open(PID_FILE).read().strip())
+    except ValueError:
+        _old_pid = None
+    if _old_pid and os.path.exists(f"/proc/{_old_pid}"):
+        print(f"ERROR: 学習が既に実行中です (pid={_old_pid})。二重起動は行いません。")
+        print("  進捗は poll.py で確認してください。")
+        print(f"  意図的に停止する場合は kill {_old_pid} を実行してから再度起動してください。")
+        sys.exit(1)
+
 proc = subprocess.Popen(
     ["/content/train.sh"],
     stdout=open(LOG_PATH, "w"),
     stderr=subprocess.STDOUT,
     start_new_session=True,
 )
+with open(PID_FILE, "w") as _pf:
+    _pf.write(str(proc.pid))
+
 print("launched pid:", proc.pid)
 print("進捗は poll.py で確認してください:", LOG_PATH)
