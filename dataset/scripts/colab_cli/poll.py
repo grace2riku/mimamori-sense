@@ -30,6 +30,7 @@ log = max(logs, key=os.path.getmtime)
 print("log:", log)
 
 r = subprocess.run(["pgrep", "-af", "darknet|setup.sh|train.sh"], capture_output=True, text=True)
+_running = bool(r.stdout.strip())
 print("process:", (r.stdout.strip().splitlines() or ["(not running)"])[0][:100])
 
 with open(log) as f:
@@ -41,6 +42,21 @@ print("log lines:", len(lines))
 if failed:
     print("★失敗:", failed[-1])
 print("完了マーカー:", done or "(まだ)")
+
+# 完了マーカーも失敗マーカーも無く、プロセスも居ない = SIGKILL や OOM などで
+# マーカーを残せずに死んだ状態。ここを「実行中」と区別しないと、
+# 手順どおりポーリングを繰り返しても永久に終わらない。
+# 起動直後（プロセス生成前）を誤検出しないよう、ログの最終更新からの経過も見る。
+if not done and not failed and not _running:
+    _age = time.time() - os.path.getmtime(log)
+    if _age > 30:
+        print()
+        print("★異常終了の可能性: 完了マーカーが無く、プロセスも見つかりません")
+        print(f"  ログの最終更新から {_age:.0f} 秒経過しています。")
+        print("  SIGKILL・OOM・VM の再起動などで強制終了した可能性があります。")
+        print("  上のログ末尾を確認し、必要なら該当の起動スクリプトから再実行してください。")
+    else:
+        print("  （プロセス未検出だがログが新しいため、起動直後の可能性があります）")
 print("--- tail ---")
 print("\n".join(lines[-TAIL_LINES:]))
 
