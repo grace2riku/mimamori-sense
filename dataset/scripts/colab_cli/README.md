@@ -54,6 +54,8 @@ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/train_launch.py --
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
 
 # ⑧ Drive を汚していないことの確認（検証実行時）
+#    ★前後で2回実行する。1回目で基準スナップショットを取得し、2回目で差分を報告する
+#    （⑥の前に1回目を実行しておくこと）
 colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
 
 # ⑨ 成果物の回収とセッション停止

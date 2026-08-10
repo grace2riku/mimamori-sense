@@ -253,7 +253,7 @@ URL を Windows のブラウザで開いて承認し、ターミナルで **Ente
 | `setup_colab.py` | VM（`colab exec -f`） | clone + darknet ビルド + データセット展開をバックグラウンド起動 |
 | `train_launch.py` | VM（`colab exec -f`） | Drive を汚さない隔離構成で学習を起動 |
 | `poll.py` | VM（`colab exec -f`） | ログ追跡（VM 側で待ってから tail） |
-| `drive_guard.py` | VM（`colab exec -f`） | Drive に書き込みが発生していないことを検証 |
+| `drive_guard.py` | VM（`colab exec -f`） | Drive に書き込みが発生していないことを検証（**操作の前後で 2 回実行**してスナップショットを比較する） |
 | `make_prep_nb.py` | ローカル（WSL） | 元ノートブックから指定セルだけ抜き出したサブノートブックを生成 |
 | `check_notebook_errors.py` | ローカル（WSL） | `*_output.ipynb` のセルエラーを検出 |
 
@@ -330,7 +330,16 @@ os.symlink(gdrive_backup_dir, BACKUP_DIR)
 
 **短いテスト実行でこれを踏むと Phase 3 の重みが上書きされる。**
 検証目的の学習では cell[25] を使わず、`train_launch.py` のように
-`backup` の向き先を隔離した `obj.data` を使うこと。実行後は `drive_guard.py` で無傷を確認する。
+`backup` の向き先を隔離した `obj.data` を使うこと。
+
+無傷の確認には `drive_guard.py` を**検証の前後で 2 回**実行する。1 回目で基準スナップショット
+（パス・サイズ・mtime）を取得し、2 回目で差分を報告する。差分があれば終了コード 1 を返す。
+
+```bash
+colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300  # 学習前
+# ... 検証したい操作 ...
+colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300  # 学習後
+```
 
 ### 6.6 `unzip` は警告時に終了コード 1 を返す
 
