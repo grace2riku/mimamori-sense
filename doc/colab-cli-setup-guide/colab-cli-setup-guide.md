@@ -200,20 +200,25 @@ cd /mnt/c/Users/<user>/github/mimamori-sense
         colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900
         python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb
               # obj.data と cfg を生成する（元ノートブック cell[8] / cell[14-16]）
-【WSL】⑥ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/train_launch.py --timeout 300
+【WSL】⑥ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
+              # Drive の基準スナップショットを取得（★学習より前に実行する）
+              # 学習後にしか実行しないと、学習後の状態を基準にしてしまい書き込みを検出できない
+【WSL】⑦ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/train_launch.py --timeout 300
               # 学習をバックグラウンド起動 → 即戻る
-【WSL】⑦ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
+【WSL】⑧ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/poll.py --timeout 300
               # 任意のタイミングでログ確認。PC を閉じても学習は継続
               # "TRAIN DONE" なら成功、"TRAIN FAILED (exit=N)" なら失敗
-【WSL】⑧ colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights ./xxx_final.weights
+【WSL】⑨ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
+              # ⑥との差分を報告。Drive を汚していれば終了コード 1（詳細は 6.5 参照）
+【WSL】⑩ colab --auth=adc download -s trainer /content/backup_smoke/xxx_final.weights ./xxx_final.weights
               # パスは train_launch.py の BACKUP_DIR と揃える。stop の前に回収すること
-【WSL】⑨ colab --auth=adc stop -s trainer                 ← 必須
+【WSL】⑪ colab --auth=adc stop -s trainer                 ← 必須
 ```
 
-**⑤ を飛ばすと ⑥ が必ず失敗する。** `setup_colab.py` が作るのはディレクトリ
+**⑤ を飛ばすと ⑦ が必ず失敗する。** `setup_colab.py` が作るのはディレクトリ
 （`data/person` と `backup`）だけで、`obj.data` と cfg は元ノートブックのセルが生成する。
 
-**⑧ は ⑨ より前に必ず行う。** `BACKUP_DIR`（既定 `/content/backup_smoke`）は VM 上の
+**⑩ は ⑪ より前に必ず行う。** `BACKUP_DIR`（既定 `/content/backup_smoke`）は VM 上の
 一時領域のため、`colab stop` で VM ごと消える。
 
 **`--auth=adc` はサブコマンドより前に置く**（グローバルフラグのため）。
