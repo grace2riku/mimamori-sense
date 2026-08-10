@@ -73,13 +73,13 @@ colab --auth=adc stop -s trainer
 - `colab exec` の既定タイムアウトは **30 秒**。同期処理には `--timeout` を明示する
 - **セッションの停止を忘れないこと**（24 時間まで自動解放されない）
 - **⑤ の準備セル実行は省略できない**。`setup_colab.py` が作るのはディレクトリだけで、
-  `obj.data` と cfg は元ノートブックの cell[8] / cell[14-16] が生成する
-- `train_launch.py` は元ノートブックの cell[25]（`backup` を Drive へ symlink）を**使わない**。
+  `obj.data` と cfg は元ノートブックの cell[10] / cell[16-18] が生成する
+- `train_launch.py` は元ノートブックの cell[27]（`backup` を Drive へ symlink）を**使わない**。
   検証実行で Phase 3 の重みを上書きしないための隔離設計になっている
 - **⚠️ 本スクリプト群は疎通確認専用。本番学習には使わないこと。**
-  `make_prep_nb.py` が抜き出すのは cell[8] / cell[14-16] のみで、データセットクリーニング
-  (cell[10]) / hard negative mining (cell[12]) / アンカー再計算 (cell[18-20]) /
-  事前学習重み (cell[22-23]) / Drive への checkpoint 退避 (cell[25]) を含まない。
+  `make_prep_nb.py` が抜き出すのは cell[10] / cell[16-18] のみで、データセットクリーニング
+  (cell[12]) / hard negative mining (cell[14]) / アンカー再計算 (cell[20-22]) /
+  事前学習重み (cell[24-25]) / Drive への checkpoint 退避 (cell[27]) を含まない。
   これらは Phase 3 手順書 5.5 節で本番学習に必須とされている。
   本番学習は元ノートブックをそのまま実行する。その際は
   (a) Drive に `dataset_cleaning.py` / `hard_negative_mining.py` / Phase 2 weights を配置し、
@@ -91,7 +91,7 @@ colab --auth=adc stop -s trainer
     -f dataset/scripts/train_yolo_fastest_darknet_colab.ipynb --timeout 21600
   ```
 
-- **`check_notebook_errors.py` は実行後に必ず通すこと。** 学習ノートブックの cell[10] / cell[12] は
+- **`check_notebook_errors.py` は実行後に必ず通すこと。** 学習ノートブックの cell[12] / cell[14] は
   前提ファイルが無いと例外ではなく `ERROR:` / `SKIP:` を print して処理を飛ばすため、
   本スクリプトは出力テキスト中のこれらのマーカーも検出する
 - 成果物のダウンロード先パスは `train_launch.py` の `BACKUP_DIR` と揃えること。

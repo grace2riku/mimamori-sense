@@ -12,13 +12,13 @@
   本番学習はノートブックをそのまま実行すること（colab exec -f で .ipynb を直接渡せる）。
 
 ★安全設計: Google Drive には一切書き込まない
-  元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[25] は、darknet の保存先を
+  元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[27] は、darknet の保存先を
   Drive へのシンボリックリンクに置き換え、`.issue137_started` があれば `_last.weights` から
   学習を再開する。短いテスト実行でこれを踏むと #148 Phase 3 の重みを上書きするため、
-  本スクリプトは cell[25] を使わず、保存先を隔離した obj.data を生成して使う。
+  本スクリプトは cell[27] を使わず、保存先を隔離した obj.data を生成して使う。
 
 前提: setup_colab.py の完了後、**準備セルの実行まで済ませておくこと**。
-      darknet 用の obj.data は元ノートブック cell[8]、cfg は cell[14][15][16] が生成する。
+      darknet 用の obj.data は元ノートブック cell[10]、cfg は cell[16][17][18] が生成する。
       setup_colab.py はディレクトリを作るだけでこれらのファイルは作らないため、
       間に make_prep_nb.py で生成したサブノートブックを実行する必要がある:
 
@@ -52,7 +52,7 @@ MAX_BATCHES = 100
 
 # 転移学習の起点となる重み。空文字ならスクラッチ学習。
 # DARKNET_DIR からの相対パスまたは絶対パスで指定する。
-# 例: "yolo-fastest-coco-pretrained.weights"（元ノートブック cell[23] が生成）
+# 例: "yolo-fastest-coco-pretrained.weights"（元ノートブック cell[25] が生成）
 #     "/content/drive/MyDrive/yolo_fastest_darknet_person/backup/xxx_final.weights"
 # 空白を含むパスも扱えるよう、コマンド組み立て時に shlex.quote でクォートする。
 PRETRAINED_WEIGHTS = ""
@@ -63,7 +63,7 @@ if os.path.islink(bk):
     real = os.path.realpath(bk)
     print("backup symlink ->", real)
     if "/drive/" in real:
-        print("ERROR: backup が Drive を指しています。cell[25] が実行済みです。中止します。")
+        print("ERROR: backup が Drive を指しています。cell[27] が実行済みです。中止します。")
         sys.exit(1)
 else:
     print("backup: Drive への symlink ではありません OK")
@@ -72,7 +72,7 @@ for p in (SRC_CFG, SRC_DATA):
     if not os.path.isfile(p):
         print("ERROR: 見つかりません:", p)
         print("  setup_colab.py はディレクトリを作るだけで、これらのファイルは作りません。")
-        print("  先に準備セル（元ノートブック cell[8] / cell[14-16]）を実行してください:")
+        print("  先に準備セル（元ノートブック cell[10] / cell[16-18]）を実行してください:")
         print("    python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb")
         print("    colab --auth=adc exec -s <name> -f prep_cells.ipynb --timeout 900")
         print("    python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb")
@@ -89,7 +89,7 @@ if PRETRAINED_WEIGHTS:
         print("ERROR: 事前学習重みが見つかりません:", wp)
         sys.exit(1)
     weights_arg = " " + shlex.quote(PRETRAINED_WEIGHTS)
-    # 元ノートブック cell[26] と同じ判断。
+    # 元ノートブック cell[28] と同じ判断。
     # finetune の起点として別の重みを渡す場合、seen カウンタが max_batches を超えていると
     # 「既に完了」と判定され学習ループが 0 回になるため -clear でリセットする。
     # 中断再開（_last.weights）ではカウンタを保持したいので付けない。
