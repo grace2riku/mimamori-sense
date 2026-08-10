@@ -150,6 +150,13 @@ fi
 mv "$STAGE" "$DATASET_DIR"
 rm -rf "$DATASET_DIR.old"
 echo "データセットを入れ替えました: $DATASET_DIR"
+
+# データセットを入れ替えたので、学習ノートブックの前処理完了マーカーを無効化する。
+# 残したままだと cell[10] / cell[12] / cell[20] が「このデータセットは準備済み」と
+# 誤認してクリーニング・hard negative mining・アンカー再計算をスキップし、
+# 準備されていないデータで checkpoint を再開してしまう。
+rm -f /content/.cleaning_applied /content/.hardneg_applied /content/.anchors_updated
+echo "前処理の完了マーカーを無効化しました（データセットが入れ替わったため）"
 df -h /content | tail -1
 
 echo "=== [4/4] darknet 用ディレクトリ作成（元ノートブック cell[7] 相当） ==="
