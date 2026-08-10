@@ -456,9 +456,31 @@ def regenerate_split_list(merged_dir: Path, split: str, out_name: str):
 # main
 # ---------------------------------------------------------------------------
 
-def ensure_annotations(ann_dir: Path, download: bool):
-    if ann_dir.is_dir() and any(ann_dir.glob("instances_*2017.json")):
-        return
+def _find_annotations(root: Path):
+    """root 以下から instances_*2017.json のあるディレクトリを探す。"""
+    for cand in (root, root / "annotations"):
+        if cand.is_dir() and any(cand.glob("instances_*2017.json")):
+            return cand
+    if root.is_dir():
+        for p in root.rglob("instances_train2017.json"):
+            return p.parent
+        for p in root.rglob("instances_val2017.json"):
+            return p.parent
+    return None
+
+
+def ensure_annotations(ann_dir: Path, download: bool) -> Path:
+    """annotations を用意し、**実際に JSON があるディレクトリ**を返す。
+
+    zip は `annotations/` を含む構造で配布されるため、展開先は必ずしも
+    `--annotations-dir` そのものにはならない (例: `--annotations-dir
+    /content/coco_annotations` を指定すると `/content/annotations/` に展開される)。
+    戻り値を使うことでこのズレを吸収する。
+    """
+    found = _find_annotations(ann_dir)
+    if found is not None:
+        return found
+
     if not download:
         print(f"ERROR: annotations が見つかりません: {ann_dir}", file=sys.stderr)
         print("  download_coco_person.py を先に実行するか "
@@ -466,14 +488,22 @@ def ensure_annotations(ann_dir: Path, download: bool):
         sys.exit(1)
     from urllib.request import urlretrieve
 
-    zip_path = ann_dir.parent / "annotations_trainval2017.zip"
+    extract_root = ann_dir.parent
+    zip_path = extract_root / "annotations_trainval2017.zip"
     if not zip_path.exists():
         print(f"annotations をダウンロード中: {COCO_ANNOTATIONS_URL}")
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(COCO_ANNOTATIONS_URL, str(zip_path))
-    print(f"展開中: {zip_path}")
+    print(f"展開中: {zip_path} -> {extract_root}")
     with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(ann_dir.parent)
+        zf.extractall(extract_root)
+
+    found = _find_annotations(ann_dir) or _find_annotations(extract_root)
+    if found is None:
+        print(f"ERROR: 展開しましたが instances_*2017.json が見つかりません "
+              f"({extract_root} 以下)", file=sys.stderr)
+        sys.exit(1)
+    return found
 
 
 def main():
@@ -533,9 +563,10 @@ def main():
         print(f"WARNING: --target-split={args.target_split} は評価条件 (val/test) を"
               " 変えるため、過去ラウンドとの比較ができなくなります")
 
-    ensure_annotations(args.annotations_dir, args.download_annotations)
+    ann_dir = ensure_annotations(args.annotations_dir, args.download_annotations)
 
     print(f"merged      : {merged_dir}")
+    print(f"annotations : {ann_dir}")
     print(f"source-out  : {args.source_out}")
     print(f"coco-split  : {args.coco_split}")
     print(f"max-add     : {args.max_add} (fallen 目標比率 {args.fallen_ratio:.0%})")
@@ -550,9 +581,9 @@ def main():
     print("\n[2/4] COCO annotations を解析中 ...")
     ann_files = []
     if args.coco_split in ("val2017", "both"):
-        ann_files.append(args.annotations_dir / "instances_val2017.json")
+        ann_files.append(ann_dir / "instances_val2017.json")
     if args.coco_split in ("train2017", "both"):
-        ann_files.append(args.annotations_dir / "instances_train2017.json")
+        ann_files.append(ann_dir / "instances_train2017.json")
 
     all_candidates = []
     all_negatives = []
