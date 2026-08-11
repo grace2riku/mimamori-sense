@@ -8,7 +8,7 @@
 extern const TensorInfo sub_0000_net1_tensors[];
 extern const size_t sub_0000_net1_tensors_count;
 
-#define kArenaSize_sub_0000_net1 442368
+#define kArenaSize_sub_0000_net1 602112
 
 // Addresses for each input and output buffer inside of the arena
 extern const uint32_t sub_0000_net1_address_serving_default_image_input_0;

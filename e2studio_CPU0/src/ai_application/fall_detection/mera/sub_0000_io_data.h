@@ -54,16 +54,16 @@
 #include <stdint.h>
 
 extern int8_t sub_0000_serving_default_image_input_0[];
-#define sub_0000_serving_default_image_input_0_SIZE (110592)
-#define sub_0000_serving_default_image_input_0_COUNT (110592)
+#define sub_0000_serving_default_image_input_0_SIZE (150528)
+#define sub_0000_serving_default_image_input_0_COUNT (150528)
 
 extern int8_t sub_0000_StatefulPartitionedCall_0_70327[];
-#define sub_0000_StatefulPartitionedCall_0_70327_SIZE (648)
-#define sub_0000_StatefulPartitionedCall_0_70327_COUNT (648)
+#define sub_0000_StatefulPartitionedCall_0_70327_SIZE (882)
+#define sub_0000_StatefulPartitionedCall_0_70327_COUNT (882)
 
 extern int8_t sub_0000_StatefulPartitionedCall_1_70338[];
-#define sub_0000_StatefulPartitionedCall_1_70338_SIZE (2592)
-#define sub_0000_StatefulPartitionedCall_1_70338_COUNT (2592)
+#define sub_0000_StatefulPartitionedCall_1_70338_SIZE (3528)
+#define sub_0000_StatefulPartitionedCall_1_70338_COUNT (3528)
 
 
 #endif // SUB_0000_MODEL_DATA_H
