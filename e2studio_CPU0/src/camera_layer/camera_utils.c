@@ -4,13 +4,13 @@
  * @details
  * Implements the image conversion pipeline to transform camera-captured
  * RGB565 frames into the fall detection AI model's input format
- * (192x192x3 RGB INT8).
+ * (224x224x3 RGB INT8).
  *
  * The conversion is performed in a single pass with no intermediate
  * buffer allocation:
  *   1. Center-crop: extract a square region from the center of the
  *      wider input image (e.g., 450x450 from 768x450)
- *   2. Nearest-neighbor downscale to the model input size (192x192)
+ *   2. Nearest-neighbor downscale to the model input size (224x224)
  *   3. RGB565 to RGB888 expansion (5/6/5 bits -> 8/8/8 bits)
  *   4. Unsigned-to-signed conversion: uint8 [0..255] -> int8 [-128..+127]
  *

@@ -59,7 +59,7 @@
 #include "sub_0000_net1_invoke.h"
 
 // Buffers for CPU units
-int8_t buf_net1_serving_default_image_input_0[110592];
+int8_t buf_net1_serving_default_image_input_0[150528];
 
 // Arenas for CPU units
 

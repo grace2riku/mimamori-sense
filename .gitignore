@@ -64,9 +64,15 @@ nul
 # Dataset (images and downloads - reproducible via scripts)
 dataset/downloads/
 dataset/coco_person/
+dataset/coco_person_ext/
 dataset/roboflow_fall/
 dataset/merged/
 dataset/fall_detection_dataset.zip
+dataset/fall_detection_dataset_v2.zip
+
+# colab exec の実行結果ノートブック (出力込みで巨大になるため)
+*_output.ipynb
+prep_cells.ipynb
 
 # Python cache
 __pycache__/

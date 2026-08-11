@@ -199,7 +199,7 @@ cd /mnt/c/Users/<user>/github/mimamori-sense
 【WSL】⑤ python3 dataset/scripts/colab_cli/make_prep_nb.py prep_cells.ipynb     ← ★省略不可
         colab --auth=adc exec -s trainer -f prep_cells.ipynb --timeout 900
         python3 dataset/scripts/colab_cli/check_notebook_errors.py prep_cells_output.ipynb
-              # obj.data と cfg を生成する（元ノートブック cell[8] / cell[14-16]）
+              # obj.data と cfg を生成する（元ノートブック cell[10] / cell[16-18]）
 【WSL】⑥ colab --auth=adc exec -s trainer -f dataset/scripts/colab_cli/drive_guard.py --timeout 300
               # Drive の基準スナップショットを取得（★学習より前に実行する）
               # 学習後にしか実行しないと、学習後の状態を基準にしてしまい書き込みを検出できない
@@ -312,20 +312,20 @@ python3 dataset/scripts/colab_cli/check_notebook_errors.py <basename>_output.ipy
 ```
 
 さらに、**例外を投げずに処理を飛ばすセルもある**点に注意する。学習ノートブックの
-cell[10]（データセットクリーニング）と cell[12]（hard negative mining）は、前提ファイルが
+cell[12]（データセットクリーニング）と cell[14]（hard negative mining）は、前提ファイルが
 無いと `print('ERROR: ...')` / `print('SKIP: ...')` を出すだけで学習に進む。
 `output_type: "error"` にならないため、上記スクリプトは出力テキスト中の
 `ERROR:` / `SKIP:` / `WARNING:` も検出対象にしている（該当すれば終了コード 1）。
 
 ### 6.4 ノートブックのセルを部分実行すると暗黙の依存が壊れる
 
-`train_yolo_fastest_darknet_colab.ipynb` では cell[7] が `data/person` や `backup` を作成しており、
-これを飛ばすと cell[8] が `FileNotFoundError` になる。
+`train_yolo_fastest_darknet_colab.ipynb` では cell[9] が `data/person` や `backup` を作成しており、
+これを飛ばすと cell[10] が `FileNotFoundError` になる。
 セルを選んで実行する場合は、飛ばしたセルの副作用（ディレクトリ作成など）を引き継ぐこと。
 
-### 6.5 ⚠️ cell[25] は Drive の学習成果物を上書きしうる
+### 6.5 ⚠️ cell[27] は Drive の学習成果物を上書きしうる
 
-cell[25] は darknet の保存先を Drive へのシンボリックリンクに置き換え、
+cell[27] は darknet の保存先を Drive へのシンボリックリンクに置き換え、
 `.issue137_started` マーカーがあれば `_last.weights` から学習を再開する。
 
 ```python
@@ -334,7 +334,7 @@ os.symlink(gdrive_backup_dir, BACKUP_DIR)
 ```
 
 **短いテスト実行でこれを踏むと Phase 3 の重みが上書きされる。**
-検証目的の学習では cell[25] を使わず、`train_launch.py` のように
+検証目的の学習では cell[27] を使わず、`train_launch.py` のように
 `backup` の向き先を隔離した `obj.data` を使うこと。
 
 無傷の確認には `drive_guard.py` を**検証の前後で 2 回**実行する。1 回目で基準スナップショット
@@ -389,15 +389,15 @@ colab download {remote_path} {local_path}     ← リモートが先
 `train_launch.py` と `make_prep_nb.py` は「環境が正しく組み上がっているか」を確かめるための
 最小構成であり、**#148 Phase 3 のような本番学習には使えない**。
 
-`make_prep_nb.py` が抜き出すのは cell[8] / cell[14-16] だけで、次のセルを含まない。
+`make_prep_nb.py` が抜き出すのは cell[10] / cell[16-18] だけで、次のセルを含まない。
 
 | 除外セル | Phase 3 手順書での位置づけ |
 |---------|--------------------------|
-| cell[10] データセットクリーニング | Step 2.5 |
-| cell[12] hard negative mining | Step 2.6 |
-| cell[18-20] アンカー再計算 | Step 4 |
-| cell[22-23] 事前学習重み取得 | Step 5 |
-| cell[25] backup を Drive へ退避 | 学習中の checkpoint 保全 |
+| cell[12] データセットクリーニング | Step 2.5 |
+| cell[14] hard negative mining | Step 2.6 |
+| cell[20-22] アンカー再計算 | Step 4 |
+| cell[24-25] 事前学習重み取得 | Step 5 |
+| cell[27] backup を Drive へ退避 | 学習中の checkpoint 保全 |
 
 いずれも疎通確認には不要だが、**本番学習では必須**である
 （`doc/report/f003_03j_person_detection_phase3_plan.md` 5.5 節「実行順序」）。
@@ -419,9 +419,9 @@ colab download {remote_path} {local_path}     ← リモートが先
 | 同上 | `hard_negative_mining.py`（同上） |
 | 同上 `backup/` | Phase 2 の `_best.weights` または `_final.weights`（finetune 起点） |
 
-**⚠️ これらが無くてもノートブックは例外を投げない。** cell[10] は
+**⚠️ これらが無くてもノートブックは例外を投げない。** cell[12] は
 `print('ERROR: dataset_cleaning.py が見つかりません')` を出して**クリーニングを飛ばし**、
-cell[12] は `print('SKIP: Phase 2 weights が見つかりません')` を出して
+cell[14] は `print('SKIP: Phase 2 weights が見つかりません')` を出して
 **hard negative mining を飛ばした**まま学習に進む。
 `output_type: "error"` にならないため、実行後のノートブック検査でも見逃しやすい。
 
@@ -434,7 +434,7 @@ python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_da
 
 #### (b) `--timeout` は学習時間を上回る値にする
 
-cell[26] は darknet を起動したあと `for line in proc.stdout:` で**同期的にブロック**し、
+cell[28] は darknet を起動したあと `for line in proc.stdout:` で**同期的にブロック**し、
 学習が終わるまでセルが返らない。したがって `--timeout` は全体の所要時間を上回る必要がある。
 
 | GPU | 100k iteration の目安（手順書 5.5 節） |
@@ -451,13 +451,13 @@ colab --auth=adc exec -s trainer \
 これは 6.2 で述べた「長時間ジョブはバックグラウンド化する」という方針とは逆になるが、
 ノートブックの学習セルが同期実行である以上、この形を取らざるを得ない。
 
-打ち切られた場合、**`_last.weights` が書かれていれば**続きから再開できる。cell[25] が `backup` を
+打ち切られた場合、**`_last.weights` が書かれていれば**続きから再開できる。cell[27] が `backup` を
 Drive へのシンボリックリンクに置き換えるため checkpoint は Drive に残り、`.issue137_started`
 マーカーと `_last.weights` の組で再開が成立する（これが元ノートブックの切断対策）。
 
 > **最初の checkpoint が書かれる前に落ちた場合の扱い（#179 で修正済み）**
 >
-> cell[25] は**学習を始める前に** `.issue137_started` を作成する。以前は Phase 2 weights の選択を
+> cell[27] は**学習を始める前に** `.issue137_started` を作成する。以前は Phase 2 weights の選択を
 > `if not is_issue137_started:` の中でのみ行っていたため、初回が即時 OOM・cfg 不正・早期切断などで
 > `_last.weights` を残さずに終わると、再実行時に「マーカーあり・`_last.weights` なし」となり
 > **Phase 2 起点が選ばれず COCO / backbone に静かにフォールバック**していた。
@@ -483,12 +483,12 @@ Drive へのシンボリックリンクに置き換えるため checkpoint は D
 
 | セル | 修正内容 |
 |------|---------|
-| cell[10] / cell[12] | 前処理スクリプトの終了コードを確認し、0 以外なら例外を送出する |
-| cell[10] / cell[12] | 前提ファイル（スクリプト・Phase 2 weights）が無い場合も例外にする（従来は `SKIP:` を出して継続） |
-| cell[20] | アンカー更新の失敗（`anchor_str` 未定義・cfg に `anchors` 行が無い）を例外にする（従来は `ERROR:` を出して継続） |
-| cell[10] / cell[12] / cell[20] | **適用が完了したときにだけ**完了マーカーを書く |
-| cell[25] | 完了マーカーを確認し、未完了なら**学習準備に入る前に停止**する |
-| cell[26] | 準備セルが正常終了していなければ学習を開始しない |
+| cell[12] / cell[14] | 前処理スクリプトの終了コードを確認し、0 以外なら例外を送出する |
+| cell[12] / cell[14] | 前提ファイル（スクリプト・Phase 2 weights）が無い場合も例外にする（従来は `SKIP:` を出して継続） |
+| cell[22] | アンカー更新の失敗（`anchor_str` 未定義・cfg に `anchors` 行が無い）を例外にする（従来は `ERROR:` を出して継続） |
+| cell[12] / cell[14] / cell[22] | **適用が完了したときにだけ**完了マーカーを書く |
+| cell[27] | 完了マーカーを確認し、未完了なら**学習準備に入る前に停止**する |
+| cell[28] | 準備セルが正常終了していなければ学習を開始しない |
 
 ガード対象は Phase 3 手順書 5.5 節の必須ステップに対応する 3 つ。
 
@@ -502,8 +502,8 @@ Drive へのシンボリックリンクに置き換えるため checkpoint は D
 `APPLY_CLEANING` / `RUN_HARD_NEGATIVE` / `APPLY_HARD_NEGATIVE` を `False` にした場合も
 **マーカーは作られない**（適用していない以上、完了とは扱わない）。
 
-`colab exec -f` はセルがエラーでも後続を実行し続けるため、cell[25] / cell[26] の
-両方でガードしている。意図的に前処理なしで学習する場合のみ、cell[25] の
+`colab exec -f` はセルがエラーでも後続を実行し続けるため、cell[27] / cell[28] の
+両方でガードしている。意図的に前処理なしで学習する場合のみ、cell[27] の
 `ALLOW_SKIP_PREPROCESS = True` を設定する。
 
 以下は、それでも実行後に確認しておくとよい項目。
@@ -523,8 +523,8 @@ python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_da
 
 | 前処理 | 完了時にのみ出力される行 |
 |--------|------------------------|
-| クリーニング（cell[10]） | `[APPLY] 退避結果:` とそれに続く統計行 / `NOTE: 退避ファイルは _removed_phase2/ 以下にあります。` |
-| hard negative（cell[12]） | `追加枚数 : N` / `train.txt 再生成 : N 枚 -> ...` / `NOTE: 追加分の原本は hard_negatives/ に残ります。` |
+| クリーニング（cell[12]） | `[APPLY] 退避結果:` とそれに続く統計行 / `NOTE: 退避ファイルは _removed_phase2/ 以下にあります。` |
+| hard negative（cell[14]） | `追加枚数 : N` / `train.txt 再生成 : N 枚 -> ...` / `NOTE: 追加分の原本は hard_negatives/ に残ります。` |
 
 > hard negative は候補が 0 件のとき `[APPLY] hard negative 候補が 0 件のため追加なし` を出して
 > 正常終了する。この場合は追加が行われないのが正しい挙動。
@@ -563,7 +563,7 @@ python3 dataset/scripts/colab_cli/check_notebook_errors.py train_yolo_fastest_da
 | `colab upload` の実効速度 | 3.05 MB/s（50 MB: 16.5 秒 / 64 MB: 20.1 秒） |
 | 895 MB の分割アップロード（64 MB × 14） | 293 秒、md5 一致 |
 | データセット 4.87 GB の展開（Drive → VM） | 1 分 37 秒（staging 方式では 2 分 11 秒） |
-| データセット識別子の計算（cell[25]） | **18.6 秒**（画像 37,590 枚 / 5.2 GB + sidecar + labels） |
+| データセット識別子の計算（cell[27]） | **18.6 秒**（画像 37,590 枚 / 5.2 GB + sidecar + labels） |
 | darknet ビルド（GPU=1 / CUDNN=1 / OPENCV=0） | 数分（バイナリ 2,408,832 バイト） |
 | 学習速度（L4 / 192x192 / batch=64） | **約 0.09 秒/iteration** |
 | 本番 100,000 iteration の見積もり | **約 2.5 時間** |

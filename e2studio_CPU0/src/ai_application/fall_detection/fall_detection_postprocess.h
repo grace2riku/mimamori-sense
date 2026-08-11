@@ -6,8 +6,8 @@
  * anchor-based) fall detection model with 2 output branches.
  *
  * Model output tensor layout:
- *   Branch 0 (6x6 grid, stride 32):   648 bytes INT8
- *   Branch 1 (12x12 grid, stride 16): 2592 bytes INT8
+ *   Branch 0 (7x7 grid, stride 32):   882 bytes INT8
+ *   Branch 1 (14x14 grid, stride 16): 3528 bytes INT8
  *   Each: [grid_h, grid_w, num_anchors, values_per_anchor]
  *   values_per_anchor = 6: (tx, ty, tw, th, objectness, class_score)
  *
@@ -21,7 +21,7 @@
  *   4. class_score = sigmoid(raw_cls) * objectness
  *   5. Filter by confidence threshold
  *   6. Apply NMS (Non-Maximum Suppression)
- *   7. Convert model coordinates (192x192) -> camera coordinates (320x240)
+ *   7. Convert model coordinates (224x224) -> camera coordinates (320x240)
  *
  * Reference: reference_projects/ruhmi-framework-mcu/application_examples/
  *            face_detection/src/ai_application/face_detection/DetectorPostProcessing.hpp
@@ -49,7 +49,7 @@ extern "C" {
 /**
  * Maximum number of candidate detections before NMS.
  * This limits the working buffer size to avoid excessive stack/heap usage.
- * With 2 branches: 6x6x3 + 12x12x3 = 108 + 432 = 540 total anchor boxes,
+ * With 2 branches: 7x7x3 + 14x14x3 = 147 + 588 = 735 total anchor boxes,
  * but only a small fraction will pass the confidence threshold.
  */
 #define POSTPROC_MAX_CANDIDATES     (50)
@@ -62,16 +62,24 @@ extern "C" {
 /**
  * Per-branch quantization parameters.
  *
- * From TFLite INT8 model (yolo_fastest_person_darknet_int8.tflite, Issue #137 Phase 3 round1):
- *   Branch 0 (6x6, StatefulPartitionedCall:0): scale=0.10168789, zp=32
- *   Branch 1 (12x12, StatefulPartitionedCall:1): scale=0.11527412, zp=36
+ * From TFLite INT8 model (yolo_fastest_person_darknet_int8.tflite,
+ * Issue #148 Round C / 224x224):
+ *   Branch 0 (7x7,   StatefulPartitionedCall:0): scale=0.10635098, zp=30
+ *   Branch 1 (14x14, StatefulPartitionedCall:1): scale=0.11362218, zp=36
+ *
+ * 旧値 (Issue #137 Phase 3 round1 / 192x192):
+ *   Branch 0 (6x6):   scale=0.10168789, zp=32
+ *   Branch 1 (12x12): scale=0.11527412, zp=36
+ *
+ * この値は量子化のたびに変わる。モデルを差し替えたら必ず更新すること
+ * (dataset/scripts/convert_only_colab.py が変換後に出力する)。
  *
  * Dequantization formula: float_val = (int8_val - zero_point) * scale
  */
-#define POSTPROC_BRANCH0_SCALE       (0.10168789f)  /* StatefulPartitionedCall:0 (6x6) */
-#define POSTPROC_BRANCH0_ZERO_POINT  (32)           /* StatefulPartitionedCall:0 (6x6) */
-#define POSTPROC_BRANCH1_SCALE       (0.11527412f)  /* StatefulPartitionedCall:1 (12x12) */
-#define POSTPROC_BRANCH1_ZERO_POINT  (36)           /* StatefulPartitionedCall:1 (12x12) */
+#define POSTPROC_BRANCH0_SCALE       (0.10635098f)  /* StatefulPartitionedCall:0 (7x7) */
+#define POSTPROC_BRANCH0_ZERO_POINT  (30)           /* StatefulPartitionedCall:0 (7x7) */
+#define POSTPROC_BRANCH1_SCALE       (0.11362218f)  /* StatefulPartitionedCall:1 (14x14) */
+#define POSTPROC_BRANCH1_ZERO_POINT  (36)           /* StatefulPartitionedCall:1 (14x14) */
 
 /**
  * Default detection confidence threshold.
@@ -111,14 +119,14 @@ typedef struct fall_detection_result_t {
  * Per-branch configuration for YOLOv3 anchor-based decoding.
  *
  * Each branch corresponds to a different feature map scale:
- *   Branch 0: 6x6 grid, stride 32 (large objects)
- *   Branch 1: 12x12 grid, stride 16 (small objects)
+ *   Branch 0: 7x7 grid, stride 32 (large objects)
+ *   Branch 1: 14x14 grid, stride 16 (small objects)
  *
  * Reference: DetectorPostProcessing.cc GetNetworkBoxes() - net.branches[i]
  */
 typedef struct {
-    int   grid_w;                                  /**< Grid width (6 or 12) */
-    int   grid_h;                                  /**< Grid height (6 or 12) */
+    int   grid_w;                                  /**< Grid width (7 or 14) */
+    int   grid_h;                                  /**< Grid height (7 or 14) */
     int   stride;                                  /**< Feature map stride (32 or 16) */
     float anchors[AI_OUTPUT_NUM_ANCHORS][2];       /**< Anchor (w, h) pairs in pixels */
     float scale;                                   /**< INT8 quantization scale */
@@ -131,10 +139,10 @@ typedef struct {
 typedef struct fall_detection_postproc_config_t {
     float    confidence_threshold;  /**< Minimum confidence to keep a detection */
     float    nms_iou_threshold;     /**< IoU threshold for NMS suppression */
-    fall_detection_branch_config_t branches[POSTPROC_NUM_BRANCHES]; /**< branch0: 6x6, branch1: 12x12 */
+    fall_detection_branch_config_t branches[POSTPROC_NUM_BRANCHES]; /**< branch0: 7x7, branch1: 14x14 */
     int      num_classes;           /**< Number of detection classes (1) */
-    int      model_input_width;     /**< Model input width (192) */
-    int      model_input_height;    /**< Model input height (192) */
+    int      model_input_width;     /**< Model input width (224) */
+    int      model_input_height;    /**< Model input height (224) */
     int      camera_width;          /**< Camera image width (320) */
     int      camera_height;         /**< Camera image height (240) */
     int      max_detections;        /**< Maximum detections to return */
@@ -191,13 +199,13 @@ void fall_detection_postprocess_init(void);
  *   1. For each branch: dequantize INT8, decode anchors, filter by confidence
  *   2. Merge candidates from both branches
  *   3. Apply NMS to suppress overlapping boxes
- *   4. Convert model coordinates (192x192) to camera coordinates (320x240)
+ *   4. Convert model coordinates (224x224) to camera coordinates (320x240)
  *   5. Store results in g_fall_detection_results[] and update
  *      g_ai_detection[] via update_detection_result()
  *
- * @param[in] branch0_tensor  Pointer to INT8 output tensor for branch 0 (6x6, 648 bytes).
+ * @param[in] branch0_tensor  Pointer to INT8 output tensor for branch 0 (7x7, 882 bytes).
  *                             May be NULL if YOLO_FASTEST_MODEL=0 (stub mode).
- * @param[in] branch1_tensor  Pointer to INT8 output tensor for branch 1 (12x12, 2592 bytes).
+ * @param[in] branch1_tensor  Pointer to INT8 output tensor for branch 1 (14x14, 3528 bytes).
  *                             May be NULL if YOLO_FASTEST_MODEL=0 (stub mode).
  *
  * @return Number of detections found (0 to max_detections)

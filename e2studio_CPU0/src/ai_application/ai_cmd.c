@@ -56,6 +56,7 @@ static void ai_cmd_config(void);
 static void ai_cmd_preproc(void);
 static void ai_cmd_status(void);
 static void ai_cmd_time(void);
+static void ai_cmd_bench(int argc, char **argv);
 static void ai_cmd_detect(void);
 static void ai_cmd_nms(int argc, char **argv);
 static void ai_cmd_tensor(int argc, char **argv);
@@ -86,6 +87,8 @@ int usrcmd_ai(int argc, char **argv)
         ai_cmd_status();
     } else if (ntlibc_strcmp(argv[1], "time") == 0) {
         ai_cmd_time();
+    } else if (ntlibc_strcmp(argv[1], "bench") == 0) {
+        ai_cmd_bench(argc, argv);
     } else if (ntlibc_strcmp(argv[1], "detect") == 0) {
         ai_cmd_detect();
     } else if (ntlibc_strcmp(argv[1], "nms") == 0) {
@@ -368,6 +371,106 @@ static void ai_cmd_time(void)
     snprintf(buf, sizeof(buf), "g_processing_time.ai_inference_time_ms: %lu\r\n",
              (unsigned long)g_processing_time.ai_inference_time_ms);
     print_to_console(buf);
+}
+
+/**
+ * Display NPU inference time with microsecond resolution (Issue #148)
+ *
+ * @details 案H (入力解像度 192 -> 224/256) の可否は「現行モデルの実機推論時間が
+ *          KPI 5ms に対してどれだけ余裕があるか」で決まる。既存の `ai time` は
+ *          ms 単位の整数なので 3ms と 5.5ms を区別できない。本コマンドは
+ *          AI 推論スレッドが mera_invoke() の前後で取得した DWT サイクル数を
+ *          us へ換算して表示する。
+ *
+ *          **min を推論時間の代表値とみなすこと。** DWT->CYCCNT は CPU の
+ *          自由走行カウンタで、NPU 完了待ちの間に他タスクへ切り替わると
+ *          その時間も計上される。min はプリエンプションの影響が最も小さい。
+ *
+ *          使い方:
+ *            ai bench        統計を表示
+ *            ai bench reset  統計をクリア (条件を変えて測り直すとき)
+ */
+static void ai_cmd_bench(int argc, char **argv)
+{
+    char buf[AI_CMD_BUF_SIZE];
+
+    if ((argc >= 3) && (ntlibc_strcmp(argv[2], "reset") == 0)) {
+        ai_inference_reset_invoke_stats();
+        print_to_console("NPU inference statistics cleared.\r\n");
+        return;
+    }
+
+    ai_invoke_stats_t st;
+    ai_inference_get_invoke_stats(&st);
+
+    print_to_console("=== NPU Inference Time (Issue #148) ===\r\n");
+
+    if (0U == st.count) {
+        print_to_console("No measurement yet.\r\n");
+        print_to_console("Let the camera pipeline run for a few seconds,\r\n");
+        print_to_console("then run 'ai bench' again.\r\n");
+        return;
+    }
+
+    /* cycles -> us. CPU 1GHz なら 1us = 1000 cycles */
+    uint32_t hz_per_us = st.cpu_hz / 1000000U;
+    if (0U == hz_per_us) {
+        hz_per_us = 1U;   /* 異常値でも 0 除算しない */
+    }
+
+    snprintf(buf, sizeof(buf), "Samples        : %lu\r\n",
+             (unsigned long)st.count);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "CPU clock      : %lu Hz (%lu cycles/us)\r\n",
+             (unsigned long)st.cpu_hz, (unsigned long)hz_per_us);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "min            : %lu us (%lu cyc)  <- representative\r\n",
+             (unsigned long)(st.min_cyc / hz_per_us), (unsigned long)st.min_cyc);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "avg            : %lu us (%lu cyc)\r\n",
+             (unsigned long)(st.avg_cyc / hz_per_us), (unsigned long)st.avg_cyc);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "max            : %lu us (%lu cyc)\r\n",
+             (unsigned long)(st.max_cyc / hz_per_us), (unsigned long)st.max_cyc);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "last           : %lu us (%lu cyc)\r\n",
+             (unsigned long)(st.last_cyc / hz_per_us), (unsigned long)st.last_cyc);
+    print_to_console(buf);
+
+    /* KPI 判定と、解像度を変えた場合の見込み (演算量は入力面積に比例)。
+     * KPI は 2026-08 に 5ms -> 10ms へ改定 (product-requirements.md 3.1.1)。
+     * 「見逃さないことを性能より優先する」という製品判断による。
+     * 現在の解像度は AI_INPUT_IMAGE_WIDTH から取るので、モデルを
+     * 差し替えても表示がずれない。 */
+    uint32_t min_us = st.min_cyc / hz_per_us;
+    uint32_t now_px = (uint32_t)AI_INPUT_IMAGE_WIDTH;
+    uint32_t now_area = now_px * now_px;
+
+    print_to_console("--- KPI 10000 us (2026-08 改定) ---\r\n");
+    snprintf(buf, sizeof(buf), "%lux%lu (now)  : %lu us  [%s]\r\n",
+             (unsigned long)now_px, (unsigned long)now_px,
+             (unsigned long)min_us, (min_us <= 10000U) ? "OK" : "NG");
+    print_to_console(buf);
+
+    /* 他の解像度の見込み: min_us * (px^2 / now_area) */
+    static const uint32_t k_px[] = {192U, 224U, 256U};
+    for (uint32_t i = 0; i < (sizeof(k_px) / sizeof(k_px[0])); i++) {
+        if (k_px[i] == now_px) {
+            continue;
+        }
+        uint32_t est = (uint32_t)(((uint64_t)min_us * (uint64_t)k_px[i] * k_px[i])
+                                  / (uint64_t)now_area);
+        snprintf(buf, sizeof(buf), "%lux%lu (est)  : %lu us  [%s]\r\n",
+                 (unsigned long)k_px[i], (unsigned long)k_px[i],
+                 (unsigned long)est, (est <= 10000U) ? "OK" : "NG");
+        print_to_console(buf);
+    }
+    print_to_console("(est: MAC 数が入力面積に比例と仮定した概算。Vela 実測で要確認)\r\n");
 }
 
 /**
@@ -1045,6 +1148,8 @@ static void ai_cmd_help(void)
     print_to_console("  preproc - Preprocessing status/timing (F-003-6)\r\n");
     print_to_console("  status  - Inference thread state (F-003-7)\r\n");
     print_to_console("  time    - Timing breakdown (F-003-7)\r\n");
+    print_to_console("  bench   - NPU inference time in us (Issue #148)\r\n");
+    print_to_console("            'ai bench reset' clears statistics\r\n");
     print_to_console("  detect  - Latest detection results (F-003-8)\r\n");
     print_to_console("  nms     - NMS parameters display/config (F-003-8)\r\n");
     print_to_console("  tensor  - Raw output tensor dump (debug)\r\n");

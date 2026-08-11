@@ -78,7 +78,12 @@ def write_yolo_labels(
     """YOLOラベルファイルを書き出す"""
     with open(label_path, "w") as f:
         for bbox, cls_id in zip(bboxes, class_ids):
-            f.write(f"{cls_id} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n")
+            # albumentations は label_fields の値を float 化して返すため、
+            # そのまま書くとクラス ID が "0.0" になる。YOLO 仕様は整数であり、
+            # darknet は "%d %f %f %f %f" で読むため float 表記だとフィールドが
+            # ずれて読まれる (Issue #148、方針書 f003_03l 8 章 R8)。
+            f.write(f"{int(cls_id)} {bbox[0]:.6f} {bbox[1]:.6f} "
+                    f"{bbox[2]:.6f} {bbox[3]:.6f}\n")
 
 
 def augment_train(multiplier: int, seed: int):

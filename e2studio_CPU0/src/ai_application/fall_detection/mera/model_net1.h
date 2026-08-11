@@ -58,8 +58,8 @@
 extern uint8_t sub_0000_net1_arena[kArenaSize_sub_0000_net1];
 
 // Buffers
-extern int8_t buf_net1_StatefulPartitionedCall_0_70327[648];
-extern int8_t buf_net1_StatefulPartitionedCall_1_70338[2592];
+extern int8_t buf_net1_StatefulPartitionedCall_0_70327[882];
+extern int8_t buf_net1_StatefulPartitionedCall_1_70338[3528];
 
 
 void RunModel_net1(bool clean_outputs);

@@ -6,11 +6,11 @@
 事前に `colab --auth=adc drivemount -s <name>` を済ませておくこと。
 進捗は poll.py で確認する。完了マーカーは "SETUP DONE"。
 
-処理内容（元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[3][4][7] 相当）:
+処理内容（元ノートブック train_yolo_fastest_darknet_colab.ipynb の cell[3][4][9] 相当）:
   1. Yolo-Fastest を clone
   2. Makefile を GPU=1 / CUDNN=1 / OPENCV=0 に書き換えて make
   3. Drive 上のデータセット zip を /content/dataset へ展開
-  4. cell[7] が作っていたディレクトリ（data/person, backup）を作成
+  4. cell[9] が作っていたディレクトリ（data/person, backup）を作成
 """
 import os
 import shlex
@@ -88,7 +88,7 @@ time unzip -q "$ZIP" -d "$STAGE" || [ $? -le 1 ]
 # 検証はステージング側で行う。不正なら既存のデータセットを壊さずに終了できる。
 # 件数取得そのものはディレクトリ欠損で止めない（pipefail 下では ls の失敗が
 # パイプライン全体に伝播するため || true を付ける）。判定は下のチェックで行う。
-# 数える対象は cell[8] が train.txt 生成に使う条件（*.jpg / *.png / *.jpeg）に合わせる。
+# 数える対象は cell[10] が train.txt 生成に使う条件（*.jpg / *.png / *.jpeg）に合わせる。
 # ディレクトリや Thumbs.db 等を数えてしまうと、実質空の split でもチェックを通過し、
 # 空の train.txt が作られたまま学習に進んでしまう。
 IMG_RE='.*[.](jpg|png|jpeg)'
@@ -152,14 +152,14 @@ rm -rf "$DATASET_DIR.old"
 echo "データセットを入れ替えました: $DATASET_DIR"
 
 # データセットを入れ替えたので、学習ノートブックの前処理完了マーカーを無効化する。
-# 残したままだと cell[10] / cell[12] / cell[20] が「このデータセットは準備済み」と
+# 残したままだと cell[12] / cell[14] / cell[22] が「このデータセットは準備済み」と
 # 誤認してクリーニング・hard negative mining・アンカー再計算をスキップし、
 # 準備されていないデータで checkpoint を再開してしまう。
 rm -f /content/.cleaning_applied /content/.hardneg_applied /content/.anchors_updated
 echo "前処理の完了マーカーを無効化しました（データセットが入れ替わったため）"
 df -h /content | tail -1
 
-echo "=== [4/4] darknet 用ディレクトリ作成（元ノートブック cell[7] 相当） ==="
+echo "=== [4/4] darknet 用ディレクトリ作成（元ノートブック cell[9] 相当） ==="
 mkdir -p "$DARKNET_DIR/data/person" "$DARKNET_DIR/backup"
 echo "created: $DARKNET_DIR/data/person"
 

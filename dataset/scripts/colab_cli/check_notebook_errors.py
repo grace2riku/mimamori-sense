@@ -10,7 +10,7 @@
   2. 出力テキスト中の失敗マーカー（`ERROR:` / `SKIP:` / `WARNING:` / `Traceback`）
      学習ノートブックには、前提ファイルが無いときに例外を投げず
      `print('ERROR: ...')` や `print('SKIP: ...')` を出して処理を飛ばすセルがある
-     （cell[10] データセットクリーニング、cell[12] hard negative mining）。
+     （cell[12] データセットクリーニング、cell[14] hard negative mining）。
      例外にならないため 1. では検出できず、必須の前処理を飛ばしたまま学習が進みうる。
      同じセルは前処理スクリプトを `subprocess.run(..., check=False)` で呼ぶため、
      スクリプトが異常終了しても無視される。子プロセスの出力はセルに取り込まれるので、

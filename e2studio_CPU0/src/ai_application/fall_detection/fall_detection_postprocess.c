@@ -6,7 +6,7 @@
  * (YOLOv3-based, anchor-based) fall detection model with 2 output branches.
  *
  * The face detection reference sample uses the same YOLO-Fastest V1 architecture
- * with anchor-based detection and two output branches (6x6 and 12x12).
+ * with anchor-based detection and two output branches (7x7 and 14x14).
  * This implementation follows the same algorithm:
  *   - DetectorPostProcessing.cc GetNetworkBoxes(): anchor decoding per branch
  *   - ImageUtils.cc CalculateNMS(): non-maximum suppression
@@ -87,8 +87,8 @@ static const int8_t *s_last_branch1_tensor = NULL;
  * Stores decoded bounding box in model input coordinate space and score.
  */
 typedef struct {
-    float x_center;     /**< Box center X in model coords (0-192) */
-    float y_center;     /**< Box center Y in model coords (0-192) */
+    float x_center;     /**< Box center X in model coords (0-224) */
+    float y_center;     /**< Box center Y in model coords (0-224) */
     float width;        /**< Box width in model coords */
     float height;       /**< Box height in model coords */
     float score;        /**< Confidence score (objectness * class_score, 0.0-1.0) */
@@ -138,28 +138,36 @@ void fall_detection_postprocess_init(void)
     s_config.camera_height        = (int)CAM_QVGA_HEIGHT;
     s_config.max_detections       = AI_MAX_DETECTION_NUM;
 
-    /* Branch 0: 6x6 grid, stride 32, large objects
-     * Anchors from Issue #137 Phase 3 round1 training (cfg mask=3,4,5, indices 3,4,5 of full anchor list)
-     * Full anchors from round1 cfg: 8,20, 25,55, 81,63, 50,121, 121,109, 155,166
+    /* Branch 0: 7x7 grid, stride 32, large objects
+     * Anchors from Issue #148 Round C training (224x224, cfg mask=3,4,5)
+     * Full anchors from Round C cfg: 10,23, 29,59, 53,130, 104,79, 125,148, 196,184
+     *
+     * ★アンカーは入力解像度のピクセル単位。モデルを差し替えたら必ず学習時 cfg の
+     *   値に更新すること。#137 6.1.3 では学習時と評価時でアンカーが食い違い
+     *   mAP が 21% まで落ちた実績がある。
+     *
+     * 旧値 (Issue #137 Phase 3 round1 / 192x192): 50,121 / 121,109 / 155,166
      */
     s_config.branches[0].grid_w     = AI_OUTPUT_BRANCH0_GRID_W;
     s_config.branches[0].grid_h     = AI_OUTPUT_BRANCH0_GRID_H;
     s_config.branches[0].stride     = AI_OUTPUT_BRANCH0_STRIDE;
-    s_config.branches[0].anchors[0][0] =  50.0f;  s_config.branches[0].anchors[0][1] = 121.0f;
-    s_config.branches[0].anchors[1][0] = 121.0f;  s_config.branches[0].anchors[1][1] = 109.0f;
-    s_config.branches[0].anchors[2][0] = 155.0f;  s_config.branches[0].anchors[2][1] = 166.0f;
+    s_config.branches[0].anchors[0][0] = 104.0f;  s_config.branches[0].anchors[0][1] =  79.0f;
+    s_config.branches[0].anchors[1][0] = 125.0f;  s_config.branches[0].anchors[1][1] = 148.0f;
+    s_config.branches[0].anchors[2][0] = 196.0f;  s_config.branches[0].anchors[2][1] = 184.0f;
     s_config.branches[0].scale      = POSTPROC_BRANCH0_SCALE;
     s_config.branches[0].zero_point = POSTPROC_BRANCH0_ZERO_POINT;
 
-    /* Branch 1: 12x12 grid, stride 16, small objects
-     * Anchors from Issue #137 Phase 3 round1 training (cfg mask=0,1,2, indices 0,1,2 of full anchor list)
+    /* Branch 1: 14x14 grid, stride 16, small objects
+     * Anchors from Issue #148 Round C training (224x224, cfg mask=0,1,2)
+     *
+     * 旧値 (Issue #137 Phase 3 round1 / 192x192): 8,20 / 25,55 / 81,63
      */
     s_config.branches[1].grid_w     = AI_OUTPUT_BRANCH1_GRID_W;
     s_config.branches[1].grid_h     = AI_OUTPUT_BRANCH1_GRID_H;
     s_config.branches[1].stride     = AI_OUTPUT_BRANCH1_STRIDE;
-    s_config.branches[1].anchors[0][0] =  8.0f;  s_config.branches[1].anchors[0][1] =  20.0f;
-    s_config.branches[1].anchors[1][0] = 25.0f;  s_config.branches[1].anchors[1][1] =  55.0f;
-    s_config.branches[1].anchors[2][0] = 81.0f;  s_config.branches[1].anchors[2][1] =  63.0f;
+    s_config.branches[1].anchors[0][0] = 10.0f;  s_config.branches[1].anchors[0][1] =  23.0f;
+    s_config.branches[1].anchors[1][0] = 29.0f;  s_config.branches[1].anchors[1][1] =  59.0f;
+    s_config.branches[1].anchors[2][0] = 53.0f;  s_config.branches[1].anchors[2][1] = 130.0f;
     s_config.branches[1].scale      = POSTPROC_BRANCH1_SCALE;
     s_config.branches[1].zero_point = POSTPROC_BRANCH1_ZERO_POINT;
 
@@ -181,8 +189,8 @@ void fall_detection_postprocess_init(void)
  *   4. Update g_ai_detection[] via update_detection_result()
  *      (Reference: MainLoop_obj.cc PresentInferenceResult() lines 83-94)
  *
- * @param[in] branch0_tensor  Pointer to INT8 branch 0 tensor (6x6, 648 bytes)
- * @param[in] branch1_tensor  Pointer to INT8 branch 1 tensor (12x12, 2592 bytes)
+ * @param[in] branch0_tensor  Pointer to INT8 branch 0 tensor (7x7, 882 bytes)
+ * @param[in] branch1_tensor  Pointer to INT8 branch 1 tensor (14x14, 3528 bytes)
  * @return Number of detections found
  */
 uint32_t fall_detection_postprocess(const int8_t *branch0_tensor, const int8_t *branch1_tensor)
@@ -241,10 +249,10 @@ uint32_t fall_detection_postprocess(const int8_t *branch0_tensor, const int8_t *
 
     /* Step 4: Convert surviving candidates to results
      *
-     * Coordinate conversion: model input space (192x192) -> camera space (320x240)
+     * Coordinate conversion: model input space (224x224) -> camera space (320x240)
      *
      * The preprocessing (F-003-6) performs center-crop from 320x240 to 240x240,
-     * then resizes to 192x192. So we reverse:
+     * then resizes to 224x224. So we reverse:
      *   model_coord / 192 * 240 = crop_coord
      *   camera_x = crop_coord + crop_offset_x  (crop_offset_x = (320-240)/2 = 40)
      *   camera_y = crop_coord
