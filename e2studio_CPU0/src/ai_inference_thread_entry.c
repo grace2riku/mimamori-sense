@@ -201,6 +201,24 @@ static volatile uint32_t s_time_memcpy_ms   = 0;   /**< Input copy time (ms) */
 static volatile uint32_t s_time_invoke_ms   = 0;   /**< NPU inference time (ms) */
 static volatile uint32_t s_time_total_ms    = 0;   /**< Total cycle time (ms) */
 
+/**
+ * NPU inference time statistics in DWT cycles (Issue #148).
+ *
+ * ms 単位の s_time_invoke_ms では 3ms と 5.5ms を区別できず、
+ * 解像度アップ (案H) の可否判定に使えない。サイクル単位で
+ * min / max / 累計を貯め、`ai bench` が us へ換算して表示する。
+ *
+ * 計測点は mera_invoke() の前後 (wrapper.h の注記どおり同期実行)。
+ * DWT->CYCCNT は CPU サイクルの自由走行カウンタなので、NPU 待ちの間に
+ * 他タスクへ切り替わるとその時間も含まれる。**min が純粋な推論時間に
+ * 最も近い値**であり、avg/max との差はプリエンプションの影響とみなせる。
+ */
+static volatile uint32_t s_invoke_cyc_last  = 0;   /**< Last invoke (cycles) */
+static volatile uint32_t s_invoke_cyc_min   = 0xFFFFFFFFU;
+static volatile uint32_t s_invoke_cyc_max   = 0;
+static volatile uint64_t s_invoke_cyc_sum   = 0;
+static volatile uint32_t s_invoke_cyc_count = 0;
+
 /** DWT cycle counter helpers */
 static inline void dwt_counter_enable(void)
 {
@@ -284,6 +302,43 @@ uint32_t ai_inference_get_memcpy_time_ms(void)
 uint32_t ai_inference_get_invoke_time_ms(void)
 {
     return s_time_invoke_ms;
+}
+
+/**
+ * Get NPU inference time statistics in DWT cycles (Issue #148)
+ *
+ * @param[out] stats 統計の格納先。NULL 不可
+ *
+ * @details 未計測 (count==0) の場合は min に 0 を入れて返す。
+ *          サイクル -> us の換算は呼び出し側で cpu_hz を使って行う。
+ */
+void ai_inference_get_invoke_stats(ai_invoke_stats_t *stats)
+{
+    if (NULL == stats) {
+        return;
+    }
+    uint32_t count = s_invoke_cyc_count;
+    stats->count      = count;
+    stats->last_cyc   = s_invoke_cyc_last;
+    stats->max_cyc    = s_invoke_cyc_max;
+    stats->min_cyc    = (0U == count) ? 0U : s_invoke_cyc_min;
+    stats->avg_cyc    = (0U == count) ? 0U
+                        : (uint32_t)(s_invoke_cyc_sum / (uint64_t)count);
+    stats->cpu_hz     = SystemCoreClock;
+}
+
+/**
+ * Reset NPU inference time statistics (Issue #148)
+ *
+ * @details 条件を変えて測り直すとき (解像度変更・クロック変更など) に使う。
+ */
+void ai_inference_reset_invoke_stats(void)
+{
+    s_invoke_cyc_count = 0;
+    s_invoke_cyc_sum   = 0;
+    s_invoke_cyc_min   = 0xFFFFFFFFU;
+    s_invoke_cyc_max   = 0;
+    s_invoke_cyc_last  = 0;
 }
 
 /**
@@ -582,6 +637,18 @@ void ai_inference_task(INT stacd, void *exinf)
 
         uint32_t t_invoke_end = dwt_get_cycles();
         s_time_invoke_ms = dwt_cycles_to_ms(t_invoke_start, t_invoke_end);
+
+        /* Issue #148: サイクル単位の統計を蓄積する (us 分解能の計測用).
+         * 符号なし減算なので CYCCNT の 1 周回 (1GHz で約 4.29 秒) は吸収される。
+         * 1 回の推論は数 ms なので 2 周以上することはない。 */
+        {
+            uint32_t cyc = t_invoke_end - t_invoke_start;
+            s_invoke_cyc_last = cyc;
+            if (cyc < s_invoke_cyc_min) { s_invoke_cyc_min = cyc; }
+            if (cyc > s_invoke_cyc_max) { s_invoke_cyc_max = cyc; }
+            s_invoke_cyc_sum += (uint64_t)cyc;
+            s_invoke_cyc_count++;
+        }
 
         /* Update processing time for global diagnostics */
         g_processing_time.ai_inference_time_ms = s_time_invoke_ms;

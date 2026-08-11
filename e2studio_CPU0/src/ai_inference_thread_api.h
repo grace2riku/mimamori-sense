@@ -106,6 +106,33 @@ uint32_t ai_inference_get_invoke_time_ms(void);
 uint32_t ai_inference_get_total_time_ms(void);
 
 /**
+ * NPU inference time statistics in DWT cycles (Issue #148)
+ *
+ * ms 単位の getter では 3ms と 5.5ms を区別できないため、
+ * 解像度アップ (案H) の可否判定用にサイクル単位で保持する。
+ */
+typedef struct {
+    uint32_t count;     /**< 計測回数 */
+    uint32_t last_cyc;  /**< 直近の推論サイクル数 */
+    uint32_t min_cyc;   /**< 最小 (純粋な推論時間に最も近い) */
+    uint32_t avg_cyc;   /**< 平均 */
+    uint32_t max_cyc;   /**< 最大 */
+    uint32_t cpu_hz;    /**< 換算に使う CPU クロック (SystemCoreClock) */
+} ai_invoke_stats_t;
+
+/**
+ * Get NPU inference time statistics in DWT cycles (Issue #148)
+ *
+ * @param[out] stats 統計の格納先 (NULL 不可)
+ */
+void ai_inference_get_invoke_stats(ai_invoke_stats_t *stats);
+
+/**
+ * Reset NPU inference time statistics (Issue #148)
+ */
+void ai_inference_reset_invoke_stats(void);
+
+/**
  * Update a detection result in g_ai_detection[]
  *
  * Called by the post-processing function (F-003-8) to store
