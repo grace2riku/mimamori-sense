@@ -865,6 +865,76 @@ Phase 3 以降の「構造は変えられない」という制約は、**実測�
 | 224x224 | +156.0 KB | +39.0 KB | +195.0 KB | **388.5 KB** | ✅ |
 | 256x256 | +336.0 KB | +84.0 KB | +420.0 KB | **163.5 KB** | ✅ |
 
+### 7.1.2 Vela 実測 (2026-08、ローカル実行) — 制約は RAM から**推論時間**へ
+
+**Vela はローカル (Windows) で動く。** `pip install ethos-u-vela` だけで入り、
+Colab セッションも Drive も不要。構造検証はこれで完結する。
+
+```
+vela --accelerator-config ethos-u55-256 --optimise Performance \
+     --output-dir <out> dataset/models/yolo_fastest_person_darknet_int8.tflite
+```
+
+**現行 192x192 モデルの実測値** (既定 `Ethos_U55_High_End_Embedded` / 500MHz / `Shared_Sram`)
+
+| 項目 | 値 |
+|---|---|
+| **CPU operators** | **0 (0.0%)** |
+| **NPU operators** | **108 (100.0%)** |
+| Total SRAM used | 360.83 KiB |
+| Total Off-chip Flash used | 358.48 KiB |
+| nn_macs | 40,460,832 |
+| cycles_total | 2,769,261 |
+| **inference_time** | **5.54 ms** |
+
+**判明したこと 1: `Resize` 未対応の警告は誤検出だった**
+
+ノートブック cell[40] は毎回
+`WARNING: Ethos-U55未対応の可能性があるオペレータ: {'Resize'}` を出していたが、
+実際に Vela に通すと **CPU operators = 0 / NPU operators = 100%** で
+全オペレータが NPU 実行される。**ヒューリスティックが誤っていた**。
+cell[40] を修正し、判定は Vela の CPU/NPU 比率で行うようにした。
+
+**判明したこと 2: メモリではなく推論時間が制約になる**
+
+Vela の SRAM 360.83 KiB に対し MERA のアリーナは 442,368 B (432 KiB) で、比 1.20。
+入力面積に比例するとして換算すると:
+
+| 入力 | Vela SRAM 換算 | MERA アリーナ換算 | 内蔵 RAM 収支 (7.1) | **推論時間 (比例換算)** |
+|---|---|---|---|---|
+| 192x192 | 360.8 KiB | 432 KiB | 583.5 KB 空き | **5.54 ms** |
+| 224x224 | 491 KiB | 588 KiB | 388.5 KB 空き ✅ | **7.54 ms** ❌ |
+| 256x256 | 641 KiB | 768 KiB | 163.5 KB 空き ✅ | **9.85 ms** ❌ |
+
+**KPI「NPU 推論時間 5ms 以内」に対し、192px ですら Vela 見積りは 5.54ms で超過している。**
+
+ただしこの絶対値は信用しきれない:
+
+- Vela の既定システム構成 (500MHz / Shared_Sram) が EK-RA8P1 実機と一致する保証がない
+- `f003_01_model_selection_report.md:73,76` は **EK-RA8P1 実機で約 3ms** と記録しているが、
+  これは **192x192x1 グレースケールの顔認識サンプル**の値で、
+  本件の 192x192x3 RGB 人物検出モデルの実測ではない
+- **本モデルの実機推論時間は測定されていない**
+
+実機 3ms を基準に比例換算すると 224px = 4.1ms (KPI 内)、256px = 5.3ms (超過) となり、
+**224px なら成立、256px は厳しい**という別の結論になる。
+
+**したがって次にやるべきは「現行 192px モデルの実機推論時間の実測」**である。
+これが 3ms 側なら 224px は問題なく進められ、5.5ms 側なら解像度アップは
+推論時間の壁に当たる。**この 1 点で案H の可否が決まる。**
+
+### 7.1.3 224/256px の Vela 実測がまだできていない理由
+
+Vela に通すには **その解像度の INT8 tflite が必要**で、生成には
+darknet cfg + weights -> Keras (`keras-YOLOv3-model-set` の `convert.py`) -> TFLite
+の経路をたどる。ローカルには TensorFlow も darknet weights も無い
+(weights は Drive 上、1,150 KB)。
+
+YOLO-Fastest は全層畳み込みなので **重みは解像度非依存**であり、
+cfg の `width/height` を 224 に変えて既存の Phase 3 weights を通すだけで
+224px の tflite を作れる。Colab で変換セル (Step 8-10) だけを回せば
+学習なしで数分で得られる。
+
 ### 7.2 案H 実施時の Vela 再評価項目
 
 | 項目 | 確認内容 | 判定基準 |
