@@ -409,7 +409,7 @@ static void camera_display_timer_cb(lv_timer_t *timer)
     }
 
     if (s_ai_init_done) {
-        /* Preprocess: RGB565 (768x450) -> RGB INT8 (192x192x3) */
+        /* Preprocess: RGB565 (768x450) -> RGB INT8 (224x224x3) */
         image_rgb565_to_rgb_int8(frame, model_buffer_int8,
                                   CAMERA_FRAME_WIDTH, CAMERA_FRAME_HEIGHT,
                                   AI_INPUT_IMAGE_WIDTH, AI_INPUT_IMAGE_HEIGHT);

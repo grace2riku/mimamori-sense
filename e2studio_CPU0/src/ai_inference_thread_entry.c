@@ -107,7 +107,7 @@
 
 /**
  * AI model input buffer size in bytes.
- * 192 x 192 x 3 (RGB INT8) = 110592 bytes
+ * 224 x 224 x 3 (RGB INT8) = 150528 bytes (Issue #148)
  *
  * Reference: face_detection/src/ai_inference_thread_entry.c line 39
  */

@@ -7,10 +7,10 @@
  * face detection sample.
  *
  * YOLO-Fastest V1 model (darknet-based, anchor-based):
- *   Input:  192x192x3 RGB INT8 (110592 bytes)
+ *   Input:  224x224x3 RGB INT8 (150528 bytes)
  *   Output: 2 branches
- *     - StatefulPartitionedCall_0: 6x6x18 = 648 bytes (branch 0, stride 32)
- *     - StatefulPartitionedCall_1: 12x12x18 = 2592 bytes (branch 1, stride 16)
+ *     - StatefulPartitionedCall_0: 7x7x18 = 882 bytes (branch 0, stride 32)
+ *     - StatefulPartitionedCall_1: 14x14x18 = 3528 bytes (branch 1, stride 16)
  *
  * Reference: reference_projects/ruhmi-framework-mcu/application_examples/
  *            face_detection/src/ai_application/face_detection/wrapper.h
@@ -30,16 +30,16 @@
 /**
  * Get pointer to the model input buffer
  *
- * @return Pointer to the INT8 input buffer (192x192x3 = 110592 bytes)
+ * @return Pointer to the INT8 input buffer (224x224x3 = 150528 bytes)
  */
 static inline int8_t* mera_input_ptr(void) {
     return GetModelInputPtr_net1_serving_default_image_input_0();
 }
 
 /**
- * Get pointer to branch 0 output tensor (6x6 grid, stride 32)
+ * Get pointer to branch 0 output tensor (7x7 grid, stride 32)
  *
- * MERA output: StatefulPartitionedCall_0 = 6x6x3x6 = 648 bytes
+ * MERA output: StatefulPartitionedCall_0 = 7x7x3x6 = 882 bytes
  *
  * @return Pointer to INT8 output tensor (648 bytes)
  */
@@ -50,9 +50,9 @@ static inline int8_t* mera_output_ptr_branch0(void) {
 }
 
 /**
- * Get pointer to branch 1 output tensor (12x12 grid, stride 16)
+ * Get pointer to branch 1 output tensor (14x14 grid, stride 16)
  *
- * MERA output: StatefulPartitionedCall_1 = 12x12x3x6 = 2592 bytes
+ * MERA output: StatefulPartitionedCall_1 = 14x14x3x6 = 3528 bytes
  *
  * @return Pointer to INT8 output tensor (2592 bytes)
  */

@@ -442,23 +442,34 @@ static void ai_cmd_bench(int argc, char **argv)
              (unsigned long)(st.last_cyc / hz_per_us), (unsigned long)st.last_cyc);
     print_to_console(buf);
 
-    /* KPI 判定と、解像度を上げた場合の見込み (演算量は入力面積に比例) */
+    /* KPI 判定と、解像度を変えた場合の見込み (演算量は入力面積に比例)。
+     * KPI は 2026-08 に 5ms -> 10ms へ改定 (product-requirements.md 3.1.1)。
+     * 「見逃さないことを性能より優先する」という製品判断による。
+     * 現在の解像度は AI_INPUT_IMAGE_WIDTH から取るので、モデルを
+     * 差し替えても表示がずれない。 */
     uint32_t min_us = st.min_cyc / hz_per_us;
-    print_to_console("--- KPI 5000 us ---\r\n");
-    snprintf(buf, sizeof(buf), "192x192 (now)  : %lu us  [%s]\r\n",
-             (unsigned long)min_us, (min_us <= 5000U) ? "OK" : "NG");
+    uint32_t now_px = (uint32_t)AI_INPUT_IMAGE_WIDTH;
+    uint32_t now_area = now_px * now_px;
+
+    print_to_console("--- KPI 10000 us (2026-08 改定) ---\r\n");
+    snprintf(buf, sizeof(buf), "%lux%lu (now)  : %lu us  [%s]\r\n",
+             (unsigned long)now_px, (unsigned long)now_px,
+             (unsigned long)min_us, (min_us <= 10000U) ? "OK" : "NG");
     print_to_console(buf);
 
-    /* (224/192)^2 = 50176/36864, (256/192)^2 = 65536/36864 */
-    uint32_t est224 = (uint32_t)(((uint64_t)min_us * 50176ULL) / 36864ULL);
-    uint32_t est256 = (uint32_t)(((uint64_t)min_us * 65536ULL) / 36864ULL);
-
-    snprintf(buf, sizeof(buf), "224x224 (est)  : %lu us  [%s]\r\n",
-             (unsigned long)est224, (est224 <= 5000U) ? "OK" : "NG");
-    print_to_console(buf);
-    snprintf(buf, sizeof(buf), "256x256 (est)  : %lu us  [%s]\r\n",
-             (unsigned long)est256, (est256 <= 5000U) ? "OK" : "NG");
-    print_to_console(buf);
+    /* 他の解像度の見込み: min_us * (px^2 / now_area) */
+    static const uint32_t k_px[] = {192U, 224U, 256U};
+    for (uint32_t i = 0; i < (sizeof(k_px) / sizeof(k_px[0])); i++) {
+        if (k_px[i] == now_px) {
+            continue;
+        }
+        uint32_t est = (uint32_t)(((uint64_t)min_us * (uint64_t)k_px[i] * k_px[i])
+                                  / (uint64_t)now_area);
+        snprintf(buf, sizeof(buf), "%lux%lu (est)  : %lu us  [%s]\r\n",
+                 (unsigned long)k_px[i], (unsigned long)k_px[i],
+                 (unsigned long)est, (est <= 10000U) ? "OK" : "NG");
+        print_to_console(buf);
+    }
     print_to_console("(est: MAC 数が入力面積に比例と仮定した概算。Vela 実測で要確認)\r\n");
 }
 
