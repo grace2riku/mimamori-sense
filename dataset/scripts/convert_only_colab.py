@@ -60,14 +60,24 @@ VELA_DIR = os.path.join(WORK, 'vela_output')
 CALIB_MAX = 200
 
 
+def _tail(text, n_lines=40):
+    """末尾 n 行だけ返す。変換ツールは重みの配列を大量に吐くことがあり、
+    そのままだとエラー本文が流れて読めなくなる。"""
+    lines = text.rstrip('\n').split('\n')
+    if len(lines) <= n_lines:
+        return '\n'.join(lines)
+    return ('  ...(先頭 %d 行省略)...\n' % (len(lines) - n_lines)) + \
+           '\n'.join(lines[-n_lines:])
+
+
 def run(cmd, **kw):
-    """コマンドを実行し、出力をこのセルの出力に残す。"""
+    """コマンドを実行し、出力の末尾をこのセルの出力に残す。"""
     p = subprocess.run(cmd, capture_output=True, text=True, **kw)
-    if p.stdout:
-        print(p.stdout, end='' if p.stdout.endswith('\n') else '\n')
+    if p.stdout and p.stdout.strip():
+        print(_tail(p.stdout))
     if p.stderr and p.stderr.strip():
         print('--- stderr ---')
-        print(p.stderr[-4000:], end='' if p.stderr.endswith('\n') else '\n')
+        print(_tail(p.stderr))
     return p.returncode
 
 
@@ -137,12 +147,48 @@ print(f'  {len(cal_images)} 枚')
 # 3. darknet -> Keras
 # ---------------------------------------------------------------------------
 print('\n[3/6] darknet -> Keras (.h5)')
+# 学習ノートブック cell[35] と同じ依存を入れる (Colab に tf-keras は無いことがある)
+run([sys.executable, '-m', 'pip', 'install', '-q',
+     'tensorflow', 'keras', 'matplotlib', 'pillow', 'tf-keras'])
+
+# Keras 3 対策 (2026-08 実測):
+#   変換ツールは `from tensorflow.keras.layers import Conv2D` で読み込み、
+#   `Conv2D(..., weights=[...])` という Keras 2 の書き方をする。
+#   Colab の TF 2.20 は既定で Keras 3.13 を使うため
+#     ValueError: Unrecognized keyword arguments passed to Conv2D: {'weights': ...}
+#   で失敗する。TF_USE_LEGACY_KERAS=1 で tensorflow.keras を
+#   tf_keras (Keras 2 系) に向けると通る (実測: exit=0、h5 1934.0 KB を生成)。
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+print('  TF_USE_LEGACY_KERAS=1 (Keras 3 では Conv2D(weights=...) が通らないため)')
+
 if not os.path.isdir(CONVERTER_DIR):
     rc = run(['git', 'clone', '--depth', '1',
               'https://github.com/david8862/keras-YOLOv3-model-set.git',
               CONVERTER_DIR])
     if rc != 0:
         raise RuntimeError('変換ツールの clone に失敗しました')
+
+# NumPy 2.0 互換修正: np.product は 2.0 で削除された (np.prod の別名だった)。
+# 変換ツールが古く、そのままでは AttributeError で落ちる。
+# 学習ノートブック cell[35] が同じ修正を入れており、それに合わせる。
+#
+# clone の有無に関わらず毎回実行する。clone 済みの VM で再実行したときに
+# 修正が当たらず同じエラーで落ちる、という取りこぼしを防ぐ (べき等)。
+fixed = 0
+for root, _dirs, files in os.walk(CONVERTER_DIR):
+    for name in files:
+        if not name.endswith('.py'):
+            continue
+        fp = os.path.join(root, name)
+        try:
+            body = open(fp, encoding='utf-8', errors='replace').read()
+        except Exception:
+            continue
+        if 'np.product' in body:
+            open(fp, 'w', encoding='utf-8').write(
+                body.replace('np.product', 'np.prod'))
+            fixed += 1
+print(f'  NumPy 2.0 互換修正: np.product -> np.prod ({fixed} ファイル)')
 
 if os.path.exists(H5_PATH):
     os.remove(H5_PATH)
