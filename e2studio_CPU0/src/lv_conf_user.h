@@ -404,6 +404,170 @@
 #define LV_USE_DRAW_SW_COMPLEX_GRADIENTS    0
 
 /*=============================================================
+ * FLASH Reduction (Issue #182) - MEASURED RESULT
+ *
+ * Measured on a clean rebuild, from the `.flash.startof` .. `.flash.endof`
+ * span in Debug/mimamori_sense_CPU0.map:
+ *
+ *   before  990,720 B used / 25,088 B free  (97.5% of 992 KiB)
+ *   after   856,576 B used / 159,232 B free (84.3% of 992 KiB)
+ *   saved   134,144 B (131.0 KiB)
+ *
+ * Per category (cumulative, measured one category at a time):
+ *   category 1  SW blender color formats   -64,512 B
+ *   category 2  unused widgets + layouts   -69,632 B
+ *   category 3  fonts                        no change - see the note in
+ *                                            "Font Configuration" below
+ *
+ * LVGL's own flash footprint went from 313,664 B to 183,218 B.
+ *============================================================*/
+
+/*=============================================================
+ * FLASH Reduction: SW Blender Color Formats (Issue #182, category 1)
+ *
+ * `LV_DRAW_SW_SUPPORT_<fmt>` selects which *destination* buffer formats the
+ * software blender can render into. The FSP-generated lv_conf.h enables all
+ * of them (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:60-104), which links one
+ * ~6-12 KB `lv_draw_sw_blend_to_<fmt>.o` per format.
+ *
+ * Only two destination formats are reachable in this project:
+ *
+ *   RGB565    - the display buffer (LV_COLOR_DEPTH 16, lv_conf.h:22-23) and
+ *               every layer created with LV_COLOR_FORMAT_NATIVE
+ *               (ra/lvgl/lvgl/src/core/lv_refr.c:1254, false branch)
+ *   ARGB8888  - layers that need an alpha channel. Created at
+ *               lv_refr.c:195 and :216 (clip-corner path: an object with a
+ *               radius that clips its children) and at lv_refr.c:1253-1254
+ *               (transform / opacity path, when `area_need_alpha` is true).
+ *               These are RUNTIME decisions driven by widget styles, so this
+ *               format must stay enabled even though the current screens may
+ *               not hit it on every frame.
+ *
+ * All other formats are only reachable through lv_canvas / image buffers of
+ * that format, neither of which this project creates.
+ *
+ * IMPORTANT - failure mode if one of these is wrong:
+ *   The blender dispatch is a `switch(layer_cf)` whose arms are `#if`-guarded,
+ *   ending in `default: break;`
+ *   (ra/lvgl/lvgl/src/draw/sw/blend/lv_draw_sw_blend.c:174-281).
+ *   Disabling a format that IS needed therefore produces NO link error and NO
+ *   assert - the blend is silently skipped and the affected area renders
+ *   blank/stale. Any visual regression after touching this block should be
+ *   investigated here first.
+ *============================================================*/
+
+/* Kept: the display / native-layer format. */
+#define LV_DRAW_SW_SUPPORT_RGB565               1
+
+/* Kept: required by the alpha-layer paths in lv_refr.c cited above. */
+#define LV_DRAW_SW_SUPPORT_ARGB8888             1
+
+/* Disabled: byte-swapped RGB565 is only used when the display is explicitly
+ * switched to it via lv_display_set_color_format(). This project never calls
+ * that function, so the display keeps LV_COLOR_FORMAT_NATIVE (= RGB565 at
+ * LV_COLOR_DEPTH 16); see src/port/lvgl_port_mtk3.c:164, which only calls
+ * lv_display_set_buffers_with_stride(). */
+#define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED       0
+
+/* Disabled: 24/32-bit destinations. No layer or buffer uses them. */
+#define LV_DRAW_SW_SUPPORT_RGB888               0
+#define LV_DRAW_SW_SUPPORT_XRGB8888             0
+
+/* Disabled: premultiplied ARGB is only produced by lv_draw_buf_premultiply(),
+ * which this project never calls. */
+#define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 0
+
+/* Disabled: grayscale / indexed destinations, reachable only via lv_canvas
+ * (LV_USE_CANVAS is 0 below). */
+#define LV_DRAW_SW_SUPPORT_L8                   0
+#define LV_DRAW_SW_SUPPORT_AL88                 0
+#define LV_DRAW_SW_SUPPORT_I1                   0
+
+/* Disabled: A8 / RGB565A8 are *source* formats for the SW image transform
+ * path (ra/lvgl/lvgl/src/draw/sw/lv_draw_sw_transform.c:72-84, 253-283).
+ * The only image drawn is the camera framebuffer, whose descriptor is
+ * declared RGB565 (src/camera_display.c:169, src/ui/ui_main_screen.c:430)
+ * and which is never rotated or scaled, so no transform ever sees these
+ * formats. */
+#define LV_DRAW_SW_SUPPORT_A8                   0
+#define LV_DRAW_SW_SUPPORT_RGB565A8             0
+
+/*=============================================================
+ * FLASH Reduction: Unused Widgets (Issue #182, category 2)
+ *
+ * A full grep of e2studio_CPU0/src/ for `lv_*_create(` shows that this
+ * application instantiates only four widget classes:
+ *
+ *   lv_obj_create     (5x)  - core, has no LV_USE_ switch
+ *   lv_label_create   (5x)  - src/ui/ui_main_screen.c, fall_detection_screen.c
+ *   lv_image_create   (1x)  - src/ui/ui_main_screen.c (camera view)
+ *   lv_button_create  (1x)  - src/ui/ui_main_screen.c (settings button)
+ *
+ * Everything else below is dead weight, but `--gc-sections` cannot drop it:
+ * lv_theme_default.c dispatches on every widget class it was compiled with
+ * (`lv_obj_check_type(obj, &lv_chart_class)` etc.), so each widget's class
+ * object stays referenced from the theme and drags in the whole translation
+ * unit. Compile-time exclusion via LV_USE_* is the only way to remove them.
+ *
+ * Re-enable the matching switch here before using a new widget - LVGL will
+ * otherwise fail to compile the `lv_<widget>_create()` call rather than fail
+ * silently.
+ *============================================================*/
+
+/* Kept: the four classes actually used (see grep above). */
+#define LV_USE_LABEL        1
+#define LV_USE_IMAGE        1
+#define LV_USE_BUTTON       1
+
+/* Disabled: never instantiated by this application. */
+#define LV_USE_ANIMIMG      0
+#define LV_USE_ARC          0
+#define LV_USE_BAR          0
+#define LV_USE_BUTTONMATRIX 0
+#define LV_USE_CALENDAR     0
+#define LV_USE_CANVAS       0
+#define LV_USE_CHART        0
+#define LV_USE_CHECKBOX     0
+#define LV_USE_DROPDOWN     0
+#define LV_USE_IMAGEBUTTON  0
+#define LV_USE_KEYBOARD     0
+#define LV_USE_LED          0
+#define LV_USE_LINE         0
+#define LV_USE_LIST         0
+#define LV_USE_MENU         0
+#define LV_USE_MSGBOX       0
+#define LV_USE_ROLLER       0
+#define LV_USE_SCALE        0
+#define LV_USE_SLIDER       0
+#define LV_USE_SPAN         0
+#define LV_USE_SPINBOX      0
+#define LV_USE_SPINNER      0
+#define LV_USE_SWITCH       0
+#define LV_USE_TABLE        0
+#define LV_USE_TABVIEW      0
+#define LV_USE_TEXTAREA     0
+#define LV_USE_TILEVIEW     0
+#define LV_USE_WIN          0
+
+/*=============================================================
+ * FLASH Reduction: Unused Layouts and Helpers (Issue #182, category 4)
+ *============================================================*/
+
+/* Disabled: the UI positions every child explicitly with lv_obj_set_pos() /
+ * lv_obj_align() / lv_obj_center(). Neither lv_obj_set_flex_* nor
+ * lv_obj_set_grid_* appears anywhere in e2studio_CPU0/src/. The widgets that
+ * use flex internally (menu, list, tabview) are all disabled above. */
+#define LV_USE_FLEX 0
+#define LV_USE_GRID 0
+
+/* KEPT AT 1 (648 B) even though this application never calls the
+ * observer/subject API directly: lv_sysmon.h:27 is a hard `#error` gate -
+ * `LV_USE_SYSMON 1` (set below, and required for the LV_USE_PERF_MONITOR FPS
+ * overlay) does not compile without it. Setting this to 0 breaks the build
+ * rather than silently degrading. */
+#define LV_USE_OBSERVER 1
+
+/*=============================================================
  * Font Configuration
  *============================================================*/
 
@@ -423,6 +587,29 @@
  * Reference: e2studio_CPU0/ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:135-210
  */
 #define LV_FONT_MONTSERRAT_14 1
+
+/*
+ * Fonts and FLASH size (Issue #182, category 3) - MEASURED FINDING
+ *
+ * The FSP lv_conf.h enables Montserrat 8..48, DejaVu Persian/Hebrew, both
+ * Source Han Sans SC CJK fonts and UNSCII 8/16 (lv_conf.h:126-206), but
+ * setting the unused ones to 0 saves NOTHING in flash: each font is a single
+ * `const lv_font_t` in its own translation unit, so `--gc-sections` already
+ * drops every font nothing references. The map confirms it - only the three
+ * fonts actually referenced by src/ui/ occupy flash:
+ *
+ *   lv_font_montserrat_20  21,795 B  ui/fall_detection_screen.c:342
+ *   lv_font_montserrat_16  15,899 B  ui/ui_main_screen.c:344
+ *   lv_font_montserrat_14  13,641 B  ui/ui_main_screen.c:354,
+ *                                    ui/fall_detection_screen.c:368
+ *                                    (also LV_FONT_DEFAULT)
+ *
+ * So the ~51 KB spent on fonts can only be recovered by using FEWER SIZES or
+ * by subsetting the glyph range - both change what is on screen, so neither
+ * is done here. Left as a follow-up; note that ui_main_screen.c:375 renders
+ * LV_SYMBOL_SETTINGS, so any replacement font must keep the FontAwesome
+ * symbol range.
+ */
 
 /*
  * Japanese Font Support (Future)
