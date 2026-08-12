@@ -22,6 +22,8 @@
 #include <math.h>
 #include "ntlibc.h"
 #include "jlink_console.h"
+#include "cmd_utils.h"
+#include "diag_config.h"
 
 /* R-007 (Issue #157): xEventGroupGetBits(g_ai_app_event) ->
  * tk_ref_flg(g_ai_app_flgid)（uT-Kernel イベントフラグの参照系 API）。 */
@@ -59,8 +61,12 @@ static void ai_cmd_time(void);
 static void ai_cmd_bench(int argc, char **argv);
 static void ai_cmd_detect(void);
 static void ai_cmd_nms(int argc, char **argv);
+#if MIMAMORI_VERBOSE_DIAG
+/* Issue #183: "ai tensor" / "ai diag" are bring-up-only dumps; see
+ * src/diag_config.h. */
 static void ai_cmd_tensor(int argc, char **argv);
 static void ai_cmd_diag(void);
+#endif
 static void ai_cmd_help(void);
 
 /**********************************************************************************************************************
@@ -94,9 +100,19 @@ int usrcmd_ai(int argc, char **argv)
     } else if (ntlibc_strcmp(argv[1], "nms") == 0) {
         ai_cmd_nms(argc, argv);
     } else if (ntlibc_strcmp(argv[1], "tensor") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         ai_cmd_tensor(argc, argv);
+#else
+        /* Issue #183: excluded from the default build (see src/diag_config.h). */
+        cmd_print_diag_disabled("ai tensor");
+#endif
     } else if (ntlibc_strcmp(argv[1], "diag") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         ai_cmd_diag();
+#else
+        /* Issue #183: excluded from the default build (see src/diag_config.h). */
+        cmd_print_diag_disabled("ai diag");
+#endif
     } else if (ntlibc_strcmp(argv[1], "help") == 0) {
         ai_cmd_help();
     } else {
@@ -677,6 +693,16 @@ static void ai_cmd_nms(int argc, char **argv)
     print_to_console("Unknown nms subcommand. Use: ai nms [conf|iou] <value>\r\n");
 }
 
+/*
+ * Issue #183: "ai tensor" and "ai diag" are both bring-up-only dumps of
+ * intermediate inference state (~1.8 KB of console strings between them).
+ * They are excluded from the default build to reclaim CPU0 internal flash;
+ * rebuild with MIMAMORI_VERBOSE_DIAG=1 to restore both. The operational
+ * sub-commands ("ai status", "ai detect", "ai time", "ai nms", ...) are
+ * unaffected. See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Dump raw output tensor bytes for layout diagnosis (F-003-8 debug)
  *
@@ -1136,6 +1162,8 @@ static void ai_cmd_diag(void)
 #endif
 }
 
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: ai_cmd_tensor / ai_cmd_diag) */
+
 /**
  * Display help for the ai command
  */
@@ -1152,7 +1180,10 @@ static void ai_cmd_help(void)
     print_to_console("            'ai bench reset' clears statistics\r\n");
     print_to_console("  detect  - Latest detection results (F-003-8)\r\n");
     print_to_console("  nms     - NMS parameters display/config (F-003-8)\r\n");
+#if MIMAMORI_VERBOSE_DIAG
+    /* Issue #183: only listed when the verbose diagnostics build is enabled. */
     print_to_console("  tensor  - Raw output tensor dump (debug)\r\n");
     print_to_console("  diag    - MERA pipeline diagnosis (debug)\r\n");
+#endif
     print_to_console("  help    - Show this help\r\n");
 }

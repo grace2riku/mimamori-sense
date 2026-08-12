@@ -168,6 +168,15 @@ void cmd_print_usage(const char *cmd_name, const char *usage_str);
 void cmd_print_error(const char *msg);
 
 /**
+ * Print a "diagnostic excluded from this build" message
+ * @details Used by commands guarded by MIMAMORI_VERBOSE_DIAG (see
+ *          src/diag_config.h). All such commands share this one message so
+ *          the excluded set costs a single string in .rodata (Issue #183).
+ * @param cmd_name Command name as typed by the user (e.g. "camera diag")
+ */
+void cmd_print_diag_disabled(const char *cmd_name);
+
+/**
  * Print an address alignment error message
  * @param addr The misaligned address
  * @param access_size Required alignment size

@@ -83,6 +83,7 @@
 #include <stdbool.h>
 #include "rm_lvgl_port.h"
 #include "common_data.h"
+#include "diag_config.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -295,6 +296,13 @@ bool glcdc_port_is_available(void);
  */
 uint32_t glcdc_port_get_vsync_count(void);
 
+/*
+ * Issue #183: the test pattern generators (S-002-4) are bring-up-only and are
+ * excluded from the default build together with the "display test" command.
+ * See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Draw a color bar test pattern to a frame buffer
  *
@@ -344,6 +352,8 @@ void glcdc_port_draw_checker(uint8_t *p_fb, uint32_t block_size);
  * @param color565 RGB565 color value
  */
 void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565);
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /**
  * Control the LCD backlight

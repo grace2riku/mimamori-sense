@@ -141,6 +141,7 @@
  *********************************************************************************************************************/
 #include <stdint.h>
 #include <stdbool.h>
+#include "diag_config.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -336,6 +337,13 @@ void dave2d_port_get_info(dave2d_info_t *info);
  */
 void dave2d_port_get_lvgl_info(dave2d_lvgl_info_t *info);
 
+/*
+ * Issue #183: this console dump is bring-up-only and is excluded from the
+ * default build together with the "dave2d integration" sub-command.
+ * See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Print a summary of the LVGL-Dave2D integration to the console
  *
@@ -345,10 +353,11 @@ void dave2d_port_get_lvgl_info(dave2d_lvgl_info_t *info);
  *          verification that the GPU is properly connected to the LVGL
  *          rendering pipeline.
  *
- *          This is called from lvgl_thread_entry.c after initialization
- *          and from the NT-Shell "dave2d integration" sub-command.
+ *          This is called from the NT-Shell "dave2d integration" sub-command.
  */
 void dave2d_port_print_lvgl_integration(void);
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /* ============================================================
  *  Drawing Wrapper Functions (S-004-2)

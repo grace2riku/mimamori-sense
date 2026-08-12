@@ -168,6 +168,24 @@ void cmd_print_error(const char *msg)
 }
 
 /**
+ * Print a "diagnostic excluded from this build" message
+ *
+ * Deliberately a single shared format string: every command gated by
+ * MIMAMORI_VERBOSE_DIAG reuses it, so the excluded commands cost one
+ * message in .rodata between them rather than one each (Issue #183).
+ */
+void cmd_print_diag_disabled(const char *cmd_name)
+{
+    char buf[CMD_INTERNAL_BUF_SIZE];
+
+    snprintf(buf, sizeof(buf),
+             "Error: '%s' is excluded from this build. "
+             "Rebuild with MIMAMORI_VERBOSE_DIAG=1 (see src/diag_config.h).\r\n",
+             cmd_name);
+    print_to_console(buf);
+}
+
+/**
  * Print an address alignment error message
  */
 void cmd_print_align_error(uint32_t addr, int access_size)

@@ -269,14 +269,24 @@
 /** Enable LVGL logging
  *
  * Rationale:
- *   - Logging is critical during development to diagnose rendering issues,
- *     memory allocation failures, and Dave2D fallback behavior
- *   - TODO: Disable (set to 0) for production release to reduce code size
- *     and eliminate logging overhead
+ *   - Disabled (0) to reclaim internal flash (Issue #183).
+ *     lv_log.h:46 defines `LV_LOG_FILE __FILE__`, so every LV_LOG_WARN /
+ *     LV_LOG_ERROR call site embeds the source file's full path and the
+ *     enclosing function name into .rodata. Across the LVGL library this
+ *     accounted for roughly 26 KB of string literals.
+ *   - Disabling loses no observable output on this port: LV_LOG_PRINTF is 0
+ *     (see below) and no code calls lv_log_register_print_cb(), so
+ *     lv_log.c:99 finds custom_print_cb == NULL and discards every message.
+ *     The strings were dead weight, not a working log channel.
+ *   - To re-enable for debugging: set this to 1, pick an LV_LOG_LEVEL below,
+ *     and register a sink with lv_log_register_print_cb() (or set
+ *     LV_LOG_PRINTF 1 once stdout is available).
+ *   - LV_USE_ASSERT_* are already all 0 (see below), so no assert strings
+ *     remain either.
  *
  * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/lv_conf_user.h:51
  */
-#define LV_USE_LOG 1
+#define LV_USE_LOG 0
 
 #if LV_USE_LOG
     /** Log level: WARN

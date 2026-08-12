@@ -85,6 +85,7 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
+#include "diag_config.h"
 #include "r_ioport.h"
 #include "rm_lvgl_port.h"      /* types only (rm_lvgl_port_cfg_t / callback args) */
 #include "lvgl_port_mtk3.h"    /* R-006: uT-Kernel display port (replaces RM_LVGL_PORT_Open) */
@@ -172,8 +173,14 @@ static void glcdc_backlight_on_event(lv_event_t *event);
 static void glcdc_cmd_status(void);
 static void glcdc_cmd_fb(void);
 static void glcdc_cmd_dbuf(void);
-static void glcdc_cmd_test(int argc, char **argv);
 static void glcdc_cmd_backlight(int argc, char **argv);
+
+/* Issue #183: "display test" is a bring-up-only test pattern generator.
+ * Its usage/result strings are excluded from the default build to free CPU0
+ * internal flash. See src/diag_config.h. */
+#if MIMAMORI_VERBOSE_DIAG
+static void glcdc_cmd_test(int argc, char **argv);
+#endif
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -529,6 +536,9 @@ static void glcdc_cmd_dbuf(void)
     print_to_console("  Tearing prevention: guaranteed by Vsync sync\r\n");
 }
 
+/* Issue #183: excluded from the default build (see src/diag_config.h). */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * "display test" sub-command handler (S-002-4)
  *
@@ -654,6 +664,8 @@ static void glcdc_cmd_test(int argc, char **argv)
     print_to_console("  Error: GLCDC Layer 1 is not enabled.\r\n");
 #endif
 }
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /**
  * "display backlight" sub-command handler (S-002-4)
@@ -879,6 +891,16 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg)
     }
 }
 
+/*
+ * Issue #183: test pattern generators (S-002-4). Verified with a tree-wide grep
+ * of e2studio_CPU0/src that glcdc_port_draw_colorbar / _draw_gradient /
+ * _draw_checker / _fill_color are referenced only by glcdc_cmd_test() above,
+ * which is gated by the same switch. The declarations in glcdc_port.h are gated
+ * too, so a call from ungated code fails at compile time, not link time.
+ * See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Draw a color bar test pattern to a frame buffer
  *
@@ -1014,6 +1036,8 @@ void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565)
         }
     }
 }
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /**
  * Control the LCD backlight (S-002-4)
@@ -1222,9 +1246,17 @@ int usrcmd_display(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* Issue #183: "test" is still parsed when the verbose diagnostic build
+     * switch is off, but reports that the verbose build is required instead of
+     * silently ignoring the request. */
     if (ntlibc_strcmp(argv[1], "test") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         glcdc_cmd_test(argc, argv);
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("display test");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     if (ntlibc_strcmp(argv[1], "backlight") == 0) {
