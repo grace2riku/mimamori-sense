@@ -39,6 +39,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "diag_config.h"
+
 /**********************************************************************************************************************
  Macro definitions
  *********************************************************************************************************************/
@@ -129,6 +131,17 @@ typedef struct {
 extern "C" {
 #endif
 
+/*
+ * Issue #183: the test suite below is bring-up-only and is excluded from the
+ * default build to reclaim CPU0 internal flash (its console strings are the
+ * bulk of its footprint). The declarations are guarded as well so that a new
+ * caller added outside this module fails to compile rather than to link.
+ * See src/diag_config.h. Only camera_test_cmd() stays available in both
+ * configurations; with the switch off it reports that the command was
+ * excluded from this build.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Perform a single frame capture test (S-003-4)
  *
@@ -214,6 +227,8 @@ bool camera_test_display_frame(const uint8_t *p_camera_frame);
  */
 bool camera_test_stream(uint32_t duration_ms);
 
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183) */
+
 /**
  * NT-Shell "camera test" sub-command handler (S-003-4)
  *
@@ -223,6 +238,10 @@ bool camera_test_stream(uint32_t duration_ms);
  *   camera test fps [duration_ms] - FPS measurement
  *   camera test stream [duration_ms] - Continuous capture with LCD display
  *   camera test validate          - Validate last captured frame data
+ *
+ * @note Issue #183: when MIMAMORI_VERBOSE_DIAG is 0 the sub-commands are not
+ *       built; this handler then only reports that the verbose build is
+ *       required (cmd_print_diag_disabled()).
  *
  * @param argc  Argument count (from the original camera command)
  * @param argv  Argument vector

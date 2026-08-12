@@ -48,6 +48,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "diag_config.h"
 #include "camera_test.h"
 #include "vin_port.h"
 #include "csi2_port.h"
@@ -65,6 +66,14 @@
  * Tick-based macros were renamed to *_MS (1 tick == 1 ms in the former
  * configuration, so the values are unchanged). */
 #include <tk/tkernel.h>
+
+/*
+ * Issue #183: the whole "camera test" suite is bring-up-only. Its console
+ * strings (~3 KB) are excluded from the default build; only camera_test_cmd()
+ * is compiled in both configurations so the shell still answers the command.
+ * See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
 
 /**********************************************************************************************************************
  Macro definitions
@@ -805,8 +814,12 @@ static void test_cmd_fps(int argc, char **argv)
     bool pass = true;
     if (result.fps_x100 < 3000) {
         pass = false;
-        snprintf(buf, sizeof(buf), "  FPS Check      : FAIL (%.2f < 30.00 target)\r\n",
-                 (float)result.fps_x100 / 100.0f);
+        /* Issue #183: fixed-point formatting, matching the "FPS" line above.
+         * Avoids %f so no translation unit in this project needs the
+         * floating-point printf variant from libc. */
+        snprintf(buf, sizeof(buf), "  FPS Check      : FAIL (%lu.%02lu < 30.00 target)\r\n",
+                 (unsigned long)(result.fps_x100 / 100),
+                 (unsigned long)(result.fps_x100 % 100));
         print_to_console(buf);
     } else {
         print_to_console("  FPS Check      : PASS (>= 30.00)\r\n");
@@ -963,14 +976,24 @@ static void test_cmd_print_help(void)
     print_to_console("  validate          - Validate last captured frame data\r\n");
 }
 
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: camera test suite) */
+
+/**********************************************************************************************************************
+ Exported command entry point (built in both configurations)
+ *********************************************************************************************************************/
+
 /**
  * NT-Shell "camera test" sub-command handler (S-003-4)
  *
  * @details Dispatches camera integration test sub-commands.
+ *          Issue #183: when MIMAMORI_VERBOSE_DIAG is 0 the sub-commands are
+ *          not built and the handler only reports that fact, so the shell
+ *          never silently ignores the request.
  *
  * @param argc  Argument count (from the original camera command)
  * @param argv  Argument vector
  */
+#if MIMAMORI_VERBOSE_DIAG
 void camera_test_cmd(int argc, char **argv)
 {
     char buf[TEST_PRINT_BUF_SIZE];
@@ -1005,3 +1028,12 @@ void camera_test_cmd(int argc, char **argv)
     print_to_console(buf);
     test_cmd_print_help();
 }
+#else  /* !MIMAMORI_VERBOSE_DIAG */
+void camera_test_cmd(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    cmd_print_diag_disabled("camera test");
+}
+#endif /* MIMAMORI_VERBOSE_DIAG */

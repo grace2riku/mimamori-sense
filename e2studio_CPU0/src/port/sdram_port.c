@@ -45,10 +45,14 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
+#include "diag_config.h"
 
+#if MIMAMORI_VERBOSE_DIAG
 /* R-006 (Issue #156): FreeRTOS.h / task.h removed.
- * xTaskGetTickCount() -> tk_get_otm (operating time, ms). */
+ * xTaskGetTickCount() -> tk_get_otm (operating time, ms).
+ * Issue #183: only sdram_get_tick_ms() (memory test timing) uses uT-Kernel. */
 #include <tk/tkernel.h>
+#endif
 
 /**********************************************************************************************************************
  Macro definitions
@@ -118,11 +122,17 @@ static const sdram_config_info_t s_sdram_config = {
 static bool sdram_write_read_verify(volatile uint32_t *addr, uint32_t pattern);
 static void sdram_cmd_status(void);
 static void sdram_cmd_check(void);
+
+/* Issue #183: bring-up-only diagnostics (memory map dump / full memory test
+ * suite). Their string literals are excluded from the default build to free
+ * CPU0 internal flash. See src/diag_config.h. */
+#if MIMAMORI_VERBOSE_DIAG
 static void sdram_cmd_map(void);
 static void sdram_cmd_test(void);
 static uint32_t sdram_get_tick_ms(void);
 static void sdram_test_init_result(sdram_test_result_t *result, sdram_test_type_t type);
 static void sdram_test_print_result(const sdram_test_result_t *result, const char *name);
+#endif
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -343,6 +353,14 @@ extern uint32_t __sdram_zero$$Limit;
 extern uint32_t __sdram_from_flash$$Base;
 extern uint32_t __sdram_from_flash$$Limit;
 
+/*
+ * Issue #183: "sdram map" is a bring-up-only memory layout dump (~1 KB of
+ * strings). Excluded from the default build; see src/diag_config.h.
+ * Note that the linker symbols above stay declared because
+ * sdram_port_get_section_info() (always built) references them.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * "sdram map" sub-command handler
  *
@@ -558,6 +576,8 @@ static void sdram_cmd_test(void)
     print_to_console(buf);
 }
 
+#endif /* MIMAMORI_VERBOSE_DIAG */
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
@@ -742,6 +762,14 @@ bool sdram_port_sanity_check(void)
 
     return true;
 }
+
+/*
+ * Issue #183: SDRAM memory test engine (S-001-4). Bring-up only; its progress
+ * / result strings are excluded from the default build. Declarations in
+ * sdram_port.h are gated by the same switch, so a call from ungated code is a
+ * compile error rather than a link error. See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
 
 /**
  * Run SDRAM data bus test
@@ -1103,6 +1131,8 @@ bool sdram_test_run_all(sdram_test_report_t *report)
     return report->all_passed;
 }
 
+#endif /* MIMAMORI_VERBOSE_DIAG */
+
 /**
  * NT-Shell "sdram" command handler
  *
@@ -1133,14 +1163,27 @@ int usrcmd_sdram(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* Issue #183: "map" / "test" are still parsed when the verbose diagnostic
+     * build switch is off, but report that the verbose build is required
+     * instead of silently ignoring the request. */
     if (ntlibc_strcmp(argv[1], "map") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         sdram_cmd_map();
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("sdram map");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     if (ntlibc_strcmp(argv[1], "test") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         sdram_cmd_test();
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("sdram test");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     /* Unknown sub-command */

@@ -76,6 +76,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "bsp_api.h"
+#include "diag_config.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -354,6 +355,13 @@ bool sdram_port_sanity_check(void);
  */
 void sdram_port_get_section_info(sdram_section_info_t *info);
 
+/*
+ * Issue #183: the SDRAM memory test engine (S-001-4) is bring-up-only and is
+ * excluded from the default build together with its diagnostic strings.
+ * See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Run SDRAM data bus test
  *
@@ -442,6 +450,8 @@ bool sdram_test_pattern(sdram_test_result_t *result);
  * @retval false One or more tests failed
  */
 bool sdram_test_run_all(sdram_test_report_t *report);
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /**
  * NT-Shell command handler for SDRAM control

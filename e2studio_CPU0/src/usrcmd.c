@@ -58,6 +58,7 @@
 #include "jlink_console.h"
 #include "usrcmd.h"
 #include "cmd_utils.h"
+#include "diag_config.h"
 #include "fw_version.h"
 #include "led_ctrl.h"
 #include "port/sdram_port.h"
@@ -587,6 +588,16 @@ static int usrcmd_lvgl(int argc, char **argv)
 
     /* --- "lvgl conf" sub-command --- */
     if (ntlibc_strcmp(argv[1], "conf") == 0) {
+        /*
+         * Issue #183: this dump only restates compile-time constants from
+         * lv_conf_user.h, which can be read from the source at any time. Its
+         * ~1 KB of literals is excluded from the default build; rebuild with
+         * MIMAMORI_VERBOSE_DIAG=1 to get it back. See src/diag_config.h.
+         */
+#if !MIMAMORI_VERBOSE_DIAG
+        cmd_print_diag_disabled("lvgl conf");
+        return CMD_ERR_EXECUTE;
+#else
         print_to_console("[LVGL Configuration (lv_conf_user.h)]\r\n");
 
         snprintf(buf, sizeof(buf), "  LV_MEM_SIZE              : %lu bytes (%lu KB)\r\n",
@@ -660,6 +671,7 @@ static int usrcmd_lvgl(int argc, char **argv)
 #endif
 
         return CMD_OK;
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: lvgl conf dump) */
     }
 
     /* --- "lvgl testpat" sub-command --- */

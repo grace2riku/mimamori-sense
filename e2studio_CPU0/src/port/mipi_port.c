@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "diag_config.h"
 #include "mipi_port.h"
 #include "csi2_port.h"
 #include "vin_port.h"
@@ -107,11 +108,19 @@ static uint32_t s_pclka_hz = 0;
  Private (static) functions prototypes
  *********************************************************************************************************************/
 static void mipi_cmd_phy(void);
-static void mipi_cmd_timing(void);
 static void mipi_cmd_init(void);
 static void mipi_cmd_sensor(int argc, char **argv);
 static void mipi_cmd_thread(void);
+#if MIMAMORI_VERBOSE_DIAG
+/*
+ * Issue #183: "camera timing" / "camera diag" are bring-up-only register dumps.
+ * Their string literals are the largest single consumer of CPU0 internal flash
+ * in this file, so they are excluded unless MIMAMORI_VERBOSE_DIAG is 1
+ * (see src/diag_config.h).
+ */
+static void mipi_cmd_timing(void);
 static void mipi_cmd_diag(void);
+#endif
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -213,6 +222,7 @@ static void mipi_cmd_phy(void)
 #endif
 }
 
+#if MIMAMORI_VERBOSE_DIAG
 /**
  * "camera timing" sub-command handler
  *
@@ -288,8 +298,18 @@ static void mipi_cmd_timing(void)
     print_to_console("  Timing values are in PCLKA cycles.\r\n");
 
     if (s_pclka_hz > 0) {
-        snprintf(buf, sizeof(buf), "  PCLKA period : %.2f ns (%lu MHz)\r\n",
-                 1000000000.0f / (float)s_pclka_hz,
+        /* Issue #183: fixed-point formatting instead of %f.
+         * period_ns x100 = 1e11 / f_hz; the 64-bit intermediate keeps this
+         * exact for the whole PCLKA range without needing a lower bound on
+         * s_pclka_hz beyond the > 0 test above.
+         * Kept float-free even though this block is excluded from the default
+         * build, so that no translation unit in the project requires the
+         * floating-point printf variant from libc (see Issue #184). */
+        const uint32_t period_ns_x100 = (uint32_t)(100000000000ULL / (uint64_t)s_pclka_hz);
+
+        snprintf(buf, sizeof(buf), "  PCLKA period : %lu.%02lu ns (%lu MHz)\r\n",
+                 (unsigned long)(period_ns_x100 / 100),
+                 (unsigned long)(period_ns_x100 % 100),
                  (unsigned long)(s_pclka_hz / 1000000UL));
         print_to_console(buf);
     }
@@ -297,6 +317,7 @@ static void mipi_cmd_timing(void)
     print_to_console("  Source: FSP configuration (configuration.xml)\r\n");
     print_to_console("  Ref: reference_projects/quickstart_ek_ra8p1_ep/e2studio/ra_gen/common_data.c:9-22\r\n");
 }
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: mipi_cmd_timing) */
 
 /**
  * "camera init" sub-command handler
@@ -495,7 +516,10 @@ static void mipi_cmd_print_help(void)
 {
     cmd_print_usage("camera", "<subcommand>");
     print_to_console("  phy      - Show MIPI D-PHY configuration and status (S-003-1)\r\n");
+#if MIMAMORI_VERBOSE_DIAG
+    /* Issue #183: only listed when the verbose diagnostics build is enabled. */
     print_to_console("  timing   - Show D-PHY timing parameters (S-003-1)\r\n");
+#endif
     print_to_console("  init     - Initialize MIPI D-PHY (S-003-1)\r\n");
     print_to_console("  csi      - Show CSI-2 receiver status and error counters (S-003-2)\r\n");
     print_to_console("  csi reset  - Reset CSI-2 error/frame counters (S-003-2)\r\n");
@@ -517,6 +541,8 @@ static void mipi_cmd_print_help(void)
     print_to_console("  sensor stream on|off     - Control MIPI stream (F-002-4)\r\n");
     print_to_console("  fb       - Show frame buffer status, addresses, FPS (F-002-6)\r\n");
     print_to_console("  display  - Show camera-to-LVGL display transfer status (F-001-8)\r\n");
+#if MIMAMORI_VERBOSE_DIAG
+    /* Issue #183: only listed when the verbose diagnostics build is enabled. */
     print_to_console("  diag     - MIPI data path diagnostics: OV5640 regs + FSP state (F-002-6)\r\n");
     print_to_console("  test     - Integration test commands (S-003-4)\r\n");
     print_to_console("    test capture         - Single frame capture with validation\r\n");
@@ -524,6 +550,7 @@ static void mipi_cmd_print_help(void)
     print_to_console("    test fps [ms]        - FPS measurement (default: 3000 ms)\r\n");
     print_to_console("    test stream [ms]     - Continuous capture + LCD (default: 10000 ms)\r\n");
     print_to_console("    test validate        - Validate last captured frame data\r\n");
+#endif
 }
 
 /**
@@ -772,6 +799,7 @@ static void mipi_cmd_vin_reset(void)
     print_to_console("  VIN capture statistics reset.\r\n");
 }
 
+#if MIMAMORI_VERBOSE_DIAG
 /**********************************************************************************************************************
  * Function Name: mipi_cmd_diag
  * Description  : "camera diag" sub-command handler (F-002-6)
@@ -1599,6 +1627,7 @@ static void mipi_cmd_diag(void)
         R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
     }
 }
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: mipi_cmd_diag) */
 
 /**
  * NT-Shell "camera" command handler (S-003-1 / S-003-2 / S-003-3 / S-003-4)
@@ -1642,8 +1671,14 @@ int usrcmd_camera(int argc, char **argv)
     }
 
     if (ntlibc_strcmp(argv[1], "timing") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         mipi_cmd_timing();
         return CMD_OK;
+#else
+        /* Issue #183: excluded from the default build (see src/diag_config.h). */
+        cmd_print_diag_disabled("camera timing");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     if (ntlibc_strcmp(argv[1], "init") == 0) {
@@ -1746,8 +1781,14 @@ int usrcmd_camera(int argc, char **argv)
 
     /* F-002-6: MIPI data path diagnostics sub-command */
     if (ntlibc_strcmp(argv[1], "diag") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         mipi_cmd_diag();
         return CMD_OK;
+#else
+        /* Issue #183: excluded from the default build (see src/diag_config.h). */
+        cmd_print_diag_disabled("camera diag");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     /* S-003-4: Integration test sub-commands */

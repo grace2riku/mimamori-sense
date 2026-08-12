@@ -98,6 +98,7 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
+#include "diag_config.h"
 
 /* R-006 (Issue #156): unused FreeRTOS.h / task.h includes removed
  * (no FreeRTOS API is called from this file). */
@@ -220,11 +221,20 @@ static dave2d_status_t s_dave2d_status = DAVE2D_STATUS_NOT_INITIALIZED;
  Private (static) functions prototypes
  *********************************************************************************************************************/
 static void dave2d_cmd_status(void);
+
+/*
+ * Issue #183: the GPU self-test suite, the benchmark suite and the LVGL
+ * integration dump are bring-up-only diagnostics. Together they hold the
+ * largest block of string literals in this file, so they are excluded from the
+ * default build to free CPU0 internal flash. See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
 static void dave2d_cmd_integration(void);
 static void dave2d_cmd_test(int argc, char **argv);
 static void dave2d_cmd_bench(int argc, char **argv);
+#endif
 
-#if LV_USE_DRAW_DAVE2D
+#if MIMAMORI_VERBOSE_DIAG && LV_USE_DRAW_DAVE2D
 static void dave2d_cmd_test_rect(void);
 static void dave2d_cmd_test_line(void);
 static void dave2d_cmd_test_blit(void);
@@ -325,6 +335,16 @@ static void dave2d_cmd_status(void)
     print_to_console("  Draw Unit       : lv_draw_dave2d_unit_t (ID=4)\r\n");
     print_to_console("  Render Mode     : Display list based (deferred execution)\r\n");
 
+    /*
+     * Issue #183: everything below is static documentation text, not runtime
+     * state -- it restates the LVGL/Dave2D call graph and this module's own
+     * API list, both of which are covered by the header comments and the
+     * design docs. It cost ~1.2 KB of CPU0 internal flash, so it is excluded
+     * from the default build. The runtime status reported above (init state,
+     * driver version, HW revision, handle validity) is always available.
+     * See src/diag_config.h.
+     */
+#if MIMAMORI_VERBOSE_DIAG
     print_to_console("[Supported Accelerated Operations]\r\n");
     print_to_console("  Rectangle Fill  : d2_renderbox (lv_draw_dave2d_fill)\r\n");
     print_to_console("  Border          : d2_renderbox (lv_draw_dave2d_border)\r\n");
@@ -353,7 +373,14 @@ static void dave2d_cmd_status(void)
     print_to_console("  dave2d_port_init() [this module]\r\n");
     print_to_console("    -> Verifies _d2_handle != NULL\r\n");
     print_to_console("    -> Records status for diagnostics\r\n");
+#endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: static documentation text) */
 }
+
+/* Issue #183: bring-up-only diagnostics ("dave2d integration" / "dave2d test" /
+ * "dave2d bench" and all of their helpers). Excluded from the default build;
+ * see src/diag_config.h. The real rendering wrappers used by LVGL are further
+ * down and stay unconditional. */
+#if MIMAMORI_VERBOSE_DIAG
 
 /**
  * "dave2d integration" sub-command handler (S-004-3)
@@ -1472,6 +1499,8 @@ static void dave2d_cmd_bench(int argc, char **argv)
 #endif
 }
 
+#endif /* MIMAMORI_VERBOSE_DIAG */
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
@@ -1719,6 +1748,15 @@ void dave2d_port_get_lvgl_info(dave2d_lvgl_info_t *info)
 #endif
 }
 
+/*
+ * Issue #183: verified with a tree-wide grep of e2studio_CPU0/src that
+ * dave2d_port_print_lvgl_integration() is referenced only by
+ * dave2d_cmd_integration() above, which is gated by the same switch. (The
+ * doc comment below mentions lvgl_thread_entry.c, but no such call exists.)
+ * The declaration in dave2d_port.h is gated too. See src/diag_config.h.
+ */
+#if MIMAMORI_VERBOSE_DIAG
+
 /**
  * Print LVGL-Dave2D integration summary to console
  *
@@ -1848,6 +1886,8 @@ void dave2d_port_print_lvgl_integration(void)
     print_to_console("  XRGB8888 : Yes\r\n");
     print_to_console("  Others   : No (fallback to SW renderer)\r\n");
 }
+
+#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /* ============================================================
  *  Drawing Wrapper Functions (S-004-2)
@@ -2477,19 +2517,37 @@ int usrcmd_dave2d(int argc, char **argv)
         return CMD_OK;
     }
 
+    /* Issue #183: "integration" / "test" / "bench" are still parsed when the
+     * verbose diagnostic build switch is off, but report that the verbose build
+     * is required instead of silently ignoring the request. */
     if (ntlibc_strcmp(argv[1], "integration") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         dave2d_cmd_integration();
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("dave2d integration");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     if (ntlibc_strcmp(argv[1], "test") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         dave2d_cmd_test(argc, argv);
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("dave2d test");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     if (ntlibc_strcmp(argv[1], "bench") == 0) {
+#if MIMAMORI_VERBOSE_DIAG
         dave2d_cmd_bench(argc, argv);
         return CMD_OK;
+#else
+        cmd_print_diag_disabled("dave2d bench");
+        return CMD_ERR_EXECUTE;
+#endif
     }
 
     /* Unknown sub-command */
