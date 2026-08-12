@@ -111,6 +111,37 @@
 #define DAVE2D_PRINT_BUF_SIZE   (128)
 
 /**
+ * Line buffer size for "dave2d status" (Issue #192)
+ *
+ * The Driver Version / HW Revision lines embed a variable-length string owned
+ * by the D/AVE driver, so DAVE2D_PRINT_BUF_SIZE is not enough for them.
+ *
+ * Upper bound of the driver string: d2_getrevisionstringhw() builds its result
+ * in a "static d2_char g_revisionstring[256]" and every write into it is
+ * bounded by sizeof(g_revisionstring) (dave_driver.c:827, 863-877), so the
+ * returned string is at most 255 B by construction -- not merely by
+ * observation. The worst-case line is therefore
+ *
+ *   prefix "  HW Revision     : "   20 B
+ * + driver string                  255 B
+ * + suffix " (0x%08lX)\r\n"          14 B
+ * + NUL                              1 B
+ * = 290 B
+ *
+ * 320 B covers that with margin. Sizing the buffer for the whole line keeps it
+ * emitted in a SINGLE print_to_console() call: print_to_console() yields
+ * (tk_dly_tsk(1), jlink_console.c:165) after every write, so a line split
+ * across several calls could be interleaved with another task's log output.
+ * The camera task in particular runs at a higher priority than NT-Shell
+ * (11 vs 12, usermain.c:167/189) and logs during its initialization.
+ * See the PR #193 review discussion.
+ *
+ * Only dave2d_cmd_status() needs this size; the other handlers in this file
+ * format fixed text plus numbers and keep using DAVE2D_PRINT_BUF_SIZE.
+ */
+#define DAVE2D_LINE_BUF_SIZE    (320)
+
+/**
  * D2_FIX4 macro for converting integer to 12:4 fixed-point
  *
  * Reference: e2studio_CPU0/ra/tes/dave2d/inc/dave_driver.h
@@ -267,9 +298,10 @@ static void dave2d_bench_summary(void);
  */
 static void dave2d_cmd_status(void)
 {
-    char buf[DAVE2D_PRINT_BUF_SIZE];
+    char buf[DAVE2D_LINE_BUF_SIZE];
     dave2d_info_t info;
     const char *status_str;
+    int n;
 
     /* Initialization status */
     switch (s_dave2d_status) {
@@ -305,27 +337,57 @@ static void dave2d_cmd_status(void)
     /* Driver version info */
     print_to_console("[Dave2D Driver Information]\r\n");
 
+    /*
+     * Issue #192: d2_getversionstring() returns a variable-length string owned
+     * by the D/AVE driver. The 128 B buffer used elsewhere in this file leaves
+     * only 92 B for it once the fixed prefix and suffix are accounted for, so
+     * the line -- including its terminating CRLF -- was silently truncated and
+     * ran into the next heading. buf is DAVE2D_LINE_BUF_SIZE (320 B) so the
+     * whole line fits and is emitted in one print_to_console() call.
+     */
     if (info.driver_version_str != NULL) {
-        snprintf(buf, sizeof(buf), "  Driver Version  : %s (0x%08lX)\r\n",
-                 info.driver_version_str, (unsigned long)info.driver_version);
+        n = snprintf(buf, sizeof(buf), "  Driver Version  : %s (0x%08lX)\r\n",
+                     info.driver_version_str, (unsigned long)info.driver_version);
     } else {
-        snprintf(buf, sizeof(buf), "  Driver Version  : 0x%08lX\r\n",
-                 (unsigned long)info.driver_version);
+        n = snprintf(buf, sizeof(buf), "  Driver Version  : 0x%08lX\r\n",
+                     (unsigned long)info.driver_version);
     }
-    print_to_console(buf);
+
+    /*
+     * Issue #192: never emit a silently truncated line again. snprintf()
+     * returns the length it *would* have written, so a value >= sizeof(buf)
+     * means the line did not fit.
+     */
+    if ((n < 0) || ((size_t)n >= sizeof(buf))) {
+        print_to_console("  Driver Version  : (line too long - truncated)\r\n");
+    } else {
+        print_to_console(buf);
+    }
 
     /* Hardware revision (only available if handle is valid) */
     print_to_console("[Dave2D Hardware Information]\r\n");
 
     if (info.handle_valid) {
+        /*
+         * Issue #192: this is the line that actually broke. The D/AVE
+         * feature-flag string is 145 B on EK-RA8P1 -- the 107 B seen in the
+         * bug report was the truncated remnant (128 B buffer - 1 for NUL - 20 B
+         * prefix), not the real length. See DAVE2D_LINE_BUF_SIZE for the sizing
+         * rationale and the 255 B upper bound guaranteed by the driver.
+         */
         if (info.hw_revision_str != NULL) {
-            snprintf(buf, sizeof(buf), "  HW Revision     : %s (0x%08lX)\r\n",
-                     info.hw_revision_str, (unsigned long)info.hw_revision);
+            n = snprintf(buf, sizeof(buf), "  HW Revision     : %s (0x%08lX)\r\n",
+                         info.hw_revision_str, (unsigned long)info.hw_revision);
         } else {
-            snprintf(buf, sizeof(buf), "  HW Revision     : 0x%08lX\r\n",
-                     (unsigned long)info.hw_revision);
+            n = snprintf(buf, sizeof(buf), "  HW Revision     : 0x%08lX\r\n",
+                         (unsigned long)info.hw_revision);
         }
-        print_to_console(buf);
+
+        if ((n < 0) || ((size_t)n >= sizeof(buf))) {
+            print_to_console("  HW Revision     : (line too long - truncated)\r\n");
+        } else {
+            print_to_console(buf);
+        }
     } else {
         print_to_console("  HW Revision     : N/A (device not open)\r\n");
     }
