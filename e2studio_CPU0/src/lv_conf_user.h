@@ -410,27 +410,37 @@
  * span in Debug/mimamori_sense_CPU0.map:
  *
  *   before  990,720 B used / 25,088 B free  (97.5% of 992 KiB)
- *   after   856,576 B used / 159,232 B free (84.3% of 992 KiB)
- *   saved   134,144 B (131.0 KiB)
+ *   after   863,744 B used / 152,064 B free (85.0% of 992 KiB)
+ *   saved   126,976 B (124.0 KiB)
  *
  * Per category (cumulative, measured one category at a time):
- *   category 1  SW blender color formats   -64,512 B
+ *   category 1  SW blender color formats   -57,344 B
+ *               (-64,512 B before restoring RGB888 as a gradient SOURCE
+ *                format, +7,168 B to restore it - see that block below)
  *   category 2  unused widgets + layouts   -69,632 B
  *   category 3  fonts                        no change - see the note in
  *                                            "Font Configuration" below
  *
- * LVGL's own flash footprint went from 313,664 B to 183,218 B.
+ * LVGL's own flash footprint went from 313,664 B to 190,200 B.
  *============================================================*/
 
 /*=============================================================
  * FLASH Reduction: SW Blender Color Formats (Issue #182, category 1)
  *
- * `LV_DRAW_SW_SUPPORT_<fmt>` selects which *destination* buffer formats the
- * software blender can render into. The FSP-generated lv_conf.h enables all
- * of them (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:60-104), which links one
- * ~6-12 KB `lv_draw_sw_blend_to_<fmt>.o` per format.
+ * Each `LV_DRAW_SW_SUPPORT_<fmt>` gates TWO things - both must be checked
+ * before disabling one (this cost us a P2 review finding on PR #190):
  *
- * Only two destination formats are reachable in this project:
+ *   (a) DESTINATION: whether `lv_draw_sw_blend_to_<fmt>.o` (~6-12 KB) is
+ *       compiled at all, i.e. whether the blender can render INTO that format.
+ *   (b) SOURCE: the `case LV_COLOR_FORMAT_<fmt>:` arm inside every OTHER
+ *       blender, i.e. whether the blender can read FROM that format
+ *       (e.g. ra/lvgl/lvgl/src/draw/sw/blend/lv_draw_sw_blend_to_rgb565.c
+ *       :385-435 switches on `dsc->src_color_format`).
+ *
+ * The FSP-generated lv_conf.h enables all of them
+ * (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:60-104).
+ *
+ * (a) Destination formats reachable in this project - exactly two:
  *
  *   RGB565    - the display buffer (LV_COLOR_DEPTH 16, lv_conf.h:22-23) and
  *               every layer created with LV_COLOR_FORMAT_NATIVE
@@ -443,8 +453,21 @@
  *               format must stay enabled even though the current screens may
  *               not hit it on every frame.
  *
- * All other formats are only reachable through lv_canvas / image buffers of
- * that format, neither of which this project creates.
+ * (b) Source formats: every producer of `blend_dsc.src_color_format` in
+ *     draw/sw/ was enumerated. Only two kinds exist:
+ *
+ *     - DECODED IMAGES - the format comes from the image header `cf`
+ *       (lv_draw_sw_img.c:267-515, lv_draw_sw_arc.c:147). The only image this
+ *       project draws is the camera framebuffer, declared RGB565
+ *       (src/camera_display.c:169, src/ui/ui_main_screen.c:430).
+ *     - GRADIENTS - hardcoded to RGB888, NOT derived from any image:
+ *         lv_draw_sw_fill.c:123      gradient fills     (dir >= LV_GRAD_DIR_HOR)
+ *         lv_draw_sw_triangle.c:147  gradient triangles
+ *       This is why RGB888 stays enabled below even though nothing renders
+ *       INTO RGB888.
+ *
+ * Text/labels are NOT affected by any of this: glyphs are blended through the
+ * `mask_buf` path and never set `src_color_format` (no producer in draw/sw/).
  *
  * IMPORTANT - failure mode if one of these is wrong:
  *   The blender dispatch is a `switch(layer_cf)` whose arms are `#if`-guarded,
@@ -469,26 +492,55 @@
  * lv_display_set_buffers_with_stride(). */
 #define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED       0
 
-/* Disabled: 24/32-bit destinations. No layer or buffer uses them. */
-#define LV_DRAW_SW_SUPPORT_RGB888               0
+/* KEPT AT 1 - required as a SOURCE format, not as a destination.
+ *
+ * Nothing in this project renders INTO RGB888, but the SW renderer hardcodes
+ * RGB888 as the source format for gradient scanlines:
+ *   lv_draw_sw_fill.c:123      gradient fills, when dir >= LV_GRAD_DIR_HOR
+ *                              (i.e. HOR and the complex dirs; VER = 1 sorts
+ *                              below HOR = 2 in lv_grad.h:31-38 and takes the
+ *                              per-row solid-colour path instead)
+ *   lv_draw_sw_triangle.c:147  gradient triangles
+ * and Dave2D declines any gradient whose first and last stop differ
+ * (lv_draw_dave2d.c:250-265), so those tasks always land on the SW renderer.
+ *
+ * With this at 0, the RGB888 source arm of lv_draw_sw_blend_to_rgb565.c
+ * (:396-400) is compiled out and a horizontal gradient fill would be SILENTLY
+ * SKIPPED - no link error, no assert, just an unpainted area. That would also
+ * contradict LV_USE_DRAW_SW_COMPLEX_GRADIENTS above, which deliberately keeps
+ * simple horizontal/vertical gradients available.
+ *
+ * Costs 7,168 B (measured). No widget currently sets a gradient (the only one in
+ * lv_theme_default.c is styles.led at :603, and LV_USE_LED is 0 below), so
+ * this is purely insurance against a future style change failing silently.
+ * Reported as a P2 finding on PR #190. */
+#define LV_DRAW_SW_SUPPORT_RGB888               1
+
+/* Disabled: XRGB8888 is reachable only as a decoded-image source format or an
+ * XRGB8888 destination buffer. No gradient or other draw path produces it, and
+ * the only image drawn is RGB565. */
 #define LV_DRAW_SW_SUPPORT_XRGB8888             0
 
 /* Disabled: premultiplied ARGB is only produced by lv_draw_buf_premultiply(),
  * which this project never calls. */
 #define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 0
 
-/* Disabled: grayscale / indexed destinations, reachable only via lv_canvas
- * (LV_USE_CANVAS is 0 below). */
+/* Disabled: grayscale / indexed formats. As destinations they need an
+ * lv_canvas of that format (LV_USE_CANVAS is 0 below); as sources they need a
+ * decoded image whose header `cf` says L8/AL88/I1. The only image drawn is
+ * RGB565, and no draw path synthesises these the way gradients synthesise
+ * RGB888. */
 #define LV_DRAW_SW_SUPPORT_L8                   0
 #define LV_DRAW_SW_SUPPORT_AL88                 0
 #define LV_DRAW_SW_SUPPORT_I1                   0
 
-/* Disabled: A8 / RGB565A8 are *source* formats for the SW image transform
- * path (ra/lvgl/lvgl/src/draw/sw/lv_draw_sw_transform.c:72-84, 253-283).
- * The only image drawn is the camera framebuffer, whose descriptor is
- * declared RGB565 (src/camera_display.c:169, src/ui/ui_main_screen.c:430)
- * and which is never rotated or scaled, so no transform ever sees these
- * formats. */
+/* Disabled: A8 / RGB565A8 are source formats for the SW image transform path
+ * (ra/lvgl/lvgl/src/draw/sw/lv_draw_sw_transform.c:72-84, 253-283) and, for
+ * RGB565A8, an image source arm. Both come from a decoded image's header `cf`;
+ * the only image drawn is the camera framebuffer, declared RGB565
+ * (src/camera_display.c:169, src/ui/ui_main_screen.c:430) and never rotated or
+ * scaled. NOTE: font glyphs do NOT go through A8 here - they use the mask_buf
+ * path, which is independent of these switches (see the section header). */
 #define LV_DRAW_SW_SUPPORT_A8                   0
 #define LV_DRAW_SW_SUPPORT_RGB565A8             0
 
