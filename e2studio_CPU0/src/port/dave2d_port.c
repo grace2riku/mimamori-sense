@@ -306,8 +306,17 @@ static void dave2d_cmd_status(void)
     print_to_console("[Dave2D Driver Information]\r\n");
 
     if (info.driver_version_str != NULL) {
-        snprintf(buf, sizeof(buf), "  Driver Version  : %s (0x%08lX)\r\n",
-                 info.driver_version_str, (unsigned long)info.driver_version);
+        /*
+         * Issue #192: d2_getversionstring() returns a variable-length string
+         * owned by the D/AVE driver. Formatting it into buf together with the
+         * fixed prefix/suffix would silently truncate the line -- including the
+         * terminating CRLF -- once the string outgrows the space left in the
+         * 128 B buffer. Emit the driver string with its own print_to_console()
+         * call so the output no longer depends on the buffer size.
+         */
+        print_to_console("  Driver Version  : ");
+        print_to_console((char_t *)info.driver_version_str);
+        snprintf(buf, sizeof(buf), " (0x%08lX)\r\n", (unsigned long)info.driver_version);
     } else {
         snprintf(buf, sizeof(buf), "  Driver Version  : 0x%08lX\r\n",
                  (unsigned long)info.driver_version);
@@ -319,8 +328,12 @@ static void dave2d_cmd_status(void)
 
     if (info.handle_valid) {
         if (info.hw_revision_str != NULL) {
-            snprintf(buf, sizeof(buf), "  HW Revision     : %s (0x%08lX)\r\n",
-                     info.hw_revision_str, (unsigned long)info.hw_revision);
+            /* Issue #192: same truncation hazard as Driver Version above -- the
+             * D/AVE feature-flag string is ~107 B on EK-RA8P1, which leaves no
+             * room for the revision value or the CRLF. Print it separately. */
+            print_to_console("  HW Revision     : ");
+            print_to_console((char_t *)info.hw_revision_str);
+            snprintf(buf, sizeof(buf), " (0x%08lX)\r\n", (unsigned long)info.hw_revision);
         } else {
             snprintf(buf, sizeof(buf), "  HW Revision     : 0x%08lX\r\n",
                      (unsigned long)info.hw_revision);
