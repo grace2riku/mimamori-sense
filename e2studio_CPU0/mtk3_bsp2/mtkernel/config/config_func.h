@@ -29,20 +29,27 @@
  * Only the subsystems the planned migration NEVER uses are disabled here
  * (the API replacement table in doc/migration/mtk3-migration-guide.md ch.5 uses
  * task / eventflag / semaphore / mutex / cyclic-alarm only):
- *   MAILBOX / MESSAGEBUFFER / RENDEZVOUS / MEMORYPOOL / FIX_MEMORYPOOL / DEVICE.
+ *   MAILBOX / MESSAGEBUFFER / RENDEZVOUS / FIX_MEMORYPOOL / DEVICE.
  * SEMAPHORE / EVENTFLAG / MUTEX / CYCLICHANDLER / ALARMHANDLER are kept ENABLED
  * (used in R-004..R-007) so no per-step re-enabling is required.
  *
  * NOTE: this trim alone does not fit R-003 in the old 960KB CPU0 partition; the
  * structural fix is rebalancing flash from the idle CPU1 (uses ~11KB of 64KB)
- * to CPU0 in solution.xml -> Memories. See guide 7.1 "code-flash overflow". */
+ * to CPU0 in solution.xml -> Memories. See guide 7.1 "code-flash overflow".
+ *
+ * [mimamori-sense #186] USE_MEMORYPOOL was 0 in R-003 and is RE-ENABLED here:
+ * the D/AVE 2D heap (d1_malloc/d1_free, src/d1_heap_mtkernel.c) is built on a
+ * variable size memory pool (tk_cre_mpl/tk_get_mpl/tk_rel_mpl) so that the D2
+ * heap no longer comes from the FreeRTOS heap (ucHeap, 262,144 B) and is
+ * mutually excluded by the uT-Kernel critical section (Issue #178).
+ * See doc/migration/mtk3-migration-guide.md ch.10. */
 #define USE_SEMAPHORE		(1)
 #define	USE_MUTEX		(1)
 #define	USE_EVENTFLAG		(1)
 #define	USE_MAILBOX		(0)
 #define	USE_MESSAGEBUFFER	(0)
 #define USE_RENDEZVOUS		(0)
-#define USE_MEMORYPOOL		(0)
+#define USE_MEMORYPOOL		(1)
 #define	USE_FIX_MEMORYPOOL	(0)
 #define	USE_TIMEMANAGEMENT	(1)
 #define	USE_CYCLICHANDLER	(1)

@@ -33,6 +33,10 @@
 /* FSP / BSP API（LED 制御に R_BSP_PinWrite / bsp_leds_t を使用） */
 #include "hal_data.h"
 
+/* D/AVE 2D ヒープ（#186 Step 1 / #178）。DRW_CFG_CUSTOM_MALLOC 無効時は
+ * d1_heap_init() は何もせず E_OK を返すスタブ（src/d1_heap_mtkernel.c）。 */
+#include "d1_heap_mtkernel.h"
+
 /*
  * ボード LED 定義（FSP 提供）。
  * FreeRTOS 版 blinky_thread_entry.c と同じく g_bsp_leds を使用する。
@@ -286,6 +290,28 @@ EXPORT INT usermain(void)
      * --------------------------------------------------------------------- */
     bsp_irq_cfg();
     tm_putstring((UB *)"[usermain] bsp_irq_cfg() done (ELC->NVIC IELSR configured).\n");
+
+    /* ---------------------------------------------------------------------
+     * D/AVE 2D ヒープ（可変長メモリプール）を生成する ― Issue #186 Step 1 / #178
+     *
+     * FSP の r_drw_memory.c は DRW_CFG_CUSTOM_MALLOC が有効なとき D2 ヒープの
+     * 確保を d1_malloc()/d1_free()（src/d1_heap_mtkernel.c）へ委譲する。実体は
+     * uT-Kernel の可変長メモリプール（tk_cre_mpl / tk_get_mpl / tk_rel_mpl）。
+     *
+     * 生成タイミング（重要）: d1_allocmem() へ到達する唯一の経路は
+     *   lvgl_task -> lv_init()（src/lvgl_thread_entry.c:127）-> lv_draw_dave2d_init()
+     *   -> lv_dave2d_init() -> d2_opendevice()/d2_inithw()
+     * であり、lvgl_task の生成（本関数の後段 tk_cre_tsk(&ctsk_lvgl)）より前に
+     * ここで生成しておけば、最初の確保時にプールは必ず存在する。
+     * tk_cre_mpl() は CHECK_DISPATCH() を行うためタスクコンテキストが必要だが、
+     * usermain() は uT-Kernel 初期タスクから呼ばれるので条件を満たす。
+     * --------------------------------------------------------------------- */
+    ercd = d1_heap_init();
+    if (ercd != E_OK) {
+        /* Dave2D（LVGL 描画）が確保できず LCD 表示が成立しないため起動を止める。 */
+        tm_printf((UB *)"[usermain] d1_heap_init failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
 
     /* セカンダリコア（CPU1 / Cortex-M33）を起動する。
      *
