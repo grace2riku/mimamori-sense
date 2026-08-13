@@ -577,9 +577,20 @@ void lv_port_indev_init(void)
      *   - Bus exclusion (the former recursive mutex) is not needed: the
      *     touch panel is the ONLY rm_comms_i2c user, and IIC1 itself is
      *     serialized against the camera by camera_thread_i2c_done() above.
+     *
+     * Issue #186 Step 2: both members only EXIST when BSP_CFG_RTOS != 0
+     * (rm_comms_i2c.h:90-93 wraps them in `#if BSP_CFG_RTOS`). Once the FSP
+     * RTOS setting is switched to "No RTOS" the struct no longer has them and
+     * this assignment would not compile, while at the same time every
+     * `#if BSP_CFG_RTOS` block in rm_comms_i2c_driver_ra.c disappears - i.e.
+     * the driver is then permanently in the very callback mode this code
+     * selects at runtime. Guard it so the file builds under both settings and
+     * the behaviour is identical either way.
      */
+#if BSP_CFG_RTOS
     p_extend->p_blocking_semaphore  = NULL;
     p_extend->p_bus_recursive_mutex = NULL;
+#endif
 
     /*
      * Step 4: Open the I2C communication device

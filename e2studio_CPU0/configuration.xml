@@ -1205,7 +1205,7 @@
     </config>
     <config id="config.driver.drw">
       <property id="config.driver.drw.indirect" value="config.driver.drw.indirect.on"/>
-      <property id="config.driver.drw.malloc" value="config.driver.drw.malloc.default"/>
+      <property id="config.driver.drw.malloc" value="config.driver.drw.malloc.custom"/>
     </config>
   </raModuleConfiguration>
   <raPinConfiguration>

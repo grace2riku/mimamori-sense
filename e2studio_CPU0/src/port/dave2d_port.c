@@ -100,6 +100,11 @@
 #include "ntlibc.h"
 #include "diag_config.h"
 
+/* FSP generated D/AVE 2D configuration (DRW_CFG_CUSTOM_MALLOC) and the
+ * uT-Kernel backed D2 heap it selects -- Issue #186 Step 1 / #178. */
+#include "r_drw_cfg.h"
+#include "d1_heap_mtkernel.h"
+
 /* R-006 (Issue #156): unused FreeRTOS.h / task.h includes removed
  * (no FreeRTOS API is called from this file). */
 
@@ -391,6 +396,59 @@ static void dave2d_cmd_status(void)
     } else {
         print_to_console("  HW Revision     : N/A (device not open)\r\n");
     }
+
+#if DRW_CFG_CUSTOM_MALLOC
+    /*
+     * D2 heap (Issue #186 Step 1 / #178): the D/AVE 2D driver allocates its
+     * device/context/display-list memory through d1_malloc()/d1_free(), which
+     * this project implements on a uT-Kernel variable size memory pool
+     * (src/d1_heap_mtkernel.c). "Peak used" is what D1_HEAP_SIZE has to cover;
+     * it is the number to look at when re-tuning the pool.
+     *
+     * This block only exists when the FSP "Memory Allocation" property of
+     * r_drw is set to Custom -- with the Default setting the D2 heap comes from
+     * the FreeRTOS ucHeap and there is nothing of ours to report.
+     */
+    {
+        d1_heap_stats_t hs;
+
+        print_to_console("[Dave2D D2 Heap (uT-Kernel memory pool)]\r\n");
+
+        if (E_OK == d1_heap_get_stats(&hs)) {
+            n = snprintf(buf, sizeof(buf),
+                         "  Pool / Peak used: %lu / %lu B\r\n",
+                         (unsigned long)hs.pool_size, (unsigned long)hs.peak_used);
+            if ((n < 0) || ((size_t)n >= sizeof(buf))) {
+                print_to_console("  Pool / Peak used: (line too long - truncated)\r\n");
+            } else {
+                print_to_console(buf);
+            }
+
+            n = snprintf(buf, sizeof(buf),
+                         "  Free / Max cont.: %lu / %lu B\r\n",
+                         (unsigned long)hs.free_now,
+                         (unsigned long)hs.max_contiguous_free);
+            if ((n < 0) || ((size_t)n >= sizeof(buf))) {
+                print_to_console("  Free / Max cont.: (line too long - truncated)\r\n");
+            } else {
+                print_to_console(buf);
+            }
+
+            n = snprintf(buf, sizeof(buf),
+                         "  alloc/free/fail : %lu / %lu / %lu\r\n",
+                         (unsigned long)hs.alloc_calls,
+                         (unsigned long)hs.free_calls,
+                         (unsigned long)hs.alloc_fail);
+            if ((n < 0) || ((size_t)n >= sizeof(buf))) {
+                print_to_console("  alloc/free/fail : (line too long - truncated)\r\n");
+            } else {
+                print_to_console(buf);
+            }
+        } else {
+            print_to_console("  Pool            : N/A (not created)\r\n");
+        }
+    }
+#endif /* DRW_CFG_CUSTOM_MALLOC */
 
     /* LVGL integration details */
     print_to_console("[LVGL Integration]\r\n");
