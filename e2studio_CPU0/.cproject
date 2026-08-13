@@ -54,6 +54,7 @@
 							</option>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family.1968856184" name="ARM family" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.family" value="com.renesas.cdt.managedbuild.llvm.arm.option.armspecific.family.cortex-m85" valueType="enumerated"/>
 							<option id="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu.1586952517" name="Float ABI" superClass="com.renesas.cdt.managedbuild.llvm.arm.option.cpu.fpu" value="com.renesas.cdt.managedbuild.llvm.arm.option.armspecific.fpu.hard" valueType="enumerated"/>
+							<option id="com.renesas.cdt.managedbuild.llvm.core.option.optimization.flto.343743302" name="Link-time optimizer (-flto)" superClass="com.renesas.cdt.managedbuild.llvm.core.option.optimization.flto" value="true" valueType="boolean"/>
 							<targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.renesas.cdt.managedbuild.llvm.core.targetPlatform.406510639" isAbstract="false" osList="all" superClass="com.renesas.cdt.managedbuild.llvm.core.targetPlatform"/>
 							<builder buildPath="${workspace_loc:/mimamori_sense_CPU0}/Debug" id="com.renesas.cdt.managedbuild.llvm.core.builder.1392412829" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="LLVM  for Renesas Builder" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.renesas.cdt.managedbuild.llvm.core.builder"/>
 							<tool id="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm.1356215668" name="SMS Assembler" superClass="com.renesas.cdt.managedbuild.llvm.arm.tool.smsAsm"/>
