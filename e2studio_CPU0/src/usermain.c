@@ -23,6 +23,12 @@
  * FreeRTOS 側の起動経路（ra_gen/main.c の vTaskStartScheduler()）には
  * 到達しない。ra_gen/ は編集しない方針のため、橋渡しは src/hal_warmstart.c で行う。
  *
+ * Issue #186 Step 2/3: FSP の RTOS 設定を No RTOS に変更し FreeRTOS を撤去した。
+ * ra_gen/main.c は hal_entry() を呼ぶだけになり、ra_gen/*_thread.{c,h} と
+ * src/blinky_thread_entry.c は無くなった。本ファイル中の「FreeRTOS 版
+ * blinky_thread_entry.c」等の参照は移行元を示す履歴記述であり、当該ファイルは
+ * 既にリポジトリに存在しない（git 履歴で参照のこと）。
+ *
  * Copyright (c) 2020 - 2025 Renesas Electronics Corporation and/or its affiliates
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -46,32 +52,32 @@ extern bsp_leds_t g_bsp_leds;
 /*
  * NT-Shell タスク本体（R-004 / src/ntshell_thread_entry.c）。
  * uT-Kernel タスク形式 void ntshell_task(INT stacd, void *exinf)。
- * ヘッダ ntshell_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
- * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する。
+ * uT-Kernel タスク形式のプロトタイプをここで直接宣言する（もとは ra_gen/ntshell_thread.h が
+ * FreeRTOS 形式の宣言のみを提供していたため。同ヘッダは #186 Step 2 で生成されなくなった）。
  */
 extern void ntshell_task(INT stacd, void *exinf);
 
 /*
  * カメラ タスク本体（R-005 / src/camera_thread_entry.c）。
  * uT-Kernel タスク形式 void camera_task(INT stacd, void *exinf)。
- * ヘッダ camera_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
- * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell_task と同様）。
+ * uT-Kernel タスク形式のプロトタイプをここで直接宣言する（ntshell_task と同様。
+ * ra_gen/camera_thread.h は #186 Step 2 で生成されなくなった）。
  */
 extern void camera_task(INT stacd, void *exinf);
 
 /*
  * LVGL タスク本体（R-006 / src/lvgl_thread_entry.c）。
  * uT-Kernel タスク形式 void lvgl_task(INT stacd, void *exinf)。
- * ヘッダ lvgl_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
- * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell/camera と同様）。
+ * uT-Kernel タスク形式のプロトタイプをここで直接宣言する（ntshell/camera と同様。
+ * ra_gen/lvgl_thread.h は #186 Step 2 で生成されなくなった）。
  */
 extern void lvgl_task(INT stacd, void *exinf);
 
 /*
  * AI 推論タスク本体（R-007 / src/ai_inference_thread_entry.c）。
  * uT-Kernel タスク形式 void ai_inference_task(INT stacd, void *exinf)。
- * ヘッダ ai_inference_thread.h は ra_gen 配下（編集禁止）で FreeRTOS 形式の宣言のみのため、
- * ここで uT-Kernel タスク形式のプロトタイプを直接宣言する（ntshell/camera/lvgl と同様）。
+ * uT-Kernel タスク形式のプロトタイプをここで直接宣言する（ntshell/camera/lvgl と同様。
+ * ra_gen/ai_inference_thread.h は #186 Step 2 で生成されなくなった）。
  */
 extern void ai_inference_task(INT stacd, void *exinf);
 
@@ -205,7 +211,8 @@ LOCAL T_CTSK ctsk_camera = {
  *    （dave2d / swdraw、LV_THREAD_PRIO_HIGH → itskpri=13、各 8KB スタック）は
  *    LVGL の設計どおり lvgl_task より 1 段高優先（普段は sync 待ちで眠っている）。
  *  - スタック: 8192 バイト（FreeRTOS 版 lvgl_thread と同値 ―
- *    ra_gen/lvgl_thread.c の lvgl_thread_stack[8192]）。
+ *    ra_gen/lvgl_thread.c の lvgl_thread_stack[8192]。同ファイルは
+ *    Issue #186 Step 2 で生成されなくなった）。
  *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
  * ------------------------------------------------------------------------- */
 LOCAL T_CTSK ctsk_lvgl = {
@@ -232,6 +239,7 @@ LOCAL T_CTSK ctsk_lvgl = {
  *    プリエンプトされるため、最下位の本タスクが他タスクを飢えさせることはない。
  *  - スタック: 16384 バイト（FreeRTOS 版 ai_inference_thread と同値 ―
  *    ra_gen/ai_inference_thread.c の ai_inference_thread_stack[0x4000]。
+ *    同ファイルは Issue #186 Step 2 で生成されなくなった。
  *    MERA 推論・後処理（NMS/expf）・snprintf ログ整形で消費するため）。
  *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
  * ------------------------------------------------------------------------- */

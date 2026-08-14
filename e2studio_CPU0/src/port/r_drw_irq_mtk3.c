@@ -3,7 +3,10 @@
  * @brief uT-Kernel 3.0 replacement for ra/fsp/src/r_drw/r_drw_irq.c (R-006 / Issue #156)
  * @details
  * The FSP D/AVE 2D low-level IRQ driver (r_drw_irq.c) uses FreeRTOS
- * semaphores under `BSP_CFG_RTOS == 2`: `d1_queryirq()` blocks the calling
+ * semaphores when `BSP_CFG_RTOS == 2` (the setting in force when this file was
+ * written; Issue #186 Step 2 later moved the project to `BSP_CFG_RTOS == 0`,
+ * where r_drw_irq.c would instead busy-wait on a volatile flag). Under
+ * `BSP_CFG_RTOS == 2`: `d1_queryirq()` blocks the calling
  * task with `xSemaphoreTake` until the display-list (dlist) completion
  * interrupt fires, and `drw_int_isr()` releases it with
  * `xSemaphoreGiveFromISR`. `d1_queryirq()` is called from INSIDE the d2
@@ -225,7 +228,9 @@ void drw_int_isr (void)
 {
     /* Original starts with FSP_CONTEXT_SAVE / ends with FSP_CONTEXT_RESTORE.
      * Both expand to nothing unless BSP_CFG_RTOS==1 (ThreadX, bsp_common.h:57-64),
-     * so they are intentionally omitted here (BSP_CFG_RTOS==2). */
+     * so they are intentionally omitted here (this project is BSP_CFG_RTOS==0
+     * since Issue #186 Step 2; it was ==2 when this file was written - neither
+     * value makes those macros expand to anything). */
 
     uint32_t int_status;
 

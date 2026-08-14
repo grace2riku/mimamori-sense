@@ -3,10 +3,6 @@
 #define COMMON_DATA_H_
 #include <stdint.h>
 #include "bsp_api.h"
-#include "FreeRTOS.h"
-#include "event_groups.h"
-#include "FreeRTOS.h"
-#include "semphr.h"
 #include "arm_math.h"
 #include "arm_nnfunctions.h"
 #include "rm_ethosu_api.h"
@@ -202,8 +198,6 @@ extern const ioport_instance_t g_ioport;
 
 /* IOPORT control structure. */
 extern ioport_instance_ctrl_t g_ioport_ctrl;
-extern EventGroupHandle_t g_i2c_event_group;
-extern SemaphoreHandle_t g_irq_binary_semaphore;
 void g_common_init(void);
 FSP_FOOTER
 #endif /* COMMON_DATA_H_ */

@@ -169,8 +169,11 @@ fsp_err_t lvgl_port_mtk3_open(rm_lvgl_port_cfg_t const *p_cfg)
                                        LV_DISPLAY_RENDER_MODE_DIRECT);
 
     /* --- LVGL ms tick (rm_lvgl_port.c:160-166) ---
-     * Original uses SysTick when BSP_CFG_RTOS==0; this project is
-     * BSP_CFG_RTOS==2 so only the lv_tick_set_cb path applies. */
+     * rm_lvgl_port.c selects its tick source with `#if BSP_CFG_RTOS == 0`
+     * (SysTick) vs the lv_tick_set_cb path. This port does NOT branch on
+     * BSP_CFG_RTOS at all - it always installs lvgl_port_mtk3_tick_get_cb()
+     * (tk_get_otm) under RM_LVGL_PORT_CFG_PROVIDE_TICK_CALLBACK, so the
+     * Issue #186 Step 2 switch to BSP_CFG_RTOS == 0 does not change it. */
 #if RM_LVGL_PORT_CFG_PROVIDE_TICK_CALLBACK
     lv_tick_set_cb(lvgl_port_mtk3_tick_get_cb);
 #endif

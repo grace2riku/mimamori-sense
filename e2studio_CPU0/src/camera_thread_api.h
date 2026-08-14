@@ -6,8 +6,10 @@
  * These functions can be called from other threads (e.g., ntshell_thread
  * for "camera thread" diagnostics, or lvgl_thread for display updates).
  *
- * Note: The camera_thread_entry() declaration is in ra_gen/camera_thread.h
- * (auto-generated, do not edit). This header provides additional public
+ * Note: ra_gen/camera_thread.h (which used to declare the FreeRTOS entry
+ * camera_thread_entry()) is no longer generated - Issue #186 Step 2 set the
+ * FSP RTOS selection to No RTOS. The uT-Kernel task entry is camera_task(),
+ * created in src/usermain.c. This header provides additional public
  * functions implemented in camera_thread_entry.c.
  */
 

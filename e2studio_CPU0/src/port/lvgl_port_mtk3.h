@@ -5,9 +5,15 @@
  * RM_LVGL_PORT (ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c - read-only) calls
  * FreeRTOS blocking APIs (`xSemaphoreTake(portMAX_DELAY)` in the flush-wait
  * callback, `xSemaphoreGiveFromISR` in the Vsync ISR, `xTaskGetTickCount()`
- * for the LVGL tick) because `BSP_CFG_RTOS == 2` is kept by the migration
- * policy. Under boot method A the FreeRTOS scheduler never starts, so these
- * calls would hang or fault.
+ * for the LVGL tick) when `BSP_CFG_RTOS == 2`, which the migration policy kept
+ * up to Issue #186 Step 2. Under boot method A the FreeRTOS scheduler never
+ * starts, so these calls would hang or fault.
+ *
+ * Issue #186 Step 2 set the FSP RTOS selection to "No RTOS"
+ * (`BSP_CFG_RTOS == 0`), so rm_lvgl_port.c now compiles its bare-metal path
+ * instead. This module stays in use regardless: it is what actually drives the
+ * display (Vsync semaphore, flush wait, tick), and `RM_LVGL_PORT_Open()` is
+ * still never called.
  *
  * This module BYPASSES RM_LVGL_PORT instead of editing it:
  *   - `lvgl_port_mtk3_open()` re-implements `RM_LVGL_PORT_Open()` 1:1 but

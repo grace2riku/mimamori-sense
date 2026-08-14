@@ -45,8 +45,9 @@
  *     g_i2c_event_group の xEventGroupWaitBits）を除去/置換。
  *   - I2C 完了待ちは ov5640.c の uT-Kernel イベントフラグ（ov5640_i2c_sync_init /
  *     ov5640_i2c_wait_complete）へ統一（g_i2c_event_group は方式A で未生成のため）。
- *   旧 FreeRTOS エントリ camera_thread_entry() は対応関係の追跡用に末尾へ残置
- *   （方式A では未使用だが ra_gen/camera_thread.c のリンク解決に必要）。
+ *   旧 FreeRTOS エントリ camera_thread_entry() は ra_gen/camera_thread.c の
+ *   リンク解決のため末尾に残していたが、Issue #186 Step 2 で FSP の RTOS 設定を
+ *   No RTOS にし ra_gen/camera_thread.c 自体が生成されなくなったため削除した。
  *   詳細は doc/migration/mtk3-migration-guide.md 7.3。
  *
  * uT-Kernel タスク設定（usermain.c で生成）:
@@ -67,7 +68,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "camera_thread.h"
 #include "camera_thread_api.h"
 #include "camera_framebuffer.h"
 #include "hal_data.h"
@@ -970,26 +970,4 @@ static bool camera_board_switch_init(void)
                                   I2C_MASTER_ADDR_MODE_7BIT);
 
     return true;
-}
-
-/**
- * 旧 FreeRTOS スレッドエントリ（R-005 移行前の名残り。対応関係追跡用に残置）。
- *
- * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
- * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
- * 実行時には呼ばれない。しかし ra_gen/camera_thread.c（編集禁止）の
- * camera_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
- * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
- * uT-Kernel タスク camera_task() へ委譲する薄いラッパとして残す
- * （実行されない。FreeRTOS ブートへ切り戻した場合もリンクのみ通る ― タスク本体が
- *   tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
- * ntshell_thread_entry.c 末尾のラッパと同一パターン。
- *
- * @param pvParameters FreeRTOSタスクパラメータ（未使用）
- */
-void camera_thread_entry(void *pvParameters)
-{
-    FSP_PARAMETER_NOT_USED(pvParameters);
-    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
-    camera_task(0, NULL);
 }

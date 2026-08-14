@@ -38,9 +38,10 @@
 
 #include "r_drw_cfg.h"
 
-#if (BSP_CFG_RTOS == 2)                // FreeRTOS
- #include "FreeRTOS.h"
-#endif
+/* Issue #186 Step 2: the reference project includes FreeRTOS.h here under
+ * `#if (BSP_CFG_RTOS == 2)`. This project is now BSP_CFG_RTOS == 0 (No RTOS)
+ * and FreeRTOS is removed from the build entirely, so the include is dropped.
+ * The two functions below depend only on BSP_CFG_DCACHE_ENABLED. */
 
 /* Override the default weak functions in ra/fsp/src/r_drw/r_drw_memory.c */
 

@@ -895,33 +895,5 @@ const rm_lvgl_port_cfg_t g_lvgl_port_cfg = { .p_display_instance =
 ioport_instance_ctrl_t g_ioport_ctrl;
 const ioport_instance_t g_ioport = { .p_api = &g_ioport_on_ioport, .p_ctrl =
 		&g_ioport_ctrl, .p_cfg = &g_bsp_pin_cfg, };
-EventGroupHandle_t g_i2c_event_group;
-#if 1
-StaticEventGroup_t g_i2c_event_group_memory;
-#endif
-void rtos_startup_err_callback(void *p_instance, void *p_data);
-SemaphoreHandle_t g_irq_binary_semaphore;
-#if 1
-StaticSemaphore_t g_irq_binary_semaphore_memory;
-#endif
-void rtos_startup_err_callback(void *p_instance, void *p_data);
 void g_common_init(void) {
-	g_i2c_event_group =
-#if 1
-			xEventGroupCreateStatic(&g_i2c_event_group_memory);
-#else
-                xEventGroupCreate();
-                #endif
-	if (NULL == g_i2c_event_group) {
-		rtos_startup_err_callback(g_i2c_event_group, 0);
-	}
-	g_irq_binary_semaphore =
-#if 1
-			xSemaphoreCreateBinaryStatic(&g_irq_binary_semaphore_memory);
-#else
-                xSemaphoreCreateBinary();
-                #endif
-	if (NULL == g_irq_binary_semaphore) {
-		rtos_startup_err_callback(g_irq_binary_semaphore, 0);
-	}
 }
