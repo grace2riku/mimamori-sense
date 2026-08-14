@@ -14,10 +14,12 @@
  * r_drw_memory.c:73  #else                            -> malloc()     / free()
  * ```
  *
- * With `BSP_CFG_RTOS == 2` (the FreeRTOS setting is intentionally kept, see
- * doc/migration/mtk3-migration-guide.md ch.1) the FreeRTOS branch is selected,
- * which is the ONLY remaining user of the FreeRTOS heap: `ucHeap` costs
- * 262,144 B of RAM (`ra_cfg/aws/FreeRTOSConfig.h`, `configTOTAL_HEAP_SIZE`).
+ * When this file was written the project was still `BSP_CFG_RTOS == 2` (the
+ * FreeRTOS setting was intentionally kept, see
+ * doc/migration/mtk3-migration-guide.md ch.1), so the FreeRTOS branch was
+ * selected, and it was the ONLY remaining user of the FreeRTOS heap: `ucHeap`
+ * cost 262,144 B of RAM (`ra_cfg/aws/FreeRTOSConfig.h`,
+ * `configTOTAL_HEAP_SIZE`).
  * Worse, under boot method A the FreeRTOS scheduler never runs
  * (`src/hal_warmstart.c:157` calls `knl_start_mtkernel()` and does not return),
  * so `pvPortMalloc()`'s mutual exclusion - `vTaskSuspendAll()` /
@@ -38,6 +40,17 @@
  * doc/migration/mtk3-migration-guide.md ch.10.2 for the GUI steps.
  * Until it is switched, this whole file compiles to a pair of stubs so that the
  * build keeps working unchanged.
+ *
+ * ## Status after Issue #186 Step 2
+ *
+ * Step 2 set the FSP RTOS selection to "No RTOS", so `BSP_CFG_RTOS == 0` and
+ * FreeRTOS is gone from the build entirely. This file is now what keeps the D2
+ * heap off `malloc()`: without `DRW_CFG_CUSTOM_MALLOC` the `#else` branch above
+ * would select newlib/tinystdio `malloc()`, which is NOT thread safe and would
+ * reintroduce Issue #178 in a different form. The `DRW_CFG_CUSTOM_MALLOC == 0`
+ * stub path at the bottom of this file is therefore dead in the shipping
+ * configuration and kept only so the file still builds if the FSP property is
+ * ever reverted.
  *
  * ## Symbols the FSP expects when DRW_CFG_CUSTOM_MALLOC is enabled
  *
@@ -350,8 +363,11 @@ ER d1_heap_get_stats(d1_heap_stats_t * p_stats)
 #else /* DRW_CFG_CUSTOM_MALLOC */
 
 /*
- * FSP "Memory Allocation" property is still "Default": r_drw_memory.c uses the
- * FreeRTOS heap (BSP_CFG_RTOS == 2) and never references d1_malloc/d1_free.
+ * FSP "Memory Allocation" property is "Default": r_drw_memory.c then picks its
+ * heap from BSP_CFG_RTOS and never references d1_malloc/d1_free. Since Issue
+ * #186 Step 2 (BSP_CFG_RTOS == 0) that would be the plain `malloc()` branch,
+ * which is not thread safe here - so this path is a fallback for build
+ * survival only, not a supported configuration.
  * Provide the two API entry points as stubs so that src/usermain.c and
  * src/port/dave2d_port.c compile and link unchanged before/after the FSP
  * property is switched. No RAM is reserved in this configuration.

@@ -30,12 +30,14 @@
  *     FreeRTOS 実装での上書きは元々存在しない（ethosu_driver.c:165-232）。NPU 完了
  *     割り込み（rm_ethosu_isr -> ethosu_irq_handler -> ethosu_semaphore_give = __SEV）
  *     はカーネル API を呼ばないため uT-Kernel 下でも無変更で動作する。
- *   旧 FreeRTOS エントリ ai_inference_thread_entry() は対応関係の追跡用に末尾へ残置
- *   （方式A では未使用だが ra_gen/ai_inference_thread.c のリンク解決に必要）。
+ *   旧 FreeRTOS エントリ ai_inference_thread_entry() は ra_gen/ai_inference_thread.c の
+ *   リンク解決のため末尾に残していたが、Issue #186 Step 2 で FSP の RTOS 設定を
+ *   No RTOS にし ra_gen/ai_inference_thread.c 自体が生成されなくなったため削除した。
  *   詳細は doc/migration/mtk3-migration-guide.md 7.5。
  *
  * uT-Kernel タスク設定（usermain.c で生成）:
- *   Stack size: 16384 bytes（FreeRTOS 版 ra_gen/ai_inference_thread.c の 0x4000 と同値）
+ *   Stack size: 16384 bytes（FreeRTOS 版 ra_gen/ai_inference_thread.c の 0x4000 と同値。
+ *               同ファイルは Issue #186 Step 2 で生成されなくなった）
  *   Priority  : itskpri=15（描画スレッド 13 / lvgl 14 より低い最下位グループ）
  *
  * Reference: reference_projects/ruhmi-framework-mcu/application_examples/
@@ -48,7 +50,7 @@
 /**********************************************************************************************************************
  Includes   <System Includes> , "Project Includes"
  *********************************************************************************************************************/
-#include "ai_inference_thread.h"
+#include "hal_data.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -746,27 +748,4 @@ void update_detection_result(uint16_t index, signed short x, signed short y,
         g_ai_detection[index].m_w = w;
         g_ai_detection[index].m_h = h;
     }
-}
-
-/**
- * 旧 FreeRTOS スレッドエントリ（R-007 移行前の名残り。対応関係追跡用に残置）。
- *
- * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
- * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
- * 実行時には呼ばれない。しかし ra_gen/ai_inference_thread.c（編集禁止）の
- * ai_inference_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
- * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
- * uT-Kernel タスク ai_inference_task() へ委譲する薄いラッパとして残す
- * （実行されない。FreeRTOS ブートへ切り戻した場合もリンクのみ通る ― タスク本体が
- *   tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
- * ntshell_thread_entry.c / camera_thread_entry.c / lvgl_thread_entry.c 末尾の
- * ラッパと同一パターン。
- *
- * @param pvParameters FreeRTOSタスクパラメータ（未使用）
- */
-void ai_inference_thread_entry(void *pvParameters)
-{
-    FSP_PARAMETER_NOT_USED(pvParameters);
-    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
-    ai_inference_task(0, NULL);
 }

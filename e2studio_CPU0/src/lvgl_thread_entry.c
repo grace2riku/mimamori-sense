@@ -53,9 +53,11 @@
  *     replaced by src/port/r_drw_irq_mtk3.c
  *   - Main loop: vTaskDelay(1) -> tk_dly_tsk driven by the lv_timer_handler()
  *     return value (ms until the next timer)
- *   The old FreeRTOS entry lvgl_thread_entry() remains at the end of this
- *   file as a thin wrapper (link resolution for ra_gen/lvgl_thread.c - same
- *   pattern as ntshell/camera). Details: doc/migration/mtk3-migration-guide.md 7.4.
+ *   The old FreeRTOS entry lvgl_thread_entry() used to remain at the end of
+ *   this file as a thin wrapper (link resolution for ra_gen/lvgl_thread.c).
+ *   Issue #186 Step 2 switched the FSP RTOS setting to No RTOS, so
+ *   ra_gen/lvgl_thread.c is no longer generated and the wrapper was removed.
+ *   Details: doc/migration/mtk3-migration-guide.md 7.4 / 10.4.
  *
  * Reference:
  *   - Reference project: reference_projects/lv_port_renesas_ek_ra8p1/src/new_thread0_entry.c
@@ -73,7 +75,7 @@
  * and main screen UI (F-001-7) implementation.
  */
 
-#include "lvgl_thread.h"
+#include "hal_data.h"
 #include "lvgl.h"
 #include "port/glcdc_port.h"
 #include "port/dave2d_port.h"
@@ -271,26 +273,4 @@ void lvgl_task(INT stacd, void *exinf)
         }
         tk_dly_tsk((RELTIM)wait_ms);
     }
-}
-
-/**
- * 旧 FreeRTOS スレッドエントリ（R-006 移行前の名残り。対応関係追跡用に残置）。
- *
- * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
- * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
- * 実行時には呼ばれない。しかし ra_gen/lvgl_thread.c（編集禁止）の
- * lvgl_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
- * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
- * uT-Kernel タスク lvgl_task() へ委譲する薄いラッパとして残す
- * （実行されない。FreeRTOS ブートへ切り戻した場合もリンクのみ通る ― タスク本体が
- *   tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
- * ntshell_thread_entry.c / camera_thread_entry.c 末尾のラッパと同一パターン。
- *
- * @param pvParameters FreeRTOSタスクパラメータ（未使用）
- */
-void lvgl_thread_entry(void *pvParameters)
-{
-    FSP_PARAMETER_NOT_USED(pvParameters);
-    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
-    lvgl_task(0, NULL);
 }

@@ -55,10 +55,14 @@
 /** R-006 (Issue #156): switch the LVGL OSAL from FreeRTOS to the custom
  * uT-Kernel 3.0 backend (R-006a spike decision: plan A).
  *
- * The FSP-generated lv_conf.h defines `LV_USE_OS (LV_OS_FREERTOS)` inside an
- * `#ifndef LV_USE_OS` guard (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:36-38) and
- * includes this file first, so defining it here overrides the FSP default
- * WITHOUT editing ra/lvgl/ or ra_cfg/. With LV_OS_CUSTOM:
+ * The FSP-generated lv_conf.h defines LV_USE_OS inside an `#ifndef LV_USE_OS`
+ * guard (ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:36-38) and includes this file
+ * first, so defining it here overrides the FSP default WITHOUT editing
+ * ra/lvgl/ or ra_cfg/. The FSP default was `LV_OS_FREERTOS`; Issue #186
+ * Step 2 changed the FSP property to `LV_OS_NONE` (required by the
+ * rm_lvgl_port module constraint once FreeRTOS is deselected). Either way the
+ * `#ifndef` guard means the value below is what the build sees.
+ * With LV_OS_CUSTOM:
  *   - ra/lvgl/lvgl/src/osal/lv_freertos.c compiles to nothing
  *     (`#if LV_USE_OS == LV_OS_FREERTOS` guard) - no build exclusion needed
  *   - lv_os.h includes LV_OS_CUSTOM_INCLUDE for the OSAL types

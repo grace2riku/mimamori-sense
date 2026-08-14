@@ -47,7 +47,7 @@
 #include <assert.h>
 
 #include "lv_port_indev.h"
-#include "lvgl_thread.h"
+#include "hal_data.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"

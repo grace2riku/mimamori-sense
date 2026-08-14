@@ -11,7 +11,9 @@
  *   生成・起動される（方式A: ra_gen/main.c の FreeRTOS スレッド生成経路は未到達）。
  *   - エントリ関数は uT-Kernel タスク形式 ntshell_task(INT stacd, void *exinf) へ移植。
  *   - FreeRTOS 依存（FreeRTOS.h/task.h, FSP_PARAMETER_NOT_USED, tskKERNEL_VERSION_NUMBER）を除去/置換。
- *   旧 FreeRTOS エントリ ntshell_thread_entry() は対応関係の追跡用に末尾へ残置（方式A では未使用）。
+ *   旧 FreeRTOS エントリ ntshell_thread_entry() は ra_gen/ntshell_thread.c の
+ *   リンク解決のため末尾に残していたが、Issue #186 Step 2 で同ファイルが
+ *   生成されなくなったため削除した。
  *   詳細は doc/migration/mtk3-migration-guide.md 7.2。
  *
  * uT-Kernel タスク設定（usermain.c で生成）:
@@ -22,7 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "ntshell_thread.h"
+#include "hal_data.h"
 #include "jlink_console.h"
 #include "ntshell.h"
 #include "usrcmd.h"
@@ -205,25 +207,4 @@ void ntshell_task(INT stacd, void *exinf)
     {
         ntshell_execute(&ntshell);
     }
-}
-
-/**
- * 旧 FreeRTOS スレッドエントリ（R-004 移行前の名残り。対応関係追跡用に残置）。
- *
- * 方式A（src/hal_warmstart.c の静的コンストラクタで uT-Kernel を起動し、
- * ra_gen/main.c の main()/vTaskStartScheduler() に到達しない）では、本関数は
- * 実行時には呼ばれない。しかし ra_gen/ntshell_thread.c（編集禁止）の
- * ntshell_thread_func() が本シンボルを参照し、その参照鎖は startup が参照する
- * main() から辿れるためリンク時には解決が必要。よって削除せず、実体を
- * uT-Kernel タスク ntshell_task() へ委譲する薄いラッパとして残す
- * （実行されない。FreeRTOS ブートへ切り戻した場合もリンクのみ通る ― タスク本体が
- *   tk_* の uT-Kernel API を直接呼ぶため、実行には本体 API の FreeRTOS への差し戻しが必要）。
- *
- * @param pvParameters FreeRTOSタスクパラメータ（未使用）
- */
-void ntshell_thread_entry(void *pvParameters)
-{
-    (void)pvParameters;
-    /* uT-Kernel タスク本体へ委譲（stacd/exinf は未使用）。 */
-    ntshell_task(0, NULL);
 }

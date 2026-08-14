@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 #ifndef LV_USE_OS
-#define LV_USE_OS (LV_OS_FREERTOS)
+#define LV_USE_OS (LV_OS_NONE)
 #endif
 
 #ifndef LV_DRAW_LAYER_MAX_MEMORY

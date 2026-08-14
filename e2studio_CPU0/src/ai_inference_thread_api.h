@@ -6,8 +6,10 @@
  * These functions can be called from other threads (e.g., ntshell_thread
  * for "ai status" / "ai time" diagnostics).
  *
- * Note: The ai_inference_thread_entry() declaration is in
- * ra_gen/ai_inference_thread.h (auto-generated, do not edit).
+ * Note: ra_gen/ai_inference_thread.h (which used to declare the FreeRTOS
+ * entry ai_inference_thread_entry()) is no longer generated - Issue #186
+ * Step 2 set the FSP RTOS selection to No RTOS. The uT-Kernel task entry is
+ * ai_inference_task(), created in src/usermain.c.
  * This header provides additional public functions implemented in
  * ai_inference_thread_entry.c.
  */

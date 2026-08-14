@@ -1239,16 +1239,22 @@ blink=10 / camera=11 / ntshell=12 / dave2d・swdraw 描画=13 / lvgl=14 / ai_inf
 | 2026-06-12 | R-006a | **LVGL OSAL 対応方針を確定（スパイク完了）**。新規 `doc/migration/r006a-lvgl-osal-spike.md` に 3 案比較・決定根拠・R-006 実装方針（変更ファイル一覧・API 対応表・PoC コードスケッチ）を文書化。**結論: 案A「μT-Kernel 向け LVGL OSAL 自作（`LV_USE_OS=LV_OS_CUSTOM` + `src/lv_os_mtkernel.{h,c}`）」を採用**（FSP 生成 lv_conf.h の `#ifndef` ガードにより `src/lv_conf_user.h` のみで切替可能・`ra/lvgl/` 無編集・FSP 再生成耐性が完全・現行 60fps 実績構成（dave2d レンダスレッド + lv_lock 契約）を維持・usrcmd.c 無変更）。案B は μT-Kernel 向け CMSIS-RTOS2 実装が存在せず不採用、案C は lv_lock no-op 化で NT-Shell との排他再設計が必要かつ FSP 層依存の削減効果が無く不採用（`LV_USE_OS=LV_OS_NONE` へのコンパイル時切替によるフォールバックとして温存。実行時の自動退避は不成立 ― PR#166 Codex 指摘で訂正）。**追加発見: OSAL の外側で `ra/fsp/` 読み取り専用コード 3 件（`rm_lvgl_port.c`=Vsync 同期/tick、`r_drw_irq.c`=D/AVE 2D dlist 完了同期、`rm_comms_i2c_driver_ra.c`=タッチ I2C ブロッキング）が `BSP_CFG_RTOS==2` で FreeRTOS ブロッキング API を直接呼んでおり、LV_USE_OS の選択と無関係に方式A（FreeRTOS スケジューラ未起動）で破綻するため R-006 で必須対応**（rm_lvgl_port=バイパス自作ポート `src/port/lvgl_port_mtk3.c` / r_drw_irq=ビルド除外+同名シンボル置換 `src/port/r_drw_irq_mtk3.c` / rm_comms_i2c=ra_gen の非 const cfg を実行時 NULL 化してコールバックモード化）。連動対応も特定: `User_FreeRTOSConfig.h` trace フック削除（`lv_freertos.c` 空化による `lv_freertos_task_switch_in/out` 未定義シンボル化の回避）、`lv_os_get_idle_percent` 自作実装（`LV_SYSMON_GET_IDLE` のデフォルト解決先のため未定義だとリンクエラー）、`CNF_MAX_MTXID 4→16`（LVGL は general+builtin mem+xd2+キャッシュ群で mutex 6 個以上）、`CNF_TIMER_PERIOD=10` のままで実効 ~50fps（KPI 30fps 充足・60fps 狙いは 1ms へ変更を実機で実測判断）。`lv_mutex_lock_isr`/`lv_lock_isr` は μT-Kernel 非対応だが本プロジェクト未使用を確認。3.4 / 7.4 を確定内容で更新。コード変更なし（方針決定・文書化のみ） |
 | 2026-06-13 | R-008 | **統合動作確認・KPI 検証ドキュメントを整備（手順書の最終化）**。新規 `doc/migration/r008-integration-kpi.md` を作成（巨大化した本書から分離・本書 8 章は参照に留める方針）。内容: ①全タスク構成（blink=10/camera=11/ntshell=12/dave2d・swdraw 描画=13/lvgl=14/ai=15、stksz、生成箇所）を**実ソースの出典 file:line 付き**で一覧化（`usermain.c` の `T_CTSK`、`lv_os_mtkernel.c` の `prio_map`、`lv_conf.h` の `LV_DRAW_THREAD_STACK_SIZE=0x2000`）。②同期/排他オブジェクト一覧（`g_ai_app_flgid`/ov5640 `s_i2c_flgid`/LVGL mutex 群/Vsync・dlist・タッチ sem/LED 周期ハンドラ）と保護対象・資源予算（`config.h` の SEM/FLG/MTX/CYC 上限）。③統合動作確認チェックリスト（起動・全タスク生成・機能同時動作・リソース競合/デッドロック/優先度逆転/割り込みレイテンシの確認観点、I-01〜I-18、結果欄は**未測定**）。④KPI 検証シート（KPI-01 30fps/KPI-02 推論 5ms/KPI-03 検出率 90%/KPI-04 誤検出 5%/KPI-05 通知 10s。測定方法・出典・記録欄、**実測はユーザー実機**で捏造せず）。KPI-02 の ms 粒度の注意・KPI-01 と `CNF_TIMER_PERIOD=10`（10ms 量子）の関係を裏取り（`lvgl_thread_entry.c:264-273` / `:255-258`）。⑤30fps 未達時の調整方針（ティック 10→1ms、AI 譲り量 `AI_THREAD_YIELD=25` と量子の関係 `:106`、優先度・描画経路）。⑥**FreeRTOS 残置物の整理**（`vTaskStartScheduler()`=`ra_gen/main.c:112` 未実行/旧 blinky `blinky_thread_entry.c:73` の `vTaskDelay` は未改変・未実行で `blink_task` が代替/各 `*_thread_entry.c` のラッパ/`freertos_hooks.c`/`lv_freertos.c` 空コンパイル ― 各々「なぜ問題ないか」を file:line で裏取り）、切り戻し `MIMAMORI_USE_MTKERNEL_BOOT`（`hal_warmstart.c:70` の `#if` コンパイル時分岐で実行時自動切替ではない旨を明記）、FSP 再生成・BSP2 再 vendoring 時の運用注意。⑦LLVM Debug ビルド最終確認（Release は `bsp_linker_info.h` 未生成で従来不可）。本書 8 章を r008 書参照へ更新（タスク構成サマリ追記）。**実機実施状況（2026-07-26 更新）**: ユーザーが EK-RA8P1 で一部を実施済み。**実施済み**＝I-05〜I-12・I-18（全機能同時動作を確認）、KPI-01（**20fps で未達**）。**未実施**＝I-01〜I-04・I-13（起動ログ）、I-14〜I-17（長時間安定性・優先度逆転等）、KPI-02（`ai time`）、B-01〜B-03（LLVM クリーンビルドの記録）。**測定不可**＝KPI-05（F-004 未実装）。**R-008 スコープ外**＝KPI-03/04（実施は F-003 側）。実測により判明した不具合は #172〜#175、性能課題は #176、調査事項は #178 として起票。最新の測定状況はマスタである r008 書（4 章・5 章・9 章）を参照すること。本ステップ自体はドキュメント整備が主だが、実測で判明した #175 の修正（`ENABLE_INFERENCE_RUNNING_LED` を `(0)` へ）は PR #177 でマージ済み（実機再測定待ち） |
 | 2026-08-13 | #186 | **FreeRTOS 完全撤去の Step 1（Dave2D ヒープの切り離し）を実装し、Step 2/3 の手順を 10 章に新設**。撤去前実測（`.flash.endof` 788,992 B / FreeRTOS シンボル FLASH 8,420 B・RAM 262,812 B・うち `ucHeap` 262,144 B）と `llvm-nm -u` 全 `.o` 走査が Issue #186 の依存表と一致することを確認。新規 `src/d1_heap_mtkernel.{c,h}`（`d1_malloc`/`d1_free` を `tk_cre_mpl`/`tk_get_mpl`/`tk_rel_mpl` で実装・`D1_HEAP_SIZE=32768`・確保台帳とプールサイズ根拠は 同ファイル先頭コメントをマスタ）、`config_func.h` の `USE_MEMORYPOOL` を `(0)`→`(1)`、`usermain.c` で全タスク生成前に `d1_heap_init()`、`dave2d_port.c` の `dave2d status` に D2 ヒープ使用量（Peak used）表示を追加。`lv_port_indev.c` の `p_blocking_semaphore`/`p_bus_recursive_mutex` の実行時 NULL 化に `#if BSP_CFG_RTOS` ガードを追加（No RTOS では 同メンバが `rm_comms_i2c.h:90-93` の `#if` 内で消えるためコンパイル不可になる）。Step 1 の FSP プロパティ変更（r_drw の Memory Allocation を `Default`→`Custom`）は**実施済み**で、`configuration.xml` の差分は当該 1 プロパティのみ・`ra_gen/` に変化なし。**実機実測で `dave2d status` の Peak used = 7,272 B が確保台帳の合計と完全一致**し、`fail = 0` / 断片化ゼロを確認（10.2.4）。FLASH は Step 1 単独では **+2,048 B 増**（削減は Step 2 で発生）。Step 2（FSP RTOS→No RTOS）と Step 3（`freertos_hooks.c`/`User_FreeRTOSConfig.h`/`blinky_thread_entry.c` 削除）は**不可分**で、いずれも本 PR では未実施（ユーザーの e2 studio 操作待ち）。`#RTOS#` を既存プロジェクトで GUI 変更できるかは**未検証**として 10.3.2 に明記 |
+| 2026-08-14 | #186 | **FreeRTOS 完全撤去の Step 2/3 を実施し、CPU0 から FreeRTOS を全廃**。10 章の 10.3〜10.5 を「手順（未実施）」から「実施済み＋実測」へ全面改訂。Step 2 は GUI での モジュール手動移設（約 15 個）の取りこぼしリスクを避けるため、**ユーザー承認のうえ `configuration.xml` をテキスト編集**した（2 行変更 / 143 行削除。`<module>` 定義には触れず `<context>` の所属のみ変更したため、インスタンス名・チャネル・IPL・コールバック名は定義上不変）。内訳は `#RTOS#`→`_none` / FreeRTOS 系コンポーネント 4 個・モジュール定義 2 個・RTOS オブジェクト 2 個・スレッド context 5 個・`config.awsfreertos.thread` の削除、配下 `<stack>` 木の `_hal.0` への移設、`lv_use_os`→`lv_os_none`。再生成結果は空白除去比較で 1 ファイルずつ裏取りし、**`vector_data.{c,h}` と 各 `*_cfg.h`・`pin_data.c` は完全一致**（割り込みベクタ・IPL・ドライバ設定は不変）、`bsp_cfg.h` は `BSP_CFG_RTOS (2)`→`(0)` の 1 箇所のみ、`lv_conf.h` は `LV_USE_OS` の 1 箇所のみ （`lv_conf_user.h` の `LV_OS_CUSTOM` が勝つため実効値は不変）、`g_comms_i2c_device0` は `lvgl_thread.{c,h}`→`hal_data.{c,h}` へ値ごとそのまま移動したことを確認。Step 3 で `src/freertos_hooks.c` / `src/User_FreeRTOSConfig.h` / `src/blinky_thread_entry.c` / `ra_cfg/aws/FreeRTOSConfig.h` を削除、`*_thread.h` include 6 箇所を `hal_data.h` へ差し替え、`*_thread_entry(void *)` ラッパ 4 個を削除、`src/hal_entry.c` を新設（`main()` から呼ばれるが到達しない。FSP テンプレートの `R_BSP_SecondaryCoreStart()` は `usermain.c:336` と二重になるため削除しトラップに変更）。**実測: FLASH `.flash.endof` 791,040→781,824 B（−9,216 B、撤去前比 −7,168 B）/ bss 7,073,237→6,775,053 B （−298,184 B、撤去前比 −265,188 B）**。クリーンビルド後の全 1,583 個の `.o` に対する `llvm-nm -u` で FreeRTOS 未定義参照 **0 件**、map にも FreeRTOS シンボル **0 件**（`ucHeap` 消滅）。`make clean` がビルドから外れた孤児 `.o` を消さない点を 10.5.2 に注記。CPU1 は対象外・変化なし |
+| 2026-08-14 | #186 | 実機確認で挙がった「LCD の色合いが違う気がする」「転倒判定がシビアになった気がする」の 2 点を検証し、**どちらも Step 2 に起因しないことを確認**（10.5.4 を新設）。撤去前（`main`）を同一ツールチェインで再ビルドして `text 790,490 / bss 7,073,237` を再現し、両 ELF を比較。共通 1,438 シンボルのうちサイズが変わったのは 6 個のみで、実体は `Reset_Handler`/`SystemInit` の LTO インライン判断・`SysTick_Handler`（前後とも実行されない）・`_rm_lvgl_port_display_callback`（デッドコード）・`g_comms_i2c_bus0_extended_cfg`（削除メンバ分）・`rm_comms_i2c_callback`/`touchpad_get_xy`（タッチ I2C の実行時 NULL 分岐の消滅）だけ。表示・カメラ・AI 関連 461 シンボルは**命令列が完全一致**し（`camera_display_timer_cb` 588 命令 / `ai_inference_task` 339 命令 / `lvgl_task` 1,271 命令）、`g_display0_cfg` 等の const 構造体もポインタをシンボル解決すると一致、主要バッファはアドレスまで同一。実機数値も撤去後が同等以上（score 0.70→0.78、候補率 0.28%→0.50%、SUSPECTED 連続数の最大 1→4）。`ai time` の 20→24 ms は直近 1 サンプルの実時間計測かつ AI が最低優先度のため有意でない（NPU 本体は 7→7 ms で一致）。**`BSP_CFG_RTOS == 0` で `rm_lvgl_port.c` が `SysTick_Handler` を定義するようになる点**を注意事項として明記（μT-Kernel が VTOR を RAM へ張り替え index 15 を `knl_systim_inthdr` で上書きするため無害）。転倒確定数が前後とも 0 なのは `FALL_STATE_SUSPECTED` が 1 フレームの取りこぼしで連続カウントを 0 に戻す既存仕様（`fall_detection_logic.c:180-183`）によるもので、別 Issue とする |
 
 ---
 
 ## 10. FreeRTOS の完全撤去（Issue #186）
 
 R-000〜R-008 で RTOS は μT-Kernel 3.0 へ移行済みだが、**FreeRTOS 設定（`configuration.xml`）は
-移行方針 1 章に従って維持**したままである。その結果 FreeRTOS のコードはリンクされ続け、
-フラッシュと RAM を消費している。本章はそれを撤去する手順を扱う。
+移行方針 1 章に従って維持**していた。その結果 FreeRTOS のコードはリンクされ続け、
+フラッシュと RAM を消費していた。本章はそれを撤去した手順と実測を扱う。
 
-> **本章は 3 ステップの依存関係が重要**。Step 1 は単独で実施できるが、
+**Step 1（#197・2026-08-13）／ Step 2・Step 3（本 PR・2026-08-14）で完了**。
+CPU0 から FreeRTOS は完全に無くなった（`BSP_CFG_RTOS == 0`）。CPU1 は対象外で
+FreeRTOS のままである。
+
+> **3 ステップの依存関係が重要**（切り戻し・再現時の注意）。Step 1 は単独で実施できるが、
 > **Step 2（FSP 設定変更）と Step 3（ファイル削除）は必ず同時に実施**する
 > （10.4 の理由参照）。Step 2 の前に Step 3 を先行させるとリンクエラー、
 > Step 3 を伴わずに Step 2 だけを行うとコンパイルエラーになる。
@@ -1433,158 +1439,269 @@ r_drw_memory.c:73  #else                       -> malloc() / free()
   一通り動作させた後の Peak used で行うこと**（`dave2d bench` は既定ビルドでは
   `MIMAMORI_VERBOSE_DIAG=0` により除外されている ― `src/diag_config.h:55-56`）。
 
-### 10.3 Step 2: FSP の RTOS 設定を FreeRTOS → No RTOS へ（**ユーザー手動**）
+### 10.3 Step 2: FSP の RTOS 設定を FreeRTOS → No RTOS へ（**実施済み / 2026-08-14**）
 
-> **⚠ 本ステップは影響範囲が大きい。着手前に必ずコミット（またはブランチ）を切り、
-> `configuration.xml` を戻せる状態にすること。**
+#### 10.3.1 実施方法 ―― `configuration.xml` のテキスト編集 + Generate Project Content
 
-#### 10.3.1 事前に把握しておくこと ― スレッドに紐づいた全モジュール
+当初は「e2 studio の GUI で Components タブから FreeRTOS コンポーネントを外す」手順を
+想定していた（旧 10.3.2）。しかしこの方法は、RTOS を外すとスレッドが消えるため
+**スレッド配下の約 15 モジュール（LVGL / rm_lvgl_port / GLCDC / r_drw / dave2d /
+rm_comms_i2c ×2 / IIC / External IRQ / VIN / MIPI CSI / MIPI PHY / TFLM / rm_ethosu /
+ethos-u / flatbuffers / CMSIS-NN / CMSIS-DSP）を GUI で HAL/Common へ作り直す**必要があり、
+インスタンス名（`g_display0` / `d2_handle0` / `g_vin0` / `g_comms_i2c_device0` …）や
+チャネル・IPL・コールバック名の取りこぼしがそのままユーザーコードの破壊につながる。
 
-RTOS を外すと **Stacks タブのスレッドが無くなる**ため、現在スレッド配下にある
-モジュールスタックは **HAL/Common へ移す（または作り直す）必要がある**。
-`configuration.xml` の実データ（`<context>` 要素）から抜き出した全量:
+そこで**ユーザー承認のうえ**、`configuration.xml` を直接テキスト編集した。
+`<module>` 定義ブロック（プロパティの実体）には一切触れず、`<context>` の**所属だけ**を
+書き換えるので、モジュールのプロパティは定義上変化しない ―― これは GUI 操作では保証できない。
 
-| コンテキスト | 配下のモジュール |
-|---|---|
-| `_hal.0`（HAL/Common） | ioport / **rm_freertos_port** / SCI_B UART / IIC master / GPT |
-| `blinky_thread` | （なし） |
-| `ntshell_thread` | （なし） |
-| `lvgl_thread` | **FreeRTOS Heap 4** / LVGL → rm_lvgl_port →(GLCDC display, r_drw → tes dave2d) / rm_comms_i2c device → bus → IIC master / external IRQ (ICU) |
-| `camera_thread` | VIN → MIPI CSI → MIPI PHY |
-| `ai_inference_thread` | TFLM core →(rm_ethosu → ethos-u core driver, flatbuffers, CMSIS-NN → CMSIS-DSP) |
-| RTOS オブジェクト | Event Group `g_i2c_event_group` / Binary Semaphore `g_irq_binary_semaphore` |
+> `.claude/commands/implement-issue.md` は `configuration.xml` の編集を禁じている。
+> 本 Step は上記の理由でユーザーが明示的に例外を認めた case であり、既定の運用は変更しない。
 
-移設対象（＝残すもの）は上表のうち **FreeRTOS Heap 4 / rm_freertos_port / RTOS オブジェクト 2 個を除く全部**。
+##### 差分の全量（`e2studio_CPU0/configuration.xml`: 2 行変更 / 143 行削除）
 
-#### 10.3.2 操作手順
-
-1. **退避**: 現状をコミットする（`configuration.xml` / `ra_gen/` / `ra_cfg/` を含む）。
-2. `configuration.xml` を開く → **Stacks** タブ。
-3. lvgl / camera / ai_inference の各スレッド配下のモジュールを **HAL/Common へ移動**する
-   （ドラッグ移動できない場合は HAL/Common 側で同じモジュールを New Stack から追加し、
-   プロパティ（インスタンス名・チャネル・割り込み優先度・コールバック名）を
-   10.3.1 の表と旧 `configuration.xml` を見ながら 1 つずつ合わせる）。
-   **インスタンス名（`g_display0` / `g_comms_i2c_device0` / `d2_handle0` / `g_vin0` 等）を
-   変えないこと** ― ユーザーコードが名前で参照している。
-4. **FreeRTOS Heap 4** と **FreeRTOS Port (rm_freertos_port)** をスタックから削除。
-5. RTOS オブジェクト `g_i2c_event_group` / `g_irq_binary_semaphore` を削除
-   （μT-Kernel 版に置換済み ― 10.3.3 参照）。
-6. **LVGL の `LV_USE_OS` を `LV_OS_NONE` にする**（Stacks タブ → `LVGL` モジュール →
-   Properties → `LVGL > OS Integration > LV_USE_OS`。`LV_OS_FREERTOS` → `LV_OS_NONE`）。
-   これは **FSP のモジュール制約**であり、FreeRTOS を外したまま `LV_OS_FREERTOS` にしておくと
-   `rm_lvgl_port` が制約エラーを出す
-   （`Renesas##Middleware##all##rm_lvgl_port####6.3.0.xml:35-36`:
-   「LVGL FreeRTOS integration should be enabled when FreeRTOS is used, or disabled when
-   FreeRTOS is not used.」＝ `!testExists(interface.rtos.awsfreertos) && lv_use_os == lv_os_none`）。
-   **コンパイル時の実効値は変わらない**: 生成される `lv_conf.h` は先頭で
-   `#include "lv_conf_user.h"`（`ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h:8`）した後に
-   `#ifndef LV_USE_OS` ガード付きで既定値を置く（`:36-38`）ため、
-   `src/lv_conf_user.h` の `LV_USE_OS = LV_OS_CUSTOM`（μT-Kernel OSAL）が勝つ。
-   本手順は FSP の制約充足のみが目的。
-7. 5 つのスレッド（blinky / ntshell / lvgl / camera / ai_inference）を削除。
-8. RTOS 選択を **No RTOS** にする。
-   `#RTOS#` は Stacks タブ側からは変更できず（RA Configuration エディタの
-   `PageSWPConfigurator` は `#RTOS#` を読むだけ）、**Components タブでの
-   コンポーネント選択が切替手段**である（同エディタのメッセージ
-   `PageSWPConfigurator_NoRtosComponent` = "Enable thread configuration by selecting an
-   RTOS component on the Components page of this editor"）。**Components** タブで以下の
-   チェックを外す:
-   - `RTOS > FreeRTOS > all`（AWS 11.1.0+fsp.6.3.0 / `configuration.xml:324-327`）
-   - `Heaps > FreeRTOS > heap_4`（`:380-383`）
-   - `Middleware > all > rm_freertos_port`（`:312-315`）
-   - `Projects > all > freertos_blinky`（`:328-331`、プロジェクトテンプレート由来）
-
-   外したあと Stacks タブへ戻り、**左ペインが `HAL/Common` のみになり、手順 3 で移設した
-   モジュールが残っていること**を目視確認する。モジュールごと消えた場合は**保存せずに**
-   エディタを破棄し `git checkout -- e2studio_CPU0/` で戻して、下記の代替 (a) へ切り替える。
-   保存後に `configuration.xml:10` が `<option key="#RTOS#" value="_none"/>` へ
-   変わっていることをテキストで確認する。
-9. （確認のみ・**変更不要**）BSP タブ → `RA Common > Heap size (bytes)` が `0x8000`
-   であること。r_drw はベアメタル構成で BSP ヒープ > 0 を要求する
-   （`Renesas##HAL Drivers##all##r_drw####6.3.0.xml:35-37`）。
-   現状 `configuration.xml:287` が `0x8000` なので既に充足している。
-   なお `DRW_CFG_CUSTOM_MALLOC = Custom` では D2 ヒープは `s_d1_heap[]`（μT-Kernel
-   メモリプール）から取るため、この BSP ヒープは D2 では消費されない。
-10. **Generate Project Content**。
-11. 10.4 のファイル削除・修正を**同時に**適用してからビルドする。
-
-> **未確認事項（正直に記載）**: `configuration.xml:10` の
-> `<option key="#RTOS#" value="rtos.awsfreertos"/>` は `generalSettings` にあり、
-> 新規プロジェクト作成ウィザードで決まる項目である（FSP 定義
-> `Renesas##Common##all##fsp_common####6.3.0.xml:239` の
-> `<rtos id="_none" display="No RTOS">` にも "used for RTOS selection in wizard" とある）。
-> 手順 8 の「Components タブでチェックを外すと `#RTOS#` が `_none` になる」は
-> **RA Configuration エディタ内のメッセージ文字列からの推定であり、実 GUI 上では未検証**。
-> また **RTOS を外したときに旧スレッド配下のモジュールが HAL/Common へ自動移動するか
-> どうかも未検証**（手順 3 で先に手動移設しておくのはこのため）。
-> 手順 8 で切り替えられない場合の代替は次の 2 つ:
-> (a) No RTOS で新規プロジェクトを作り、Pins/Clocks/Stacks 設定と `src/` を移植する。
-> (b) 本ステップを見送り、Step 1 のみ（RAM −229,376 B、#178 解決）で確定する。
-> (b) でも `ucHeap` は残るが、**Step 1 単独でも RAM の大部分の削減は達成できない**
-> （`ucHeap` 262,144 B は Step 2 でしか消えない）点に注意。逆に Step 1 は
-> **#178（Dave2D ヒープの排他）を単独で解決する**ので、価値は独立している。
-
-#### 10.3.3 変更後に必ず確認すること（実コードで裏取り済み）
-
-| # | 確認項目 | 裏取り結果 |
+| # | 変更内容 | 対象 |
 |---|---|---|
-| 1 | `ra_gen/main.c` の再生成 | 現状は `vTaskStartScheduler()` を `main()` 末尾（`ra_gen/main.c:112`）で呼び、`blinky/ntshell/lvgl/camera/ai_inference_thread_create()` を呼ぶ（`:105-109`）。No RTOS では FSP は `main()` から `hal_entry()` を呼ぶ形に再生成する（**未検証** ― ローカルの FSP テンプレートで確認していない。生成結果を実物で確認すること）。**`main()` はいずれにせよ実行されない**（`src/hal_warmstart.c:157` の `knl_start_mtkernel()` が戻らない）ので実行時の影響は無い。ただし `hal_entry()` の実体（通常 `src/hal_entry.c`）が無いとリンクエラーになるため、生成後に未定義シンボルが出たら空の `hal_entry()` を `src/` に用意する（`while(1) tk_slp_tsk(TMO_FEVR);` 等） |
-| 2 | `ra_gen/*_thread.h` を include している箇所 | **6 箇所ある**（grep 実測）。`src/ai_inference_thread_entry.c:51` / `src/blinky_thread_entry.c:7` / `src/camera_thread_entry.c:70` / `src/lvgl_thread_entry.c:76` / `src/ntshell_thread_entry.c:25` / `src/port/lv_port_indev.c:50`。これらのヘッダは `FreeRTOS.h`/`task.h`/`semphr.h` と `hal_data.h` を include し、加えて `lvgl_thread.h` は rm_comms_i2c のインスタンス（`g_comms_i2c_device0` / `_ctrl` / `_cfg` / `comms_i2c_callback`）を宣言している（`ra_gen/lvgl_thread.h:16-23`）。No RTOS ではこれらのインスタンス宣言は **`ra_gen/hal_data.h` へ移る**（FSP モジュール定義 `Renesas##Middleware##all##rm_comms_i2c####6.3.0.xml` の `module.driver.comms_i2c_on_comms_i2c_device` は `common` 属性を持たない ― `common="100"` を持つ `module.driver.external_irq_on_icu` 等は `common_data.*` へ出力されるのに対し、非 common モジュールはスレッド／HAL コンテキストのファイルへ出力される。現状 `lvgl_thread.h` にあるのはこのため）。いずれにせよ `hal_data.h` は `common_data.h` を include している（`ra_gen/hal_data.h:6`）ので、**`#include "xxx_thread.h"` を `#include "hal_data.h"` へ置換**すれば両方カバーできる。生成後に `ra_gen/hal_data.h` へ `g_comms_i2c_device0` の extern 宣言が出ていることを確認すること（**無い場合は手順 3 の移設で rm_comms_i2c スタックが失われている**） |
-| 3 | `ra_gen/common_data.c` の `BSP_CFG_RTOS == 0` パスと `g_irq_binary_semaphore` の代替 | `g_i2c_event_group`（`common_data.c:898,909`）と `g_irq_binary_semaphore`（`:903,918`）は `g_common_init()` で生成されるが、**`g_common_init()` を呼ぶのは `g_hal_init()` 経由の `main()` だけで実行されない**。ユーザーコード側は既に μT-Kernel へ置換済み: I2C 完了通知は `ov5640.c` の `s_i2c_flgid`（R-005）と `lv_port_indev.c` の `s_touch_i2c_flgid`、タッチ IRQ は `lv_port_indev.c:331` の `s_touch_irq_semid`（R-006）。**grep 実測で `src/` 側の実コード参照はゼロ**（残るのは説明コメントのみ）。よって RTOS オブジェクト削除で問題なし |
-| 4 | `rm_comms_i2c` の `#if BSP_CFG_RTOS` 分岐（OV5640 カメラ制御・タッチ I2C） | Issue 本文の懸念は**逆**で、`BSP_CFG_RTOS == 0` になると I2C は**ブロッキングでなくなる**（コールバックモードになる）。`rm_comms_i2c_driver_ra.c` の `#if BSP_CFG_RTOS` ブロック（`:116-137`, `:164-185`, `:216-237` ― いずれも `#else` 側は `FSP_ERROR_RETURN` 1 行のみ）は「転送開始後にブロッキング用セマフォを取得して完了を待つ」処理であり、RTOS==0 ではこれが丸ごと消えて `FSP_ERROR_RETURN` のみになる。**本プロジェクトは既に実行時にコールバックモードへ切り替えている**（`src/port/lv_port_indev.c` で `p_extend->p_blocking_semaphore = NULL; p_extend->p_bus_recursive_mutex = NULL;` を `RM_COMMS_I2C_Open()` の前に実行）。ドライバ側は各操作を `if (NULL != ...)` で保護している（`rm_comms_i2c_driver_ra.c:119,126,167,174,219,226,326,353`）ので、**RTOS==0 への切替による動作変化は無い**。なお **OV5640 カメラ制御は rm_comms_i2c を使っていない**（`src/ov5640.c` は R_IIC_MASTER を直接使い、完了は `s_i2c_flgid` で待つ）ため無関係 |
-| 4b | 同上・**コンパイルエラーになる箇所** | `rm_comms_i2c_bus_extended_cfg_t` の `p_bus_recursive_mutex` / `p_blocking_semaphore` メンバ自体が `#if BSP_CFG_RTOS` の中にある（`ra/fsp/inc/instances/rm_comms_i2c.h:90-93`）。よって RTOS==0 では上記 2 行が**コンパイルできない**。**本 PR で `#if BSP_CFG_RTOS` ガードを追加済み**（`src/port/lv_port_indev.c`）。どちらの設定でもビルドでき、挙動も同一 |
-| 5 | `rm_lvgl_port.c:161,287` の `BSP_CFG_RTOS == 0` パス | **本プロジェクトは `rm_lvgl_port` を実行しない**。R-006 で `src/port/lvgl_port_mtk3.c`（`lvgl_port_mtk3_open()`）に置き換え済みで、`glcdc_port.c` はそちらを呼ぶ。map 実測でも最終イメージに残る `rm_lvgl_port` 由来シンボルは `_rm_lvgl_port_display_callback`（12 B）のみで、`RM_LVGL_PORT_Open` はリンクされていない（`--gc-sections` が除去）。したがって `BSP_CFG_RTOS == 0` パスが成立するかは**実行上は問題にならない**（コンパイルが通れば十分）。LVGL 本体の OSAL は `src/lv_os_mtkernel.c` で μT-Kernel 化済み（`src/lv_conf_user.h` の `LV_USE_OS = LV_OS_CUSTOM`） |
-| 6 | FSP Stacks からの FreeRTOS Heap 4 / FreeRTOS Port 削除 | 10.3.2 手順 4。`rm_freertos_port` は `_hal.0`（HAL/Common）配下、`FreeRTOS Heap 4` は `lvgl_thread` 配下にある |
+| 1 | `#RTOS#` を `rtos.awsfreertos` → **`_none`** | `<generalSettings>` |
+| 2 | コンポーネント 4 個を削除 | `Middleware/all/rm_freertos_port`, `RTOS/FreeRTOS/all`, `Projects/all/freertos_blinky`, `Heaps/FreeRTOS/heap_4` |
+| 3 | モジュール定義 2 個を削除 | `module.middleware.rm_freertos_port.0`, `module.freertos.heap.4.1403476206`（どちらもプロパティを持たない空要素） |
+| 4 | RTOS オブジェクト 2 個を削除 | `g_i2c_event_group`（Event Group）, `g_irq_binary_semaphore`（Binary Semaphore） |
+| 5 | スレッド `<context>` 5 個を削除 | blinky / ntshell / lvgl / camera / ai_inference |
+| 6 | 5 の配下にあった `<stack>` 木を **`_hal.0` へそのまま移設** | lvgl→rm_lvgl_port→(GLCDC, r_drw→dave2d) / comms_i2c device→bus→IIC / external IRQ / VIN→MIPI CSI→MIPI PHY / TFLM→(rm_ethosu→ethos-u, flatbuffers, CMSIS-NN→CMSIS-DSP) |
+| 7 | `config.lvgl.lvgl.lv_use_os` を `lv_os_freertos` → **`lv_os_none`** | rm_lvgl_port のモジュール制約（`Renesas##Middleware##all##rm_lvgl_port####6.3.0.xml:35-36`）を満たすため。コンパイル時の実効値は変わらない（10.3.3 参照） |
+| 8 | `config.awsfreertos.thread` ブロック（68 プロパティ）を削除 | `configTOTAL_HEAP_SIZE` 等の FreeRTOS カーネル設定一式 |
 
-### 10.4 Step 3: 不要ファイルの削除（**Step 2 と同時に実施すること**）
+#### 10.3.2 ユーザーが e2 studio で行うこと
 
-#### 10.4.1 削除候補の完全性チェック（CLAUDE.md「置換・除外の完全性チェック」）
+1. `e2studio_CPU0/configuration.xml` を RA Configuration エディタで開く。
+2. **Stacks** タブの左ペインが **HAL/Common のみ**になり、その配下に上記 6 の
+   モジュール木が全部あること、**エラー（赤）マークが無いこと**を目視確認する。
+3. **Components** タブに FreeRTOS 系（`RTOS > FreeRTOS`, `Heaps > FreeRTOS`,
+   `Middleware > all > rm_freertos_port`, `Projects > all > freertos_blinky`）の
+   チェックが**無い**ことを確認する。
+4. **Generate Project Content** を実行する。
 
-| ファイル | 定義している全シンボル | 残るコードからの参照（grep 実測） | 判定 |
-|---|---|---|---|
-| `src/freertos_hooks.c` | `vApplicationMallocFailedHook`（関数 1 個のみ。マクロ・変数の定義なし） | `ra/aws/FreeRTOS/FreeRTOS/Source/portable/MemMang/heap_4.c:334` から呼ばれる（`portable.h:213` で宣言） | **Step 2 の前は削除不可**。Heap 4 が build から外れる Step 2 と同時に削除する |
-| `src/User_FreeRTOSConfig.h` | 定義なし（中身はコメントとヘッダガード `USER_FREERTOSCONFIG_H_` のみ） | `ra_cfg/aws/FreeRTOSConfig.h:20` が `#include`。`configuration.xml:1136` が `config.awsfreertos.custom_freertosconfig` として参照 | **Step 2 の前は削除不可**。`ra_cfg/aws/FreeRTOSConfig.h` が生成されなくなる Step 2 と同時に削除する |
-| `src/blinky_thread_entry.c` | `blinky_thread_entry`（関数 1 個のみ） | `ra_gen/blinky_thread.c:74` が呼び、`ra_gen/blinky_thread.h:10,12` が宣言。`ra_gen/blinky_thread.c` は `main()`（`ra_gen/main.c:105`）から到達可能でリンクに残る | **Step 2 の前は削除不可**。`ra_gen/blinky_thread.c` が生成されなくなる Step 2 と同時に削除する |
+> **なぜ Generate をユーザーが行うのか**: ヘッドレス生成
+> （`e2studioc.exe -application org.eclipse.cdt.managedbuilder.core.headlessbuild`）でも
+> 生成内容は同一だが、**e2 studio の GUI 生成だけが `ra_gen/*.c` にコードフォーマッタを
+> かける**。ヘッダ生成物をコミットすると整形だけが全面的に変わり、次に GUI で生成した
+> 瞬間また全面差分になる。検証（10.3.3 / 10.5）はヘッドレス生成で行い、コミットする
+> 生成物は GUI 生成のものに揃える。
+>
+> 検証の妥当性: **設定を変えずに**ヘッドレス生成したときの `ra_gen/` は、
+> コミット済みのものと**空白を除いて完全一致**する（`tr -d '[:space:]'` 比較で確認）。
+> ビルド結果も `text = 790,490` と 10.2.4 の実測に一致した。つまり整形以外の差は無い。
 
-> つまり **3 ファイルとも現時点（Step 2 前）では削除できない**。先に消すと
-> `undefined symbol: vApplicationMallocFailedHook` / `blinky_thread_entry` /
-> `User_FreeRTOSConfig.h: No such file` でビルドが壊れる。
-> 逆に Step 2 を実施すると `src/freertos_hooks.c`（`#include "FreeRTOS.h"`、`:12`）と
-> `src/blinky_thread_entry.c`（`#include "blinky_thread.h"`、`:7`）は
-> **コンパイルできなくなる**ため、Step 2 と Step 3 は不可分である。
+#### 10.3.3 再生成の結果（実測・裏取り済み）
 
-`src/blinky_thread_entry.c` の μT-Kernel 版が存在することの確認: `src/usermain.c` の
-`blink_task()` が `bsp_leds_t` を使って `R_BSP_PinWrite()` で LED をトグルし、
-`tk_dly_tsk(500)` で 500ms 待つ（元の `vTaskDelay(configTICK_RATE_HZ / 2)` 相当）。
-マルチコア分岐（`#if BSP_NUMBER_OF_CORES == 1` / `#else` の `p_leds[_RA_CORE]`）も
-`blinky_thread_entry.c:43-58` と同一。`R_BSP_SecondaryCoreStart()`
-（`blinky_thread_entry.c:20-22`）は `usermain()` へ移設済み。**機能の欠落は無い**。
+生成物の差分は**意図した分だけ**であることを、空白を除去したトークン比較および
+文単位比較（全空白除去 → `;`/`{`/`}` で改行）で 1 ファイルずつ確認した。
 
-#### 10.4.2 Step 2 と同時に行うソース修正
+| ファイル | 差分 |
+|---|---|
+| `ra_gen/main.c` | FreeRTOS 起動一式（`vTaskStartScheduler` / `*_thread_create` / `rtos_startup_*`）が消え、**`int main(void) { hal_entry(); return 0; }`** だけになった |
+| `src/hal_entry.c` | **FSP が新規生成**（テンプレート）。`hal_entry()` が無いとリンクエラーになるため必要。中身は本 Issue で書き換えた（10.4.2） |
+| `ra_gen/{blinky,ntshell,lvgl,camera,ai_inference}_thread.{c,h}` | **生成されなくなった**（10 ファイル削除） |
+| `ra/aws/FreeRTOS/**`（22 ファイル）<br>`ra/fsp/src/rm_freertos_port/`（2 ファイル） | **プロジェクトから削除された**（FSP がコンポーネント解除に伴い除去） |
+| `ra_cfg/aws/FreeRTOSConfig.h` | **残存する**。FSP は不要になった生成物を消さないため、Step 3 で手動削除する |
+| `ra_cfg/fsp_cfg/bsp/bsp_cfg.h` | **差分は 1 箇所のみ**: `BSP_CFG_RTOS` が `(2)` → **`(0)`** |
+| `ra_cfg/fsp_cfg/lvgl/lvgl/lv_conf.h` | **差分は 1 箇所のみ**: `LV_USE_OS` が `(LV_OS_FREERTOS)` → `(LV_OS_NONE)`。**実効値は変わらない** ― `lv_conf.h:8` が `lv_conf_user.h` を先に include し、`:36-38` は `#ifndef LV_USE_OS` ガード付きなので `src/lv_conf_user.h:75` の `LV_OS_CUSTOM`（μT-Kernel OSAL）が勝つ |
+| `ra_gen/vector_data.c` / `vector_data.h` | **完全一致**（空白のみ）。**割り込みベクタ配置と IPL は一切変化していない** |
+| `ra_gen/pin_data.c`<br>`ra_cfg/fsp_cfg/{r_drw,r_glcdc,r_mipi_csi,r_sci_b_uart,r_vin,rm_ethosu}_cfg.h`<br>`ra_cfg/fsp_cfg/middleware/rm_lvgl_port_cfg.h`<br>`ra_cfg/fsp_cfg/bsp/bsp_mcu_{device_pn,family,ofs}_cfg.h` | **完全一致**（空白のみ） |
+| `ra_gen/hal_data.{c,h}` | `g_comms_i2c_device0` 一式が `lvgl_thread.{c,h}` から**そのまま移動**（`.slave=0x38` / `I2C_MASTER_ADDR_MODE_7BIT` / `.p_callback=rm_comms_i2c_callback` / `.semaphore_timeout=0xFFFFFFFF` / `.p_extend=&g_comms_i2c_bus0_extended_cfg` / `.p_callback=comms_i2c_callback` ― 旧 `lvgl_thread.c` と文字列比較で一致）。他のインスタンス（GPT/IIC/UART）は不変 |
+| `ra_gen/common_data.{c,h}` | `g_i2c_event_group` / `g_irq_binary_semaphore` の宣言・`g_common_init()` 内の生成コード・FreeRTOS ヘッダ include が消えただけ。ドライバ構成（VIN / MIPI CSI / MIPI PHY / GLCDC / ICU / IIC / rm_ethosu / ioport / フレームバッファ）は不変 |
+| `.cproject` | `ra/aws` フォルダ用のツールチェイン上書き（110 行）が消えただけ。**`fsp/src/r_drw/r_drw_irq.c` の Exclude from build は維持されている**（維持されていなければ `src/port/r_drw_irq_mtk3.c` と多重定義になりリンクが失敗する ―― ビルド成功が裏取り） |
+
+#### 10.3.4 事前に挙げた懸念の実地確認結果
+
+| # | 懸念（旧 10.3.3） | 実測結果 |
+|---|---|---|
+| 1 | `ra_gen/main.c` の再生成形 | 予想どおり `main()` → `hal_entry()`。`hal_entry()` の実体が要るので `src/hal_entry.c` を用意（FSP がテンプレートを生成したので、それを本プロジェクト向けに書き換えた）。**`main()` は実行されない**（`src/hal_warmstart.c:166` の `knl_start_mtkernel()` が戻らない）ので実行時の影響は無い |
+| 2 | `ra_gen/*_thread.h` を include している 6 箇所 | 予想どおり `hal_data.h` への差し替えで足りた。`g_comms_i2c_device0` は `ra_gen/hal_data.h` に出力され、`hal_data.h` は `common_data.h` を include するので 1 本で両方カバーできる |
+| 3 | `g_irq_binary_semaphore` / `g_i2c_event_group` の代替 | `src/` からの実参照はゼロ（コメントのみ）。μT-Kernel 版（`ov5640.c` の `s_i2c_flgid` / `lv_port_indev.c` の `s_touch_i2c_flgid` / `s_touch_irq_semid`）で置換済みのため削除して問題なし |
+| 4 | `rm_comms_i2c` が `BSP_CFG_RTOS == 0` になる影響 | **動作は変わらない**。ブロッキング用セマフォ／再帰ミューテックスの取得は元々 `if (NULL != ...)` で保護され、本プロジェクトは実行時に両方 NULL にしていた。完了通知経路 `rm_comms_i2c_process_in_callback()` のユーザーコールバック呼び出し（`rm_comms_i2c_driver_ra.c:336`）は `#if BSP_CFG_RTOS` の**外側**にあるので RTOS 設定に依存しない。コンパイルエラーになる 2 行（`rm_comms_i2c.h:92-93` のメンバ）は #197 でガード済み |
+| 5 | `rm_lvgl_port.c` の `BSP_CFG_RTOS == 0` パス | 本プロジェクトは `RM_LVGL_PORT_Open()` を実行しない（R-006 で `src/port/lvgl_port_mtk3.c` に置換済み）。コンパイルが通れば十分で、実際に通った |
+| 6 | `ra/fsp/src/r_drw/r_drw_irq.c` の Exclude 継続要否 | **継続する**。`BSP_CFG_RTOS == 0` では同ファイルは `static volatile d1_int_t g_dlist_done`（`r_drw_irq.c:44`）のビジーウェイトになり、`d1_queryirq()` が CPU を回し続けて他の μT-Kernel タスクを妨げる。`tk_wai_sem` を使う `src/port/r_drw_irq_mtk3.c` の方が適切 |
+
+### 10.4 Step 3: 不要ファイルの削除とソース修正（Step 2 と同時に実施）
+
+#### 10.4.1 削除したファイル
+
+CLAUDE.md「置換・除外の完全性チェック」に従い、削除対象が定義する全シンボルと
+残るコードからの参照を突き合わせた。3 ファイルとも Step 2 と**同時にしか**削除できない。
+加えて FSP が消し残す `ra_cfg/aws/FreeRTOSConfig.h` も削除した。
+
+| ファイル | 定義していた全シンボル | 削除できる理由 |
+|---|---|---|
+| `src/freertos_hooks.c` | `vApplicationMallocFailedHook`（関数 1 個のみ） | 唯一の参照元 `heap_4.c:334` がプロジェクトから消えた |
+| `src/User_FreeRTOSConfig.h` | 定義なし（ヘッダガードのみ） | 唯一の参照元 `ra_cfg/aws/FreeRTOSConfig.h` を同時に削除。`configuration.xml` の `config.awsfreertos.custom_freertosconfig` も消えた |
+| `src/blinky_thread_entry.c` | `blinky_thread_entry`（関数 1 個のみ） | 唯一の参照元 `ra_gen/blinky_thread.c` が生成されなくなった。機能は `src/usermain.c` の `blink_task()`（500ms トグル・マルチコア分岐・`R_BSP_SecondaryCoreStart()` 移設済み）が持つ |
+| `ra_cfg/aws/FreeRTOSConfig.h` | `configXXX` マクロ群 | include 元の `FreeRTOS.h` がプロジェクトから消えた。FSP は再生成時にこのファイルを消さないので手動削除 |
+
+削除後に `llvm-nm -u` を全 `.o`（1,583 個）へ実行し、FreeRTOS シンボルの未定義参照が
+**0 件**であることを確認した（10.5）。
+
+#### 10.4.2 Step 2 と同時に行ったソース修正
 
 | ファイル | 修正 |
 |---|---|
-| `src/freertos_hooks.c` | 削除 |
-| `src/User_FreeRTOSConfig.h` | 削除 |
-| `src/blinky_thread_entry.c` | 削除 |
-| `src/ai_inference_thread_entry.c:51` / `src/camera_thread_entry.c:70` / `src/lvgl_thread_entry.c:76` / `src/ntshell_thread_entry.c:25` / `src/port/lv_port_indev.c:50` | `#include "xxx_thread.h"` → `#include "hal_data.h"` |
-| 同上 4 ファイルの `*_thread_entry(void *pvParameters)` ラッパ（`ai_inference_thread_entry.c:767` / `camera_thread_entry.c:990` / `lvgl_thread_entry.c:291` / `ntshell_thread_entry.c:224`） | `ra_gen/*_thread.c` が消えて参照元が無くなるので削除してよい（μT-Kernel 版タスク本体 `*_task(INT, void*)` はそのまま） |
-| e2 studio のビルド除外設定 | `ra/fsp/src/r_drw/r_drw_irq.c` の Exclude from build（R-006 で設定）は**維持**する。Step 2 では変わらない |
+| `src/ai_inference_thread_entry.c` / `src/camera_thread_entry.c` / `src/lvgl_thread_entry.c` / `src/ntshell_thread_entry.c` / `src/port/lv_port_indev.c` | `#include "xxx_thread.h"` を `#include "hal_data.h"` へ差し替え（`camera_thread_entry.c` は既に `hal_data.h` を include しているので行削除のみ） |
+| 同上 4 ファイルの `*_thread_entry(void *pvParameters)` ラッパ | 削除。参照元 `ra_gen/*_thread.c` が生成されなくなったため。μT-Kernel 版タスク本体 `*_task(INT, void *)` はそのまま |
+| `src/hal_entry.c` | **新規**（FSP が生成したテンプレートを書き換え）。`ra_gen/main.c` の `main()` から呼ばれるが**到達しない**。テンプレートが持つ `R_BSP_SecondaryCoreStart()` は**意図的に削除**した ― CPU1 起動は `src/usermain.c:336` で実施済みで、二重に置くと「どちらが実際に起動するのか」を誤読させるため。到達した場合（＝μT-Kernel 起動を無効化した場合）に気付けるようトラップして停止する |
+| `src/port/dave2d_cache_management.c` | `#if (BSP_CFG_RTOS == 2) #include "FreeRTOS.h" #endif` を削除（`FreeRTOS.h` 自体が無くなった）。2 つの関数は `BSP_CFG_DCACHE_ENABLED` にしか依存しないので**動作は不変** |
+| `src/hal_warmstart.c` | 「切り戻すと従来の FreeRTOS 起動に戻る」という記述を訂正。**戻る先はもう存在しない**（`ra_gen/main.c` は `hal_entry()` を呼ぶだけ） |
+| `src/d1_heap_mtkernel.c` / `src/lv_conf_user.h` / `src/port/lvgl_port_mtk3.{c,h}` / `src/port/r_drw_irq_mtk3.c` / `src/usermain.c` / `src/{ai_inference,camera}_thread_api.h` | `BSP_CFG_RTOS == 2` 前提・削除済みファイル参照になっていたコメントを現状に更新 |
+| e2 studio のビルド除外設定 | `ra/fsp/src/r_drw/r_drw_irq.c` の Exclude from build は**維持**（10.3.4 #6） |
 
-### 10.5 撤去後の検証
+### 10.5 撤去後の実測と検証結果（2026-08-14）
 
-1. `llvm-nm -u` を全 `.o` に実行し、FreeRTOS シンボル（`x*Queue*` / `*Task*` / `pvPortMalloc` /
-   `vPortFree` / `*EventGroup*`）が 1 つも残らないこと。
-   `find . -name "*.o" -print0 | xargs -0 llvm-nm -u -A`
-2. `mimamori_sense_CPU0.map` に `ucHeap` が無いこと。
-3. `.flash.endof` が 10.1 の 788,992 B からおおよそ **−8.4 KB**（Step 2 の効果 = 10.1 の
-   FreeRTOS シンボル実測 8,420 B）**＋1.0 KB**（Step 1 のコスト実測）＝ 差引 **約 −7.4 KB**
-   になること。Issue #186 本文が挙げる `ra/aws` 由来の文字列リテラル（6,584 B）が
-   併せて落ちればさらに減るが、LTO 後の map では帰属を確認できないため見込みには含めない。
-   RAM は `ucHeap` −262,144 B に対し `s_d1_heap` +32,768 B で **差引 約 −224 KiB**。
-4. 実機確認（ユーザー実施）: μT-Kernel 起動・全タスク生成 / LED 点滅 500ms /
-   カメラ撮影＋LCD 表示（Dave2D 描画）/ AI 推論 / `ntshell` 各コマンド /
-   フレームレートが #176 の実測から劣化していないこと。
-5. **`dave2d status` の `[Dave2D D2 Heap]` の Peak used を記録**し、
+測定方法は 10.1 と同じ（`e2studio_CPU0/Debug` でクリーンビルド、
+`llvm-readelf -S` の `.flash.endof` − `0x02000000`）。
+
+#### 10.5.1 サイズ
+
+| 構成 | text | data | bss | `.flash.endof` |
+|---|---:|---:|---:|---|
+| 撤去前（#184 の LTO 適用後 = 10.1 のベースライン） | 788,530 | 230 | 7,040,241 | `0x020C0A00`（788,992 B） |
+| Step 1 完了（#197 マージ後 = 本 PR の起点） | 790,490 | 230 | 7,073,237 | `0x020C1200`（791,040 B） |
+| **Step 2/3 完了（本 PR）** | **780,930** | **206** | **6,775,053** | **`0x020BEC00`（781,824 B）** |
+
+| 比較 | FLASH（`.flash.endof`） | RAM（bss） |
+|---|---:|---:|
+| Step 2/3 単独（起点比） | **−9,216 B** | **−298,184 B** |
+| 撤去前比（Step 1 のコスト込み） | **−7,168 B** | **−265,188 B** |
+
+- FLASH 使用率: 788,992 B（77.7%）→ **781,824 B / 1,015,808 B（`FLASH_LENGTH` `0xF8000`）= 77.0%**。
+- 10.1 で見積もった「Step 2 で −8,420 B、Step 1 のコスト +2,048 B、差引 約 −7.4 KB」に対し、
+  実測は **−9,216 B / 差引 −7,168 B**。見積もりは `.o` 別内訳が LTO で失われていたため
+  シンボル合計から求めた概算であり、実測の方がやや大きく削減された。
+- RAM −298,184 B の主な内訳: `ucHeap` **262,144 B**（10.1 の map 実測）＋
+  FreeRTOS スレッドスタック **33,280 B**（`ra_gen/*_thread.c` の
+  `blinky 512 + ntshell 4096 + lvgl 8192 + camera 4096 + ai_inference 0x4000` バイト）。
+  残り約 2.8 KB は TCB（`StaticTask_t` ×5）と FreeRTOS カーネルの静的変数
+  （内訳は分解していない）。Step 1 で確保した `s_d1_heap` 32,768 B は引き続き使用する。
+
+#### 10.5.2 シンボル検証（受け入れ条件）
+
+- **`llvm-nm -u` 全 `.o` 走査**: クリーンビルド後の全 **1,583 個**の `.o`（未定義参照
+  合計 3,841 件）に対し、FreeRTOS 由来シンボル
+  （`ucHeap` / `pvPortMalloc` / `vPortFree` / `x*Queue*` / `*Task*` / `*Timer*` /
+  `*EventGroup*`）の未定義参照は **0 件**。
+  ```
+  find . -name "*.o" -print0 | xargs -0 llvm-nm -u -A
+  ```
+  > **注意**: `make clean` は**現在のメイクファイルに載っているオブジェクトしか消さない**。
+  > ビルドから外れた `Debug/ra/aws/**`・`Debug/ra/fsp/src/rm_freertos_port/`・
+  > `Debug/ra_gen/*_thread.o`・`Debug/src/{blinky_thread_entry,freertos_hooks}.o` は
+  > **孤児として残る**ので、走査前に手動で削除すること（残したまま走査すると
+  > 65 件の FreeRTOS 未定義参照が「検出」されるが、`Debug/sources.mk` にも
+  > 最終 map にも現れない過去のビルド成果物である）。
+- **map 検証**: `mimamori_sense_CPU0.map` 内に
+  `ucHeap` / `pvPortMalloc` / `vPortFree` / `xQueue*` / `xTask*` / `vTask*` /
+  `*EventGroup*` / `freertos` の**いずれも 0 件**。
+  Step 1 で導入した `d1_malloc`（`.text.d1_malloc`, 392 B）と
+  `s_d1_heap`（`.bss.s_d1_heap`, 32,768 B）は存在する。
+- **CPU1 への影響なし**: `e2studio_CPU1` は FreeRTOS のまま（`#RTOS#` 未変更）。
+  ビルド結果は text 11,206 / bss 3,696 で変化なし。CPU1 の FreeRTOS 撤去は本 Issue の対象外。
+
+#### 10.5.3 実機確認（ユーザー実施）
+
+1. μT-Kernel 起動・全タスク生成
+2. LED 点滅（500ms 周期、#175）
+3. カメラ撮影＋LCD 表示（Dave2D 描画含む）
+4. 転倒検出 AI 推論
+5. `ntshell` の各コマンド
+6. フレームレートが #176 の実測から劣化していないこと
+7. **`dave2d status` の `[Dave2D D2 Heap]` の Peak used を記録**し、
    `D1_HEAP_SIZE`(32,768) に十分な余裕があることを確認する。
    余裕が過大なら `src/d1_heap_mtkernel.c` の `D1_HEAP_SIZE` を縮めて RAM をさらに回収できる。
+
+#### 10.5.4 撤去前後の A/B 比較（実機・2026-08-14）
+
+実機確認で「LCD の色合いが変わった気がする」「転倒判定がシビアになった気がする」という
+指摘があったため、**撤去前（`main` = Step 1 完了時点）を同一ツールチェインでビルドし直し**、
+バイナリ比較と実機の数値比較の両方で検証した。結論は**どちらも Step 2 に起因しない**。
+
+##### バイナリ比較（静的検証）
+
+撤去前のビルドは `text 790,490 / bss 7,073,237` と 10.5.1 の値を完全に再現した。
+両 ELF に共通する **1,438 シンボル**のうち、サイズが変わったのは **6 個だけ**である。
+
+| シンボル | 変化 | 評価 |
+|---|---|---|
+| `Reset_Handler` / `SystemInit` | 0xd40 → 0x0c + 0xd40 | LTO が `SystemInit` のインライン展開をやめただけ。後者のサイズが前者と一致 |
+| `SysTick_Handler` | 0x26 → 0x10 | FreeRTOS port 版 → `rm_lvgl_port.c:287-294` 版。**どちらも実行されない**（下記） |
+| `_rm_lvgl_port_display_callback` | 0x12 → 0x16 | デッドコード（本プロジェクトは `lvgl_port_mtk3` のコールバックを使う） |
+| `g_comms_i2c_bus0_extended_cfg` | 0x1c → 0x14 | 削除された 2 メンバ分 |
+| `rm_comms_i2c_callback` | 0x10e → 0x5a | **タッチパネル I2C のみ**。実行時に NULL だった分岐の消滅 |
+| `touchpad_get_xy` | 0x206 → 0x15e | 上記のインライン展開分 |
+
+> **`SysTick_Handler` について（要注意点として記録）**: `BSP_CFG_RTOS == 0` になると
+> `rm_lvgl_port.c` が `SysTick_Handler` を定義するようになる。μT-Kernel はシステムタイマに
+> SysTick を使う（`mtk3_bsp2/sysdepend/ra_fsp/cpu/core/armv8m/sys_timer.h`）ため一見危険だが、
+> μT-Kernel は起動時に**ベクタテーブルを RAM（`knl_exctbl`）へコピーして VTOR を張り替え**
+> （`sysdepend/ra_fsp/cpu/core/armv8m/sys_start.c:60-65`）、**index 15 を `knl_systim_inthdr` で
+> 上書き**する（同 `interrupt.c`）。よって FSP 側の `SysTick_Handler` はフラッシュの
+> ベクタテーブルに残るだけで実行されない。`SysTick_Config()` を呼ぶ `RM_LVGL_PORT_Open()` も
+> 本プロジェクトは呼ばない。
+
+表示・カメラ・AI 側は**命令レベルで同一**であることを逆アセンブル比較で確認した
+（アドレスを正規化して比較）:
+
+- `camera_display_timer_cb` 588 命令 / `ai_inference_task` 339 命令 / `lvgl_task` 1,271 命令 ― **完全一致**
+- 表示・カメラ・AI 関連 **461 シンボル**のうち命令列が異なるものは **0 個**
+  （差が出たものはリテラルプールのアドレス定数と、ポインタを含む const 構造体。
+  ポインタをシンボル名に解決して比較すると `g_display0_cfg`(34 word) / `g_vin0_cfg` /
+  `g_mipi_csi0_cfg` / `g_mipi_phy0_cfg` / `g_lvgl_port_cfg` / `lv_font_montserrat_14,16,20` /
+  `lv_obj_class` 等すべて**完全一致**）
+- 主要バッファは**アドレスまで同一**: `fb_background` `0x68000000` /
+  `vin_image_buffer_1..3` `0x68258000`,`0x68300c00`,`0x683a9800` /
+  `sub_0000_net1_arena` `0x2200a3b0` / `model_buffer_int8` `0x2209d960`。
+  `ucHeap` は最後尾（`0x2210be3c`）にあったため、削除しても他がずれない。
+- D キャッシュは前後とも無効（`bsp_mcu_family_cfg.h:430` `BSP_CFG_DCACHE_ENABLED (0)`）で設定も同一。
+
+##### 実機数値比較（`ai detect` / `fall count` / `fall log`）
+
+| 指標 | 撤去前 | 撤去後 |
+|---|---|---|
+| 検出ボックス | x=45 y=2 **w=233** h=237 | x=41 y=0 **w=233** h=240 |
+| score | 0.70 | **0.78** |
+| 候補フレーム / 総フレーム | 5 / 1,784 = **0.28%** | 19 / 3,820 = **0.50%** |
+| AR の範囲（閾値 1.3） | 1.31〜1.36 | 1.31〜**1.51** |
+| score の範囲（閾値 0.5） | 0.52〜0.76 | 0.52〜**0.81** |
+| SUSPECTED の継続フレーム数 | 1,1,1,1,1（最大 **1**） | 1,1,1,1,1,**4**,1,1,**2**,1,**2**,**2**,1（最大 **4**） |
+| 確定転倒数 | 0 | 0 |
+
+`fall log` は状態遷移のみを記録するため、`NORMAL→SUSPECTED` と `SUSPECTED→NORMAL` の
+フレーム番号の差が連続候補フレーム数になる。継続フレーム数の合計は前 5 / 後 19 で
+`fall count` の Candidate frames と一致しており、読み方の妥当性が裏付けられる。
+
+**撤去後の方が候補率・AR・score・連続数のすべてで上回っており、判定は「シビア」ではなく
+むしろ確定に近づいている**（閾値 5 に対し最大 4 まで到達）。
+
+> **確定数が前後とも 0 である理由（Step 2 とは無関係の既存課題）**:
+> `FALL_STATE_SUSPECTED` は候補を **1 フレームでも落とすと `s_consecutive_count = 0` に
+> リセット**する（`src/fall_detection_logic.c:180-183`）。フレーム単位の分類器は閾値付近で
+> ちらつくため、`FALL_DETECT_CONSECUTIVE_COUNT = 5`（`fall_detection_logic.h:86`）の
+> 5 連続はまず成立しない。許容ミス数の導入または閾値の見直しは**別 Issue**とする。
+
+##### `ai time` の差（20 ms → 24 ms）は有意ではない
+
+- 表示値は平均ではなく**直近 1 回の値**（`camera_utils.c:170` の `s_preproc_time_ms`、
+  `ai_inference_thread_entry.c:349-352` の `s_time_total_ms` を毎回上書き）。
+- 計測は DWT サイクルカウンタの**実時間**であり、AI タスクは**最低優先度（itskpri=15）**なので
+  camera(11) / ntshell(12) / dave2d・swdraw(13) / lvgl(14) に横取りされた時間が乗る。
+  しかも計測直前に `ai detect` / `ai status` の UART 出力がある。
+- 2 回のサンプルは条件が異なる（`Inference count` 1341 vs 3130、`Thread state` IDLE vs INFERRING）。
+- **NPU 本体は 7 ms → 7 ms で一致**。前処理・後処理は命令列が同一で、差は preemption と
+  1 ms の計測量子化による。
+
+##### LCD の色について
+
+カメラを介さない切り分け（`lvgl testpat` / `display test`）を試みたが、
+**`display test` は既定ビルドでは `MIMAMORI_VERBOSE_DIAG=0` により除外されている**
+（`src/diag_config.h:55-56`。Step 2 とは無関係で Step 1 時点から同じ）。
+上記のとおり GLCDC / LVGL / フォント / 描画パスはバイナリレベルで同一であり、
+`g_display0_cfg` も完全一致であるため、**表示系の設定・コードに差は無い**。
+残る変動要因は OV5640 の AWB/AE（電源投入からの収束状況とシーン依存）と周囲光である。
+本件は調査終了とした。

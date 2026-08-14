@@ -20,12 +20,16 @@ FSP_CPP_FOOTER
  *   μT-Kernel を起動する。コンストラクタは SystemInit() の終盤（SystemRuntimeInit(1)・
  *   TLS 初期化・I-Cache 無効化の後、main() より前）で実行される。
  *   knl_start_mtkernel() は戻らない（knl_main -> 初期タスク -> usermain）ため、
- *   この後に呼ばれるはずの ra_gen/main.c の main()（FreeRTOS vTaskStartScheduler）
- *   には到達しない。これにより:
+ *   この後に呼ばれるはずの ra_gen/main.c の main() には到達しない。これにより:
  *     - ra_gen/main.c / ra_gen/*_thread.c を一切編集せず（編集禁止方針）、
  *       src/ 配下のフックだけで μT-Kernel 起動へ切り替えられる。
  *     - FreeRTOS スレッド（blinky/ntshell/camera/lvgl/ai_inference）は
  *       生成・起動されない（main() に到達しないため自動的に無効化される）。
+ *
+ *   Issue #186 Step 2 以降: FSP の RTOS 設定を No RTOS にしたため、
+ *   ra_gen/main.c は `int main(void) { hal_entry(); return 0; }` に再生成され、
+ *   FreeRTOS とスレッド生成コード自体が存在しない。到達しない点は変わらない
+ *   （hal_entry() の実体は src/hal_entry.c ― 到達時はトラップして停止する）。
  *
  * ■ 起動ポイントを POST_C 末尾から静的コンストラクタへ変更した理由（PR #163 codex 指摘 / P2）
  *   当初は R_BSP_WarmStart(BSP_WARM_START_POST_C) の末尾で knl_start_mtkernel() を
@@ -64,8 +68,13 @@ FSP_CPP_FOOTER
  *   必要になった時点で、g_hal_init() 相当の一度きり初期化を usermain() 側へ
  *   移設する（→ 移行手順書 7.1 / 7.2 以降）。
  *
- * 切り戻し: 下記マクロを 0 にすると本橋渡しを無効化し、従来の FreeRTOS 起動
- *   （ra_gen/main.c -> vTaskStartScheduler）に戻せる。
+ * 切り戻し: 下記マクロを 0 にすると本橋渡しを無効化できる。ただし
+ *   **Issue #186 Step 2 以降、戻る先の FreeRTOS 起動は存在しない**
+ *   （ra_gen/main.c は hal_entry() を呼ぶだけ、src/hal_entry.c は停止する）。
+ *   FreeRTOS へ戻すには FSP の RTOS 設定を FreeRTOS に戻して再生成し、
+ *   削除した src/freertos_hooks.c / src/User_FreeRTOSConfig.h /
+ *   src/blinky_thread_entry.c と各 *_thread_entry.c のラッパを復元する必要がある
+ *   （手順は doc/migration/mtk3-migration-guide.md 10.3 / 10.4）。
  * ------------------------------------------------------------------------- */
 #define MIMAMORI_USE_MTKERNEL_BOOT  (1)
 
