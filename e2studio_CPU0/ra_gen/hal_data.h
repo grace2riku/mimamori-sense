@@ -8,11 +8,58 @@
 #include "rm_comms_api.h"
 #include "r_gpt.h"
 #include "r_timer_api.h"
+#include "r_dtc.h"
+#include "r_transfer_api.h"
+#include "r_i2s_api.h"
+#include "r_ssi.h"
 #include "r_iic_master.h"
 #include "r_i2c_master_api.h"
 #include "r_sci_b_uart.h"
 #include "r_uart_api.h"
 FSP_HEADER
+/* I2C Communication Device */
+extern const rm_comms_instance_t g_comms_i2c_codec;
+extern rm_comms_i2c_instance_ctrl_t g_comms_i2c_codec_ctrl;
+extern const rm_comms_cfg_t g_comms_i2c_codec_cfg;
+#ifndef audio_codec_i2c_callback
+void audio_codec_i2c_callback(rm_comms_callback_args_t *p_args);
+#endif
+/** Timer on GPT Instance. */
+extern const timer_instance_t g_timer_audio_clk;
+
+/** Access the GPT instance using these structures when calling API functions directly (::p_api is not used). */
+extern gpt_instance_ctrl_t g_timer_audio_clk_ctrl;
+extern const timer_cfg_t g_timer_audio_clk_cfg;
+
+#ifndef NULL
+void NULL(timer_callback_args_t *p_args);
+#endif
+/** Timer on GPT Instance. */
+extern const timer_instance_t g_timer_audio_mclk;
+
+/** Access the GPT instance using these structures when calling API functions directly (::p_api is not used). */
+extern gpt_instance_ctrl_t g_timer_audio_mclk_ctrl;
+extern const timer_cfg_t g_timer_audio_mclk_cfg;
+
+#ifndef NULL
+void NULL(timer_callback_args_t *p_args);
+#endif
+/* Transfer on DTC Instance. */
+extern const transfer_instance_t g_transfer_i2s_tx;
+
+/** Access the DTC instance using these structures when calling API functions directly (::p_api is not used). */
+extern dtc_instance_ctrl_t g_transfer_i2s_tx_ctrl;
+extern const transfer_cfg_t g_transfer_i2s_tx_cfg;
+/** SSI Instance. */
+extern const i2s_instance_t g_i2s_audio;
+
+/** Access the SSI instance using these structures when calling API functions directly (::p_api is not used). */
+extern ssi_instance_ctrl_t g_i2s_audio_ctrl;
+extern const i2s_cfg_t g_i2s_audio_cfg;
+
+#ifndef audio_i2s_callback
+void audio_i2s_callback(i2s_callback_args_t *p_args);
+#endif
 /* I2C Communication Device */
 extern const rm_comms_instance_t g_comms_i2c_device0;
 extern rm_comms_i2c_instance_ctrl_t g_comms_i2c_device0_ctrl;

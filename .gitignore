@@ -83,3 +83,12 @@ scripts/deploy_fall_detection_output/
 
 # FSP setup guide generator
 doc/fsp-setup-guide/_gen.py
+
+# ベンダ配布ドキュメント（EK-RA8P1 の回路図・ユーザーズマニュアル等）
+# ルネサスのサイトから再取得できるため、リポジトリには含めない（PDF 1本で 6〜10MB あり履歴が肥大化する）。
+# 手順書からは出典名・リビジョン・ページ番号で参照しているので、下記を同名で配置すれば追跡できる。
+#   - ek-ra8p1-v1-schematic.pdf            EK-RA8P1 v1 回路図（デザインパッケージに同梱）
+#   - r20ut5309jg0104-ek-ra8p1-v1-um.pdf   EK-RA8P1 v1 ユーザーズマニュアル R20UT5309JG0104 Rev.1.04
+# 参照元: doc/fsp-setup-guide/issue-45-audio-output-modules.md（12. 参照情報）
+# 入手先: https://www.renesas.com/en/products/ek-ra8p1
+doc/reference/

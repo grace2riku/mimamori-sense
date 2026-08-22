@@ -837,6 +837,8 @@
       <configSetting altId="glcdc.mode.custom.free" configurationId="glcdc.mode"/>
       <configSetting altId="gpt12.gtioc12a.p501" configurationId="gpt12.gtioc12a"/>
       <configSetting altId="gpt12.mode.gtiocaorgtiocb.free" configurationId="gpt12.mode"/>
+      <configSetting altId="gpt2.gtioc2a.pd06" configurationId="gpt2.gtioc2a"/>
+      <configSetting altId="gpt2.mode.gtiocaorgtiocb.free" configurationId="gpt2.mode"/>
       <configSetting altId="i3c0.i3c_scl0.p400" configurationId="i3c0.i3c_scl0"/>
       <configSetting altId="i3c0.i3c_sda0.p401" configurationId="i3c0.i3c_sda0"/>
       <configSetting altId="i3c0.mode.enabled.free" configurationId="i3c0.mode"/>
@@ -1333,6 +1335,8 @@
       <configSetting altId="pd03.sci8.rxd8" configurationId="pd03"/>
       <configSetting altId="pd03.gpio_speed.gpio_speed_h" configurationId="pd03.gpio_drivecapacity"/>
       <configSetting altId="pd03.gpio_mode.gpio_mode_peripheral" configurationId="pd03.gpio_mode"/>
+      <configSetting altId="pd06.gpt2.gtioc2a" configurationId="pd06"/>
+      <configSetting altId="pd06.gpio_mode.gpio_mode_peripheral" configurationId="pd06.gpio_mode"/>
       <configSetting altId="pd07.usbhs.usbhs_vbusen" configurationId="pd07"/>
       <configSetting altId="pd07.gpio_speed.gpio_speed_m" configurationId="pd07.gpio_drivecapacity"/>
       <configSetting altId="pd07.gpio_mode.gpio_mode_peripheral" configurationId="pd07.gpio_mode"/>
