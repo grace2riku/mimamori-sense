@@ -291,6 +291,7 @@
             <slot name="PD03.CPU0" secure="true"/>
             <slot name="PD04.CPU0" secure="true"/>
             <slot name="PD05.CPU0" secure="true"/>
+            <slot name="PD06.CPU0" secure="true"/>
             <slot name="PD07.CPU0" secure="true"/>
         </peripheral>
         <peripheral name="IIC1.CPU0" group="IIC" security="s"/>
@@ -299,6 +300,9 @@
         <peripheral name="ICU_EXT_IRQ.CPU0">
             <slot name="ICU_EXT_IRQ19.CPU0" secure="true"/>
         </peripheral>
+        <peripheral name="SSIE0.CPU0" group="SSIE" security="s"/>
+        <peripheral name="GPT2.CPU0" group="GPT" security="s"/>
+        <peripheral name="GPT1.CPU0" group="GPT" security="s"/>
         <peripheral name="ICU.CPU0">
             <slot name="IRQ0.CPU0" secure="true"/>
             <slot name="IRQ1.CPU0" secure="true"/>
@@ -320,6 +324,8 @@
             <slot name="IRQ17.CPU0" secure="true"/>
             <slot name="IRQ18.CPU0" secure="true"/>
             <slot name="IRQ19.CPU0" secure="true"/>
+            <slot name="IRQ20.CPU0" secure="true"/>
+            <slot name="IRQ21.CPU0" secure="true"/>
         </peripheral>
     </partition>
     <zones>
@@ -520,11 +526,15 @@
             <assign group="PORT" peripheral="PORTD.PD03"/>
             <assign group="PORT" peripheral="PORTD.PD04"/>
             <assign group="PORT" peripheral="PORTD.PD05"/>
+            <assign group="PORT" peripheral="PORTD.PD06"/>
             <assign group="PORT" peripheral="PORTD.PD07"/>
             <assign group="IIC" peripheral="IIC1"/>
             <assign group="GPT" peripheral="GPT12"/>
             <assign peripheral="GLCDC"/>
             <assign peripheral="ICU_EXT_IRQ.ICU_EXT_IRQ19"/>
+            <assign group="SSIE" peripheral="SSIE0"/>
+            <assign group="GPT" peripheral="GPT2"/>
+            <assign group="GPT" peripheral="GPT1"/>
             <assign peripheral="ICU.IRQ0"/>
             <assign peripheral="ICU.IRQ1"/>
             <assign peripheral="ICU.IRQ2"/>
@@ -545,6 +555,8 @@
             <assign peripheral="ICU.IRQ17"/>
             <assign peripheral="ICU.IRQ18"/>
             <assign peripheral="ICU.IRQ19"/>
+            <assign peripheral="ICU.IRQ20"/>
+            <assign peripheral="ICU.IRQ21"/>
         </zone>
     </zones>
 </azone>

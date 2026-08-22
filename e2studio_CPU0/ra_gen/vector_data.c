@@ -24,6 +24,8 @@
             [17] = mipi_csi_pm_isr, /* MIPICSI PM (Power Management interrupt) */
             [18] = mipi_csi_gst_isr, /* MIPICSI GST (Generic Short Packet interrupt) */
             [19] = rm_ethosu_isr, /* NPU IRQ (NPU IRQ) */
+            [20] = ssi_txi_isr, /* SSI0 TXI (Transmit data empty) */
+            [21] = ssi_int_isr, /* SSI0 INT (Error interrupt) */
         };
         #if BSP_FEATURE_ICU_HAS_IELSR
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_NUM_ENTRIES] =
@@ -48,6 +50,8 @@
             [17] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_PM,GROUP1), /* MIPICSI PM (Power Management interrupt) */
             [18] = BSP_PRV_VECT_ENUM(EVENT_MIPICSI_GST,GROUP2), /* MIPICSI GST (Generic Short Packet interrupt) */
             [19] = BSP_PRV_VECT_ENUM(EVENT_NPU_IRQ,GROUP3), /* NPU IRQ (NPU IRQ) */
+            [20] = BSP_PRV_VECT_ENUM(EVENT_SSI0_TXI,GROUP4), /* SSI0 TXI (Transmit data empty) */
+            [21] = BSP_PRV_VECT_ENUM(EVENT_SSI0_INT,GROUP5), /* SSI0 INT (Error interrupt) */
         };
         #endif
         #endif

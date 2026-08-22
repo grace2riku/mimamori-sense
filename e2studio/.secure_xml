@@ -189,6 +189,7 @@
       <configSetting altId="glcdc.lcd_tcon2.p807" configurationId="glcdc.lcd_tcon2" peripheral="GLCDC"/>
       <configSetting altId="glcdc.lcd_tcon3.p513" configurationId="glcdc.lcd_tcon3" peripheral="GLCDC"/>
       <configSetting altId="gpt12.gtioc12a.p501" configurationId="gpt12.gtioc12a" peripheral="GPT12"/>
+      <configSetting altId="gpt2.gtioc2a.pd06" configurationId="gpt2.gtioc2a" peripheral="GPT2"/>
       <configSetting altId="i3c0.i3c_scl0.p400" configurationId="i3c0.i3c_scl0" peripheral="I3C0"/>
       <configSetting altId="i3c0.i3c_sda0.p401" configurationId="i3c0.i3c_sda0" peripheral="I3C0"/>
       <configSetting altId="iic1.scl1.p512" configurationId="iic1.scl1" peripheral="IIC1"/>
@@ -541,6 +542,7 @@
       <configSetting altId="pd02.gpio_mode.gpio_mode_peripheral" configurationId="pd02.gpio_mode"/>
       <configSetting altId="pd03.gpio_speed.gpio_speed_h" configurationId="pd03.gpio_drivecapacity"/>
       <configSetting altId="pd03.gpio_mode.gpio_mode_peripheral" configurationId="pd03.gpio_mode"/>
+      <configSetting altId="pd06.gpio_mode.gpio_mode_peripheral" configurationId="pd06.gpio_mode"/>
       <configSetting altId="pd07.gpio_speed.gpio_speed_m" configurationId="pd07.gpio_drivecapacity"/>
       <configSetting altId="pd07.gpio_mode.gpio_mode_peripheral" configurationId="pd07.gpio_mode"/>
       <configSetting altId="pdm2.pdmclk2.p812" configurationId="pdm2.pdmclk2" peripheral="PDM2"/>

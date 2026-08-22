@@ -122,7 +122,7 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 0) /* CAC */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 1) /* CRC */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 7) /* SSIE1 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 8) /* SSIE0 */ | \
+            (((1 > 0) ? 0U : 1U) << 8) /* SSIE0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 11) /* SDHI1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 12) /* SDHI0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 13) /* DOC */ | \
@@ -169,8 +169,8 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 21) /* GPT10 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 27) /* GPT4 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 28) /* GPT3 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 29) /* GPT2 */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 30) /* GPT1 */ | \
+            (((1 > 0) ? 0U : 1U) << 29) /* GPT2 */ | \
+            (((1 > 0) ? 0U : 1U) << 30) /* GPT1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 31) /* GPT0 */)
 #endif
 #ifndef BSP_TZ_CFG_MSSAR
@@ -345,10 +345,10 @@
 #endif
 
 /* Set DTCSTSAR if the Secure program uses the DTC. */
-#if RA_NOT_DEFINED == RA_NOT_DEFINED
-#define BSP_TZ_CFG_DTC_USED (0U)
+#if 1 == RA_NOT_DEFINED
+ #define BSP_TZ_CFG_DTC_USED (0U)
 #else
- #define BSP_TZ_CFG_DTC_USED (1U)
+#define BSP_TZ_CFG_DTC_USED (1U)
 #endif
 
 /* Security attribution for IPC */
