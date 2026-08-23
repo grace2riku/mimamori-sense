@@ -50,6 +50,10 @@
 #include "cmd_utils.h"
 #include "ntlibc.h"
 #include "ov5640.h"
+/* Issue #46: IIC1 is now shared by the touch panel AND the DA7212 codec, so
+ * the camera diagnostic commands below must hand the channel over explicitly
+ * instead of just opening their own master on it. */
+#include "i2c_bus0.h"
 #include "ov5640_cfg.h"
 #include "camera_thread_api.h"
 
@@ -834,13 +838,18 @@ static void mipi_cmd_diag(void)
      * we temporarily re-open it, read registers, then close it again to
      * avoid the IRQ context conflict with g_i2c_master0 (touch panel).
      *
-     * While the camera I2C is open for diag, the touch panel's I2C
-     * callbacks will be disrupted. This is acceptable for a diagnostic
-     * command which is not performance-critical.
+     * Issue #46: the previous note here said the touch panel's callbacks are
+     * only disrupted "while the camera I2C is open" and that this is
+     * acceptable. That was wrong - R_IIC_MASTER_Close() calls R_BSP_IrqDisable()
+     * and does NOT restore the previous owner's ISR context, so IIC1's
+     * interrupts stay DISABLED after this command and both the touch panel and
+     * the DA7212 codec time out until reboot. Hand the channel over properly.
      */
     bool diag_i2c_opened = false;
     if (0 == g_i2c_master_camera_ctrl.open)
     {
+        (void)i2c_bus0_suspend();
+
         fsp_err_t i2c_err = R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
         if (FSP_SUCCESS == i2c_err)
         {
@@ -848,6 +857,7 @@ static void mipi_cmd_diag(void)
         }
         else
         {
+            (void)i2c_bus0_resume();
             print_to_console("  WARNING: Could not open camera I2C for register reads.\r\n");
         }
     }
@@ -1625,6 +1635,7 @@ static void mipi_cmd_diag(void)
     if (diag_i2c_opened)
     {
         R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+        (void)i2c_bus0_resume();        /* Issue #46: restores IIC1's ISR context */
     }
 }
 #endif /* MIMAMORI_VERBOSE_DIAG (Issue #183: mipi_cmd_diag) */
@@ -1880,9 +1891,12 @@ static void mipi_cmd_sensor(int argc, char **argv)
          */
         bool id_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
+            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). */
+            (void)i2c_bus0_suspend();
             if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
                 id_i2c_opened = true;
             } else {
+                (void)i2c_bus0_resume();
                 print_to_console("  ERROR: Could not open camera I2C.\r\n");
                 return;
             }
@@ -1904,6 +1918,7 @@ static void mipi_cmd_sensor(int argc, char **argv)
 
         if (id_i2c_opened) {
             R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+            (void)i2c_bus0_resume();
         }
         return;
     }
@@ -1924,9 +1939,12 @@ static void mipi_cmd_sensor(int argc, char **argv)
          */
         bool reg_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
+            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). */
+            (void)i2c_bus0_suspend();
             if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
                 reg_i2c_opened = true;
             } else {
+                (void)i2c_bus0_resume();
                 print_to_console("  ERROR: Could not open camera I2C.\r\n");
                 return;
             }
@@ -1957,6 +1975,7 @@ static void mipi_cmd_sensor(int argc, char **argv)
 
         if (reg_i2c_opened) {
             R_IIC_MASTER_Close(&g_i2c_master_camera_ctrl);
+            (void)i2c_bus0_resume();
         }
         return;
     }

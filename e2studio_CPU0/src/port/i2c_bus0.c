@@ -227,6 +227,87 @@ bool i2c_bus0_is_ready(void)
 }
 
 /**
+ * Hand IIC1 over to a different i2c_master instance (the camera's).
+ */
+fsp_err_t i2c_bus0_suspend(void)
+{
+    fsp_err_t err;
+
+    if (!s_bus0_open)
+    {
+        /* Nothing opened yet (boot-time camera init runs before this bus is
+         * opened, which is why greenpak/board-switch need no pairing). */
+        return FSP_SUCCESS;
+    }
+
+    /* Held until i2c_bus0_resume(): no touch or codec transfer may start while
+     * the channel belongs to somebody else. */
+    err = i2c_bus0_lock();
+    if (FSP_SUCCESS != err)
+    {
+        return err;
+    }
+
+    {
+        i2c_master_instance_t * p_driver_instance =
+            (i2c_master_instance_t *)g_comms_i2c_bus0_extended_cfg.p_driver_instance;
+
+        err = p_driver_instance->p_api->close(p_driver_instance->p_ctrl);
+        if (FSP_SUCCESS != err)
+        {
+            (void)i2c_bus0_unlock();
+            return err;
+        }
+    }
+
+    s_bus0_open = false;
+
+    return FSP_SUCCESS;
+}
+
+/**
+ * Take IIC1 back after i2c_bus0_suspend().
+ */
+fsp_err_t i2c_bus0_resume(void)
+{
+    fsp_err_t err;
+
+    if (s_bus0_open)
+    {
+        return FSP_SUCCESS;             /* suspend never happened */
+    }
+
+    {
+        i2c_master_instance_t * p_driver_instance =
+            (i2c_master_instance_t *)g_comms_i2c_bus0_extended_cfg.p_driver_instance;
+
+        err = p_driver_instance->p_api->open(p_driver_instance->p_ctrl,
+                                             p_driver_instance->p_cfg);
+        if (FSP_SUCCESS == err)
+        {
+            s_bus0_open = true;
+        }
+    }
+
+    /*
+     * Forget which device the bus was last programmed for.
+     *
+     * The re-open above reset the hardware slave address and the lower level
+     * callback to the cfg defaults, but rm_comms_i2c skips reprogramming them
+     * when the requesting device still matches its cached p_current_ctrl
+     * (rm_comms_i2c_driver_ra.c rm_comms_i2c_bus_reconfigure). Without this
+     * the first transfer after a resume would run against the wrong slave
+     * address. g_comms_i2c_bus0_extended_cfg is non-const (ra_gen/common_data.c),
+     * so this is a runtime assignment, not an edit of generated code.
+     */
+    g_comms_i2c_bus0_extended_cfg.p_current_ctrl = NULL;
+
+    (void)i2c_bus0_unlock();
+
+    return err;
+}
+
+/**
  * Abort an in-flight transfer on the shared IIC1 bus.
  */
 fsp_err_t i2c_bus0_abort_transfer(void)

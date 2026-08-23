@@ -139,6 +139,45 @@ bool i2c_bus0_is_ready(void);
 fsp_err_t i2c_bus0_abort_transfer(void);
 
 /**
+ * Hand IIC1 over to a DIFFERENT i2c_master instance (the camera's).
+ *
+ * @details Required by anything that opens `g_i2c_master_camera_ctrl` on IIC1
+ *          after this bus has been opened - the camera diagnostic shell
+ *          commands do exactly that.
+ *
+ *          R_IIC_MASTER_Open() re-points the channel's ISR context at the new
+ *          control block with R_BSP_IrqCfgEnable() (r_iic_master.c:783-787),
+ *          and R_IIC_MASTER_Close() only calls R_BSP_IrqDisable() - it does
+ *          NOT restore the previous owner. So a camera open/close cycle leaves
+ *          IIC1's interrupts DISABLED, and every later touch and DA7212
+ *          transfer times out until reboot. This is the Issue #93 failure
+ *          again, now with the codec as a second victim.
+ *
+ *          suspend() takes the bus lock (held until resume()) and closes
+ *          g_i2c_master0; resume() re-opens it and releases the lock.
+ *
+ * @warning Must be paired. If the caller's own open fails it still has to call
+ *          i2c_bus0_resume(), otherwise the bus stays locked and closed.
+ *
+ * @retval FSP_SUCCESS  Bus suspended (or it was never opened - nothing to do).
+ * @return              Error from i2c_bus0_lock() or the close otherwise.
+ */
+fsp_err_t i2c_bus0_suspend(void);
+
+/**
+ * Take IIC1 back after i2c_bus0_suspend(). See that function.
+ *
+ * @details Re-opens g_i2c_master0 (restoring the ISR context and re-enabling
+ *          the channel interrupts) and releases the bus lock. Also clears the
+ *          rm_comms_i2c cached device so the next transfer re-programs the
+ *          slave address and callback.
+ *
+ * @retval FSP_SUCCESS  Bus is usable again (or was never suspended).
+ * @return              Error from the re-open otherwise.
+ */
+fsp_err_t i2c_bus0_resume(void);
+
+/**
  * Acquire exclusive use of the IIC1 shared bus.
  *
  * Must wrap the whole transfer, i.e. from the `RM_COMMS_I2C_*` submit call
