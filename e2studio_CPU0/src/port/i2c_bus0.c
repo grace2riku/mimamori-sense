@@ -34,6 +34,19 @@ static ID s_bus0_mtxid = 0;
  *  held; read lock-free by i2c_bus0_is_ready() (single word, no tearing). */
 static volatile bool s_bus0_open = false;
 
+/**
+ * true ONLY while i2c_bus0_suspend() actually closed the bus and is holding
+ * the lock on behalf of the caller.
+ *
+ * i2c_bus0_suspend() has a no-op path (the bus was never opened, e.g. a camera
+ * diagnostic issued from the shell before touch/audio got there) and can also
+ * fail. In both cases it returns WITHOUT taking the mutex and WITHOUT closing
+ * anything, so the paired resume must not open the bus - doing so would
+ * bypass the camera_thread_i2c_done() ordering that i2c_bus0_open_once()
+ * enforces - and must not unlock a mutex this task never acquired.
+ */
+static volatile bool s_bus0_suspended = false;
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/
@@ -260,7 +273,8 @@ fsp_err_t i2c_bus0_suspend(void)
         }
     }
 
-    s_bus0_open = false;
+    s_bus0_open      = false;
+    s_bus0_suspended = true;
 
     return FSP_SUCCESS;
 }
@@ -272,9 +286,14 @@ fsp_err_t i2c_bus0_resume(void)
 {
     fsp_err_t err;
 
-    if (s_bus0_open)
+    if (!s_bus0_suspended)
     {
-        return FSP_SUCCESS;             /* suspend never happened */
+        /* Nothing to undo: suspend() either took the no-op path (the bus had
+         * never been opened) or failed outright. It holds no lock and closed
+         * nothing, so opening the bus here would both bypass the
+         * camera_thread_i2c_done() ordering and unlock a mutex this task never
+         * acquired. */
+        return FSP_SUCCESS;
     }
 
     {
@@ -301,6 +320,10 @@ fsp_err_t i2c_bus0_resume(void)
      * so this is a runtime assignment, not an edit of generated code.
      */
     g_comms_i2c_bus0_extended_cfg.p_current_ctrl = NULL;
+
+    /* Cleared even if the re-open failed, so the lock is always released and a
+     * later i2c_bus0_open_once() can retry the open. */
+    s_bus0_suspended = false;
 
     (void)i2c_bus0_unlock();
 

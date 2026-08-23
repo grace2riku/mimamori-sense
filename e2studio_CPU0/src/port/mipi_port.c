@@ -848,17 +848,26 @@ static void mipi_cmd_diag(void)
     bool diag_i2c_opened = false;
     if (0 == g_i2c_master_camera_ctrl.open)
     {
-        (void)i2c_bus0_suspend();
-
-        fsp_err_t i2c_err = R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
-        if (FSP_SUCCESS == i2c_err)
+        /* If the hand-over fails the shared master is STILL open, so opening
+         * the camera master anyway would steal its IIC1 IRQ context with no
+         * way back (resume() would find nothing to undo). Skip instead. */
+        fsp_err_t bus_err = i2c_bus0_suspend();
+        if (FSP_SUCCESS != bus_err)
         {
-            diag_i2c_opened = true;
+            print_to_console("  WARNING: Could not take IIC1 from the shared bus; skipping register reads.\r\n");
         }
         else
         {
-            (void)i2c_bus0_resume();
-            print_to_console("  WARNING: Could not open camera I2C for register reads.\r\n");
+            fsp_err_t i2c_err = R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg);
+            if (FSP_SUCCESS == i2c_err)
+            {
+                diag_i2c_opened = true;
+            }
+            else
+            {
+                (void)i2c_bus0_resume();
+                print_to_console("  WARNING: Could not open camera I2C for register reads.\r\n");
+            }
         }
     }
 
@@ -1891,8 +1900,13 @@ static void mipi_cmd_sensor(int argc, char **argv)
          */
         bool id_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
-            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). */
-            (void)i2c_bus0_suspend();
+            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). A failed
+             * hand-over leaves the shared master open, so opening ours anyway
+             * would steal its IRQ context irrecoverably. */
+            if (FSP_SUCCESS != i2c_bus0_suspend()) {
+                print_to_console("  ERROR: Could not take IIC1 from the shared bus.\r\n");
+                return;
+            }
             if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
                 id_i2c_opened = true;
             } else {
@@ -1939,8 +1953,13 @@ static void mipi_cmd_sensor(int argc, char **argv)
          */
         bool reg_i2c_opened = false;
         if (0 == g_i2c_master_camera_ctrl.open) {
-            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). */
-            (void)i2c_bus0_suspend();
+            /* Issue #46: hand IIC1 over - see i2c_bus0_suspend(). A failed
+             * hand-over leaves the shared master open, so opening ours anyway
+             * would steal its IRQ context irrecoverably. */
+            if (FSP_SUCCESS != i2c_bus0_suspend()) {
+                print_to_console("  ERROR: Could not take IIC1 from the shared bus.\r\n");
+                return;
+            }
             if (FSP_SUCCESS == R_IIC_MASTER_Open(&g_i2c_master_camera_ctrl, &g_i2c_master_camera_cfg)) {
                 reg_i2c_opened = true;
             } else {
