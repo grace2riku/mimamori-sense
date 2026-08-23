@@ -568,22 +568,35 @@ void lv_port_indev_init(void)
      * NOT_INITIALIZED so `touch status` reports it and the LVGL side still
      * comes up.
      */
-    err = i2c_bus0_open_once();
+    /*
+     * One call, one lock: the shared master and this device are opened
+     * together. Splitting them would let a camera diagnostic close the master
+     * in between and make RM_COMMS_I2C_Open() fail with
+     * FSP_ERR_COMMS_BUS_NOT_OPEN (see i2c_bus0_open_device).
+     *
+     * Not an assert: assert() reaches newlib's abort() in this build (NDEBUG
+     * is not defined) and would hang lvgl_task forever, taking the whole UI
+     * with it, while the shell keeps answering. Losing the touch panel is bad;
+     * losing the display too is worse. Leave s_touch_status at
+     * NOT_INITIALIZED so `touch status` reports it and LVGL still comes up.
+     */
+    err = i2c_bus0_open_device(&g_comms_i2c_device0_ctrl, &g_comms_i2c_device0_cfg);
     if (FSP_SUCCESS != err)
     {
         char err_buf[TOUCH_PRINT_BUF_SIZE];
         snprintf(err_buf, sizeof(err_buf),
-                 "lv_port_indev: IIC1 shared bus unavailable (err=0x%lX); touch disabled.\r\n",
+                 "lv_port_indev: IIC1 shared bus/device open failed (err=0x%lX); touch disabled.\r\n",
                  (unsigned long)err);
         print_to_console(err_buf);
         return;
     }
 
     /*
-     * Step 4: Open the I2C communication device
+     * Step 4: the I2C communication device is already open.
      *
-     * RM_COMMS_I2C_Open() configures the I2C device with the slave address
-     * (0x38 for GT911/FT5X06) and communication parameters.
+     * RM_COMMS_I2C_Open() - which configures the slave address (0x38 for
+     * GT911/FT5X06) and the communication parameters - was performed by
+     * i2c_bus0_open_device() above, under the same lock as the master open.
      *
      * Note: The LCD reset (performed in glcdc_port_init) is shared with
      * the touch controller. The touch controller must be initialized
@@ -591,8 +604,6 @@ void lv_port_indev_init(void)
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:141-142
      */
-    err = RM_COMMS_I2C_Open(&g_comms_i2c_device0_ctrl, &g_comms_i2c_device0_cfg);
-    assert(FSP_SUCCESS == err);
 
     /*
      * Step 5: Open and enable external IRQ for touch events
@@ -603,11 +614,23 @@ void lv_port_indev_init(void)
      *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:144-148
      */
+    /* Same reasoning as the bus open above: an assert() here would abort()
+     * and hang lvgl_task, killing the display along with the touch panel. */
     err = R_ICU_ExternalIrqOpen(&g_external_irq0_ctrl, &g_external_irq0_cfg);
-    assert(FSP_SUCCESS == err);
+    if (FSP_SUCCESS == err)
+    {
+        err = R_ICU_ExternalIrqEnable(&g_external_irq0_ctrl);
+    }
 
-    err = R_ICU_ExternalIrqEnable(&g_external_irq0_ctrl);
-    assert(FSP_SUCCESS == err);
+    if (FSP_SUCCESS != err)
+    {
+        char err_buf[TOUCH_PRINT_BUF_SIZE];
+        snprintf(err_buf, sizeof(err_buf),
+                 "lv_port_indev: touch IRQ setup failed (err=0x%lX); touch disabled.\r\n",
+                 (unsigned long)err);
+        print_to_console(err_buf);
+        return;
+    }
 
     s_touch_status = TOUCH_STATUS_INITIALIZED;
 }

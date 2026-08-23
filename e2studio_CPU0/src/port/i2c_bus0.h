@@ -122,6 +122,30 @@ fsp_err_t i2c_bus0_sync_init(void);
 fsp_err_t i2c_bus0_open_once(void);
 
 /**
+ * Open the shared master (if needed) AND an rm_comms_i2c device, atomically.
+ *
+ * @details This is what every rm_comms_i2c user must call - NOT
+ *          i2c_bus0_open_once() followed by RM_COMMS_I2C_Open().
+ *
+ *          RM_COMMS_I2C_Open() refuses to open a device while the lower level
+ *          driver is closed: it calls rm_comms_i2c_bus_status_check() and
+ *          returns FSP_ERR_COMMS_BUS_NOT_OPEN. Doing the two opens as separate
+ *          locked steps leaves a window in which a camera diagnostic can take
+ *          the bus through i2c_bus0_suspend() and close the master, so the
+ *          device open fails for a reason the caller cannot do anything about.
+ *          Holding one lock across both closes that window.
+ *
+ * @param[in] p_ctrl  rm_comms_i2c device control block.
+ * @param[in] p_cfg   Matching device configuration.
+ *
+ * @retval FSP_SUCCESS  Bus and device are open.
+ * @return              Error from the bus acquisition, the master open or
+ *                      RM_COMMS_I2C_Open().
+ */
+fsp_err_t i2c_bus0_open_device(rm_comms_ctrl_t * const p_ctrl,
+                               rm_comms_cfg_t const * const p_cfg);
+
+/**
  * @retval true   `g_i2c_master0` has been opened by i2c_bus0_open_once().
  * @retval false  Not open yet.
  */

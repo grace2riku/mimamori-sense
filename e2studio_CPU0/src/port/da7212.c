@@ -280,14 +280,14 @@ static fsp_err_t da7212_comms_open(void)
         return err;
     }
 
-    /* The lower level IIC1 master must already be open. */
-    err = i2c_bus0_open_once();
-    if (FSP_SUCCESS != err)
-    {
-        return err;
-    }
-
-    err = RM_COMMS_I2C_Open(&g_comms_i2c_codec_ctrl, &g_comms_i2c_codec_cfg);
+    /*
+     * Open the shared IIC1 master (if it is not up yet) and this codec device
+     * in one locked step. Doing them as two separate calls would leave a
+     * window in which a camera diagnostic takes the bus through
+     * i2c_bus0_suspend() and closes the master, making RM_COMMS_I2C_Open()
+     * fail with FSP_ERR_COMMS_BUS_NOT_OPEN (see i2c_bus0_open_device).
+     */
+    err = i2c_bus0_open_device(&g_comms_i2c_codec_ctrl, &g_comms_i2c_codec_cfg);
     if (FSP_SUCCESS != err)
     {
         return err;

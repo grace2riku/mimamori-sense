@@ -140,14 +140,14 @@ fsp_err_t i2c_bus0_unlock(void)
 /**
  * Open the lower level I2C master (g_i2c_master0) exactly once.
  */
-fsp_err_t i2c_bus0_open_once(void)
+/**
+ * Wait for the camera hand-off, then take the bus lock (retrying on timeout).
+ *
+ * @note On FSP_SUCCESS the lock is HELD and the caller must release it.
+ */
+static fsp_err_t bus0_acquire_for_open(void)
 {
     fsp_err_t err;
-
-    if (s_bus0_open)
-    {
-        return FSP_SUCCESS;
-    }
 
     /*
      * Wait for the camera thread to release IIC1.
@@ -214,9 +214,20 @@ fsp_err_t i2c_bus0_open_once(void)
         }
     }
 
+    return FSP_SUCCESS;                 /* lock held - caller releases it */
+}
+
+/**
+ * Open g_i2c_master0 unless it is already open.
+ *
+ * @warning THE BUS LOCK MUST BE HELD. The caller releases it either way.
+ */
+static fsp_err_t bus0_open_master_locked(void)
+{
+    fsp_err_t err;
+
     if (s_bus0_open)                /* another task won the race */
     {
-        (void)i2c_bus0_unlock();
         return FSP_SUCCESS;
     }
 
@@ -234,7 +245,6 @@ fsp_err_t i2c_bus0_open_once(void)
                                              p_driver_instance->p_cfg);
         if (FSP_SUCCESS != err)
         {
-            (void)i2c_bus0_unlock();
             return err;
         }
     }
@@ -258,9 +268,67 @@ fsp_err_t i2c_bus0_open_once(void)
 
     s_bus0_open = true;
 
+    return FSP_SUCCESS;
+}
+
+/**
+ * Open the lower level I2C master (g_i2c_master0) exactly once.
+ */
+fsp_err_t i2c_bus0_open_once(void)
+{
+    fsp_err_t err;
+
+    if (s_bus0_open)
+    {
+        return FSP_SUCCESS;
+    }
+
+    err = bus0_acquire_for_open();
+    if (FSP_SUCCESS != err)
+    {
+        return err;
+    }
+
+    err = bus0_open_master_locked();
+
     (void)i2c_bus0_unlock();
 
-    return FSP_SUCCESS;
+    return err;
+}
+
+/**
+ * Open the shared master AND an rm_comms_i2c device under a single lock.
+ */
+fsp_err_t i2c_bus0_open_device(rm_comms_ctrl_t * const p_ctrl,
+                               rm_comms_cfg_t const * const p_cfg)
+{
+    fsp_err_t err;
+
+    /* No s_bus0_open fast path: the DEVICE still has to be opened even when
+     * the master is already up. */
+    err = bus0_acquire_for_open();
+    if (FSP_SUCCESS != err)
+    {
+        return err;
+    }
+
+    err = bus0_open_master_locked();
+    if (FSP_SUCCESS == err)
+    {
+        /*
+         * Same lock as the master open above - that is the whole point.
+         * RM_COMMS_I2C_Open() validates that the lower level driver is open
+         * (rm_comms_i2c.c calls rm_comms_i2c_bus_status_check() and returns
+         * FSP_ERR_COMMS_BUS_NOT_OPEN otherwise). If the lock were dropped in
+         * between, a camera diagnostic could slip in through
+         * i2c_bus0_suspend(), close the master, and make this open fail.
+         */
+        err = RM_COMMS_I2C_Open(p_ctrl, p_cfg);
+    }
+
+    (void)i2c_bus0_unlock();
+
+    return err;
 }
 
 /**
