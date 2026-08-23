@@ -395,10 +395,46 @@ fsp_err_t audio_init(void)
     fsp_err_t err;
     char      buf[AUDIO_PRINT_BUF_SIZE];
 
-    if ((AUDIO_STATE_READY == s_state) || (AUDIO_STATE_PLAYING == s_state))
+    /* ---------------------------------------------------------------------
+     * Claim the initialisation atomically.
+     *
+     * audio_task runs audio_init() at boot and the shell can run it again via
+     * `audio init`, so two TASKS can enter here. Testing only for READY /
+     * PLAYING is not enough: the state stays UNINITIALIZED for the whole
+     * roughly 0.4 s power-up sequence, so both callers would pass the check
+     * and interleave the DA7212 soft reset, LDO/PLL bring-up and register
+     * writes. The IIC1 bus mutex does NOT prevent that - it serialises single
+     * transfers, not this multi-step sequence - and one caller could return
+     * success and start playback while the other is still muting the codec.
+     *
+     * tk_dis_dsp() is enough to make the test-and-set atomic: the only other
+     * writer of s_state is the SSI ISR, and it only ever moves PLAYING ->
+     * READY (audio_i2s_callback), never into or out of INITIALIZING.
+     * ------------------------------------------------------------------ */
+    if (E_OK != tk_dis_dsp())
     {
+        return FSP_ERR_INTERNAL;
+    }
+
+    if ((AUDIO_STATE_READY == s_state) ||
+        (AUDIO_STATE_PLAYING == s_state) ||
+        (AUDIO_STATE_STOPPING == s_state))
+    {
+        (void)tk_ena_dsp();
         return FSP_SUCCESS;
     }
+
+    if (AUDIO_STATE_INITIALIZING == s_state)
+    {
+        (void)tk_ena_dsp();
+        return FSP_ERR_IN_USE;
+    }
+
+    s_state = AUDIO_STATE_INITIALIZING;
+    (void)tk_ena_dsp();
+
+    /* Every exit below is terminal: the success path sets READY and
+     * init_failed: sets ERROR, so INITIALIZING is never left behind. */
 
     /* Event flag before anything can call audio_i2s_callback(). */
     err = audio_sync_init();
@@ -739,6 +775,7 @@ static void audio_cmd_status(void)
 
     switch (s_state)
     {
+        case AUDIO_STATE_INITIALIZING: state_str = "INITIALIZING"; break;
         case AUDIO_STATE_READY:    state_str = "READY";    break;
         case AUDIO_STATE_PLAYING:  state_str = "PLAYING";  break;
         case AUDIO_STATE_STOPPING: state_str = "STOPPING"; break;

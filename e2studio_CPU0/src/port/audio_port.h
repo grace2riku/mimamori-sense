@@ -144,6 +144,7 @@ extern "C" {
 typedef enum e_audio_state
 {
     AUDIO_STATE_UNINITIALIZED = 0,  /**< audio_init() not run yet */
+    AUDIO_STATE_INITIALIZING,       /**< audio_init() in progress (see below) */
     AUDIO_STATE_READY,              /**< initialised, not playing */
     AUDIO_STATE_PLAYING,            /**< continuous playback running */
     AUDIO_STATE_STOPPING,           /**< stop requested, waiting for I2S_EVENT_IDLE */

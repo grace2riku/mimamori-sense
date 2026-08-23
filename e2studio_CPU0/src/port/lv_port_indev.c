@@ -638,7 +638,15 @@ static fsp_err_t i2c_wait(void)
 
     if (E_OK != ercd)
     {
-        /* E_TMOUT or other flag error: report as timeout */
+        /* E_TMOUT or other flag error: report as timeout.
+         *
+         * Issue #46: abort the transfer before the caller releases the bus
+         * lock and clear the event flag - a timeout does not stop the lower
+         * level transfer, and a late callback would otherwise satisfy the next
+         * wait as a false completion (see i2c_bus0_abort_transfer). */
+        (void)i2c_bus0_abort_transfer();
+        (void)tk_clr_flg(s_touch_i2c_flgid, 0);
+
         ret = FSP_ERR_TIMEOUT;
     }
     else if ((I2C_TRANSFER_COMPLETE & flgptn) == I2C_TRANSFER_COMPLETE)
@@ -836,11 +844,14 @@ static void touchpad_get_xy(lv_indev_data_t *data)
     if (FT5X06_NUM_POINTS < touch_count)
     {
         /* Garbage count (bus glitch, or the answer came from another slave).
-         * Clamping keeps the point loop below in bounds; aborting the whole UI
-         * task over one bad sample is not worth it - see the transfer error
-         * handling above. */
+         *
+         * Drop the whole sample - do NOT clamp and parse. If the count is
+         * corrupt the point records behind it are corrupt too, so parsing them
+         * would hand LVGL a PRESSED event at an arbitrary coordinate and turn
+         * a detected corruption into a phantom tap. The next poll retries. */
         s_touch_xfer_fail_count++;
-        touch_count = FT5X06_NUM_POINTS;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
     }
 
     /* Reset all points to released before parsing new data */

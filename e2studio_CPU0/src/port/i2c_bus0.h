@@ -117,6 +117,28 @@ fsp_err_t i2c_bus0_open_once(void);
 bool i2c_bus0_is_ready(void);
 
 /**
+ * Abort an in-flight transfer on the shared IIC1 bus.
+ *
+ * @details Call this when a completion wait TIMED OUT, BEFORE releasing the
+ *          bus lock. A timeout does not stop the lower level transfer: it can
+ *          still be running, and rm_comms_i2c rewrites the shared slave
+ *          address and lower level callback on the next device switch
+ *          (rm_comms_i2c_driver_ra.c rm_comms_i2c_bus_reconfigure). Without an
+ *          abort the stale transfer can complete under the next device's
+ *          configuration and its callback can satisfy that device's wait as a
+ *          false completion.
+ *
+ *          The caller must also clear its own completion event flag, because a
+ *          late callback that fires between the timeout and the abort leaves
+ *          the flag set and would satisfy the NEXT wait immediately.
+ *
+ * @retval FSP_SUCCESS       Transfer aborted (or none was in progress).
+ * @retval FSP_ERR_NOT_OPEN  The shared bus has not been opened yet.
+ * @return                   Error from i2c_master_api_t::abort otherwise.
+ */
+fsp_err_t i2c_bus0_abort_transfer(void);
+
+/**
  * Acquire exclusive use of the IIC1 shared bus.
  *
  * Must wrap the whole transfer, i.e. from the `RM_COMMS_I2C_*` submit call

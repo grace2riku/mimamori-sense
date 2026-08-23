@@ -225,3 +225,24 @@ bool i2c_bus0_is_ready(void)
 {
     return s_bus0_open;
 }
+
+/**
+ * Abort an in-flight transfer on the shared IIC1 bus.
+ */
+fsp_err_t i2c_bus0_abort_transfer(void)
+{
+    if (!s_bus0_open)
+    {
+        return FSP_ERR_NOT_OPEN;
+    }
+
+    i2c_master_instance_t * p_driver_instance =
+        (i2c_master_instance_t *)g_comms_i2c_bus0_extended_cfg.p_driver_instance;
+
+    if (NULL == p_driver_instance->p_api->abort)
+    {
+        return FSP_ERR_UNSUPPORTED;
+    }
+
+    return p_driver_instance->p_api->abort(p_driver_instance->p_ctrl);
+}

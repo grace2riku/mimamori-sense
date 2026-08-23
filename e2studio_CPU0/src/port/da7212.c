@@ -313,6 +313,15 @@ static fsp_err_t da7212_i2c_wait(void)
 
     if (E_OK != ercd)
     {
+        /* The transfer is NOT cancelled by this timeout - abort it before the
+         * caller releases the bus lock, otherwise it can still be running when
+         * the next device reconfigures the shared slave address and callback
+         * (see i2c_bus0_abort_transfer). Then clear the event flag: a callback
+         * that fired between the timeout and here left its bit set and would
+         * satisfy the NEXT wait immediately as a false completion. */
+        (void)i2c_bus0_abort_transfer();
+        (void)tk_clr_flg(s_codec_i2c_flgid, 0);
+
         return FSP_ERR_TIMEOUT;
     }
 
@@ -741,9 +750,16 @@ fsp_err_t da7212_init(void)
         goto init_failed;
     }
 
-    /* Volume before the amplifier is enabled. */
-    s_volume_code = da7212_volume_to_code(DA7212_VOL_DEFAULT_PERCENT);
-    s_volume_pct  = DA7212_VOL_DEFAULT_PERCENT;
+    /* Volume before the amplifier is enabled.
+     *
+     * Derive the code from the RETAINED s_volume_pct, do not reset it to the
+     * default: da7212_set_volume() called before the codec reaches READY
+     * deliberately stores the request so that this init applies it (see its
+     * FSP_ERR_NOT_OPEN path). Overwriting it here would silently discard a
+     * volume set from the shell while audio_task is still starting up.
+     * s_volume_pct is statically initialised to DA7212_VOL_DEFAULT_PERCENT,
+     * so a boot with no early request is unchanged. */
+    s_volume_code = da7212_volume_to_code(s_volume_pct);
 
     err = da7212_write_reg(DA7212_REG_LINE_GAIN,
                            (uint8_t)(s_volume_code & DA7212_LINE_AMP_GAIN_MASK));
