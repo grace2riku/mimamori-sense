@@ -64,6 +64,12 @@
  *  DTC still has at most one queued buffer, so 2 buffers + margin. */
 #define AUDIO_STOP_TIMEOUT_MS       ((AUDIO_BUFFER_MS * 2U) + 50U)
 
+/** Attempts (not retries) at unmuting the codec in audio_start(), and the gap
+ *  between them. One transient I2C hiccup must not abort playback, but a
+ *  persistent failure must not be reported as success either. */
+#define AUDIO_UNMUTE_ATTEMPTS       (3U)
+#define AUDIO_UNMUTE_RETRY_MS       (5)
+
 /** Default built-in test tone (Hz) */
 #define AUDIO_TEST_TONE_DEFAULT_HZ  (1000U)
 
@@ -356,12 +362,17 @@ void audio_i2s_callback(i2s_callback_args_t *p_args)
 
             s_stop_request = false;
 
-            /* Only take the state back to READY for an UNSOLICITED idle (the
-             * error path above). When audio_stop() requested the stop the
-             * state is AUDIO_STATE_STOPPING and audio_stop() itself sets
-             * READY after its wait returns - otherwise a task/ISR interleave
-             * could leave the state stuck at STOPPING. */
-            if (AUDIO_STATE_PLAYING == s_state)
+            /* The stop is now complete, so the device really is idle.
+             *
+             * PLAYING  : unsolicited idle that could not be restarted.
+             * STOPPING : audio_stop() is either still waiting (it sets READY
+             *            itself when the wait returns - harmless duplicate) or
+             *            it already TIMED OUT and deliberately left the state
+             *            at STOPPING. Clearing it here is what recovers the
+             *            device in that case; r_ssi_stop_sub() re-enables the
+             *            idle interrupt, so this callback is guaranteed to
+             *            run. */
+            if ((AUDIO_STATE_PLAYING == s_state) || (AUDIO_STATE_STOPPING == s_state))
             {
                 s_state = AUDIO_STATE_READY;
             }
@@ -581,7 +592,13 @@ fsp_err_t audio_start(audio_fill_cb_t p_fill, void *p_context)
 
     if (AUDIO_STATE_READY != s_state)
     {
-        if (AUDIO_STATE_PLAYING == s_state)
+        /* STOPPING and INITIALIZING are "busy", not "not opened": the device
+         * exists and will become usable shortly. STOPPING in particular means
+         * the SSI has not reached idle yet, and r_ssi_start() would reject the
+         * restart with FSP_ERR_IN_USE anyway (it requires SSISR.IIRQ == 1). */
+        if ((AUDIO_STATE_PLAYING == s_state) ||
+            (AUDIO_STATE_STOPPING == s_state) ||
+            (AUDIO_STATE_INITIALIZING == s_state))
         {
             return FSP_ERR_IN_USE;
         }
@@ -624,14 +641,37 @@ fsp_err_t audio_start(audio_fill_cb_t p_fill, void *p_context)
     /* Unmute only after the stream is running so the first samples are not a
      * step from silence. LINE_AMP_RAMP_EN / DAC_R_RAMP_EN make the unmute
      * ramp instead of click (DA7212 datasheet 13.14, p38). */
-    err = da7212_mute(false);
-    if (FSP_SUCCESS != err)
+    /*
+     * The unmute must NOT be best-effort.
+     *
+     * da7212_apply_mute() writes DAC_R_CTRL and LINE_CTRL in two SEPARATE I2C
+     * transactions, so a failure can leave the codec half-unmuted. Returning
+     * FSP_SUCCESS then leaves the stream in AUDIO_STATE_PLAYING and tells the
+     * shell "tone playing" while the speaker stays silent, with nothing
+     * retrying - exactly the "reports success but no sound" failure mode this
+     * driver already cost a long bring-up to diagnose.
+     *
+     * Retry a few times for a transient bus hiccup, then roll the stream back
+     * so the device is not left PLAYING while inaudible.
+     */
+    for (uint32_t attempt = 0; attempt < AUDIO_UNMUTE_ATTEMPTS; attempt++)
     {
-        s_last_error = err;
-        /* Keep playing: the stream is fine, only the codec unmute failed. */
+        err = da7212_mute(false);
+        if (FSP_SUCCESS == err)
+        {
+            return FSP_SUCCESS;
+        }
+
+        if ((attempt + 1U) < AUDIO_UNMUTE_ATTEMPTS)
+        {
+            tk_dly_tsk(AUDIO_UNMUTE_RETRY_MS);
+        }
     }
 
-    return FSP_SUCCESS;
+    s_last_error = err;
+    (void)audio_stop();
+
+    return err;
 }
 
 /**
@@ -679,9 +719,21 @@ fsp_err_t audio_stop(void)
             s_last_error = err;
         }
 
-        s_stop_request = false;
-        s_state        = AUDIO_STATE_READY;
-
+        /* Stay STOPPING - do NOT advertise READY here.
+         *
+         * R_SSI_Stop() only REQUESTS the stop; it completes later through
+         * I2S_EVENT_IDLE ("Stop is complete after an I2S_EVENT_IDLE
+         * interrupt", r_ssi.c R_SSI_Stop). Reporting READY would let a caller
+         * run audio_start() while the peripheral is still stopping, and
+         * r_ssi_start() rejects exactly that with FSP_ERR_IN_USE because it
+         * requires SSISR.IIRQ == 1 before setting TEN.
+         *
+         * This does not wedge the device: r_ssi_stop_sub() explicitly
+         * re-enables the idle interrupt (`ssicr |= 1 << SSI_PRV_SSICR_IIEN_BIT`),
+         * so the idle WILL arrive, and audio_i2s_callback() moves
+         * STOPPING -> READY when it does. Until then `audio status` honestly
+         * shows STOPPING. s_stop_request stays true so the ISR treats the
+         * late idle as a requested stop and does not auto-restart the stream. */
         return FSP_ERR_TIMEOUT;
     }
 
