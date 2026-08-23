@@ -65,7 +65,12 @@
  * (see lv_port_indev_init Step 3). */
 #include <tk/tkernel.h>
 
-#include "camera_thread_api.h"
+/* Issue #46: the IIC1 shared-bus open responsibility and the bus mutex now
+ * live in this module (see lv_port_indev_init Step 2 and touchpad_get_xy).
+ * The camera_thread_i2c_done() handshake that used to be performed directly
+ * here moved into i2c_bus0_open_once(), which is why camera_thread_api.h is
+ * no longer included by this file. */
+#include "i2c_bus0.h"
 
 /*
  * FSP-generated headers for I2C and External IRQ
@@ -302,6 +307,29 @@ static touch_status_t s_touch_status = TOUCH_STATUS_NOT_INITIALIZED;
 /** Touch event counter (incremented on each touch read) */
 static volatile uint32_t s_touch_read_count = 0;
 
+/** Issue #46 diagnostics: i2c_bus0_lock() failures in touchpad_get_xy(). */
+static volatile uint32_t  s_touch_lock_fail_count = 0;
+static volatile fsp_err_t s_touch_last_lock_err   = FSP_SUCCESS;
+
+/** Issue #46 diagnostics: I2C transfer failures that used to be assert(). */
+static volatile uint32_t  s_touch_xfer_fail_count = 0;
+static volatile fsp_err_t s_touch_last_xfer_err   = FSP_SUCCESS;
+
+/**
+ * Issue #46 diagnostics: raw bytes of the most recent FT5X06 register read.
+ *
+ * "Read count climbs but every point is RELEASED" has two very different
+ * causes and the parsed result cannot tell them apart: either the controller
+ * really reports no contact, or the transfer went to the WRONG SLAVE. The
+ * codec (0x1A) now shares this bus and rm_comms_i2c rewrites the slave address
+ * per device (rm_comms_i2c_driver_ra.c rm_comms_i2c_bus_reconfigure), so a
+ * missed switch would read DA7212 registers instead of the panel's - and
+ * DA7212 0x02 (STATUS1) is all-reserved, which parses as zero touch points.
+ * All-zero raw bytes therefore point at the address, not at the panel.
+ */
+static uint8_t s_touch_raw[sizeof(ft5x06_payload_t)];
+static bool    s_touch_raw_valid = false;
+
 /** Last touch x/y for diagnostics */
 static volatile int16_t s_last_touch_x = -1;
 static volatile int16_t s_last_touch_y = -1;
@@ -507,90 +535,33 @@ void lv_port_indev_init(void)
 #endif
 
     /*
-     * Step 2: Wait for camera thread to release IIC1 bus
+     * Step 2 / 2b / 3: Acquire the IIC1 shared bus.
      *
-     * CRITICAL: Both the camera (g_i2c_master_camera_ctrl) and the touch panel
-     * (g_i2c_master0_ctrl) use IIC channel 1. If both R_IIC_MASTER_Open() are
-     * called on the same channel with different control structures, the second
-     * open overwrites the IIC1 IRQ context via R_BSP_IrqCfgEnable(), causing
-     * the first caller's I2C completion callbacks to never fire.
+     * Issue #46: the three steps that used to live here (wait for the camera
+     * to release IIC1 -> open g_i2c_master0 -> NULL the rm_comms_i2c
+     * semaphore/mutex pointers to select callback mode) moved verbatim into
+     * i2c_bus0_open_once() (src/port/i2c_bus0.c), because the touch panel is
+     * no longer the only user of this bus: the DA7212 audio CODEC
+     * (g_comms_i2c_codec, slave 0x1A) sits on the same shared bus
+     * (ra_gen/hal_data.c:14). The order and the semantics are unchanged:
      *
-     * This was the root cause of Issue #93: the OV5640 MIPI configuration
-     * registers were not written correctly because i2c_camera_callback() was
-     * no longer receiving IIC1 interrupts after g_i2c_master0 was opened.
-     * Without proper MIPI register config, OV5640 data lanes never activated.
+     *   - camera_thread_i2c_done() is still waited on BEFORE the open, which
+     *     is what prevents the Issue #93 IIC1 IRQ-context conflict
+     *     (r_iic_master.c:784-787).
+     *   - the `#if BSP_CFG_RTOS` guarded NULL assignments are still performed
+     *     BEFORE RM_COMMS_I2C_Open() below.
+     *   - the open happens exactly once even if the audio task gets there
+     *     first.
      *
-     * Solution: Wait until the camera thread has completed all its I2C
-     * operations and closed g_i2c_master_camera_ctrl, releasing IIC1.
-     * Then it is safe to open g_i2c_master0 on IIC1 for touch panel use.
-     *
-     * Reference: Issue #93 root cause - IIC1 channel conflict
-     * Reference: e2studio_CPU0/ra/fsp/src/r_iic_master/r_iic_master.c:784-787
+     * What is NEW is that every touch transfer must now be wrapped in
+     * i2c_bus0_lock()/i2c_bus0_unlock() (see touchpad_get_xy), because
+     * rm_comms_i2c rewrites the shared slave address and lower level callback
+     * on every device switch (rm_comms_i2c_driver_ra.c:345-380) and the
+     * middleware's own bus mutex does not exist in this build
+     * (rm_comms_i2c.h:90-93 with BSP_CFG_RTOS == 0).
      */
-    while (!camera_thread_i2c_done())
-    {
-        tk_dly_tsk(10);     /* R-006: vTaskDelay(10) -> tk_dly_tsk(10) ms */
-    }
-
-    /*
-     * Step 2b: Open the I2C bus driver
-     *
-     * Access the underlying I2C master driver through the RM_COMMS_I2C
-     * configuration's extended configuration. The I2C master must be
-     * opened before the communication device can be used.
-     *
-     * Now safe to open because camera has released IIC1.
-     *
-     * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:115-119
-     */
-    rm_comms_i2c_bus_extended_cfg_t *p_extend =
-        (rm_comms_i2c_bus_extended_cfg_t *)g_comms_i2c_device0_cfg.p_extend;
-    i2c_master_instance_t *p_driver_instance =
-        (i2c_master_instance_t *)p_extend->p_driver_instance;
-
-    err = p_driver_instance->p_api->open(p_driver_instance->p_ctrl,
-                                          p_driver_instance->p_cfg);
+    err = i2c_bus0_open_once();
     assert(FSP_SUCCESS == err);
-
-    /*
-     * Step 3 (R-006): Switch the RM_COMMS_I2C bus to CALLBACK MODE.
-     *
-     * Former FreeRTOS implementation created a blocking semaphore and a
-     * recursive bus mutex here, and the rm_comms_i2c driver blocked with
-     * xSemaphoreTake until the transfer completed - impossible under boot
-     * method A (FreeRTOS scheduler not running).
-     *
-     * Instead, the semaphore/mutex pointers in the bus extended cfg are
-     * NULL-ed at runtime BEFORE RM_COMMS_I2C_Open():
-     *   - g_comms_i2c_bus0_extended_cfg (ra_gen/common_data.c:532) is a
-     *     NON-const structure, so this is a runtime assignment, not an edit
-     *     of generated code (it survives FSP regeneration).
-     *   - Both pointers NULL is officially supported: RM_COMMS_I2C_Open
-     *     asserts only "if semaphore is NULL, mutex must also be NULL"
-     *     (rm_comms_i2c.c:99-104), and every driver call guards each
-     *     FreeRTOS operation with a NULL check
-     *     (rm_comms_i2c_driver_ra.c:119-130/167-178/219-230/326-331/353-358).
-     *   - The driver then returns immediately after starting the transfer
-     *     and completion is delivered via comms_i2c_callback() (ISR), where
-     *     tk_set_flg signals i2c_wait() - the same callback-mode pattern as
-     *     the camera I2C (ov5640.c, R-005).
-     *   - Bus exclusion (the former recursive mutex) is not needed: the
-     *     touch panel is the ONLY rm_comms_i2c user, and IIC1 itself is
-     *     serialized against the camera by camera_thread_i2c_done() above.
-     *
-     * Issue #186 Step 2: both members only EXIST when BSP_CFG_RTOS != 0
-     * (rm_comms_i2c.h:90-93 wraps them in `#if BSP_CFG_RTOS`). Once the FSP
-     * RTOS setting is switched to "No RTOS" the struct no longer has them and
-     * this assignment would not compile, while at the same time every
-     * `#if BSP_CFG_RTOS` block in rm_comms_i2c_driver_ra.c disappears - i.e.
-     * the driver is then permanently in the very callback mode this code
-     * selects at runtime. Guard it so the file builds under both settings and
-     * the behaviour is identical either way.
-     */
-#if BSP_CFG_RTOS
-    p_extend->p_blocking_semaphore  = NULL;
-    p_extend->p_bus_recursive_mutex = NULL;
-#endif
 
     /*
      * Step 4: Open the I2C communication device
@@ -792,21 +763,84 @@ static void touchpad_get_xy(lv_indev_data_t *data)
     /*
      * Write TD_STATUS address, then read status + all five touch point registers.
      *
+     * Issue #46: the submit AND the completion wait are inside the IIC1 bus
+     * lock. Both are required to be atomic with respect to the other bus user
+     * (DA7212): rm_comms_i2c_bus_reconfigure() rewrites the shared
+     * p_current_ctrl / slave address / lower level callback whenever the
+     * requesting device differs from the previous one
+     * (ra/fsp/src/rm_comms_i2c/rm_comms_i2c_driver_ra.c:345-380), so a
+     * concurrent codec transfer between the submit and the completion would
+     * redirect this transfer's callback.
+     *
      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_indev.c:293-294
      */
+    err = i2c_bus0_lock();
+    if (FSP_SUCCESS != err)
+    {
+        /* Bus busy/unavailable (>= I2C_BUS0_LOCK_TIMEOUT_MS): report
+         * "released" for this cycle rather than corrupting a transfer that
+         * belongs to another device on the bus.
+         *
+         * Issue #46: this is the ONLY path out of touchpad_get_xy() that
+         * reports RELEASED without having talked to the controller, and it
+         * leaves s_touch_read_count untouched. Counting it separately is what
+         * distinguishes "the bus lock failed" from "the panel reported no
+         * touch" in touch status - the two look identical from the outside. */
+        s_touch_lock_fail_count++;
+        s_touch_last_lock_err = err;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    /*
+     * Issue #46: these two failures used to be assert(). NDEBUG is not defined
+     * in this build, so assert() reaches newlib's abort() and hangs WHATEVER
+     * TASK is running - here that is lvgl_task, i.e. one transient I2C hiccup
+     * freezes the whole UI while the shell keeps answering, which is a very
+     * confusing failure mode to debug.
+     *
+     * That risk is higher now than before this Issue: the DA7212 is a second
+     * user of this bus, so a touch transfer can now fail for reasons outside
+     * the touch driver. A dropped sample is not worth killing the UI for -
+     * count it, report "released" for this cycle and let the next poll retry.
+     */
     err = RM_COMMS_I2C_WriteRead(&g_comms_i2c_device0_ctrl, write_read_params);
-    assert(FSP_SUCCESS == err);
+    if (FSP_SUCCESS != err)
+    {
+        (void)i2c_bus0_unlock();
+        s_touch_xfer_fail_count++;
+        s_touch_last_xfer_err = err;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
 
     err = i2c_wait();
-    assert(FSP_SUCCESS == err);
+
+    (void)i2c_bus0_unlock();
+
+    if (FSP_SUCCESS != err)
+    {
+        s_touch_xfer_fail_count++;
+        s_touch_last_xfer_err = err;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
+    /* Snapshot the raw bytes before any parsing (see s_touch_raw). */
+    memcpy(s_touch_raw, &touch_payload, sizeof(s_touch_raw));
+    s_touch_raw_valid = true;
 
     /* Extract active touch count from lower nibble */
     touch_count = touch_payload.num_points_active & 0x0F;
 
     if (FT5X06_NUM_POINTS < touch_count)
     {
-        /* Invalid touch count - should not happen */
-        assert(0);
+        /* Garbage count (bus glitch, or the answer came from another slave).
+         * Clamping keeps the point loop below in bounds; aborting the whole UI
+         * task over one bad sample is not worth it - see the transfer error
+         * handling above. */
+        s_touch_xfer_fail_count++;
+        touch_count = FT5X06_NUM_POINTS;
     }
 
     /* Reset all points to released before parsing new data */
@@ -908,6 +942,20 @@ static void touch_cmd_status(void)
              (unsigned long)s_touch_read_count);
     print_to_console(buf);
 
+    /* Issue #46: if Read count stays put while this climbs, the I2C transfer
+     * is never being attempted because the shared IIC1 bus lock could not be
+     * taken (see touchpad_get_xy). Bus ready reflects i2c_bus0_open_once(). */
+    snprintf(buf, sizeof(buf), "  Lock fails   : %lu (last err=0x%lX), bus %s\r\n",
+             (unsigned long)s_touch_lock_fail_count,
+             (unsigned long)s_touch_last_lock_err,
+             i2c_bus0_is_ready() ? "open" : "NOT open");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Xfer fails   : %lu (last err=0x%lX)\r\n",
+             (unsigned long)s_touch_xfer_fail_count,
+             (unsigned long)s_touch_last_xfer_err);
+    print_to_console(buf);
+
     snprintf(buf, sizeof(buf), "  Last state   : %s\r\n",
              (s_last_touch_state == LV_INDEV_STATE_PRESSED) ? "PRESSED" : "RELEASED");
     print_to_console(buf);
@@ -988,6 +1036,18 @@ static void touch_cmd_read(void)
     snprintf(buf, sizeof(buf), "  Coord  : (%ld, %ld)\r\n",
              (long)data.point.x, (long)data.point.y);
     print_to_console(buf);
+
+    /* Raw register bytes as they came off the bus (see s_touch_raw). */
+    if (s_touch_raw_valid) {
+        print_to_console("  Raw    :");
+        for (uint32_t i = 0; i < sizeof(s_touch_raw); i++) {
+            snprintf(buf, sizeof(buf), " %02X", (unsigned)s_touch_raw[i]);
+            print_to_console(buf);
+        }
+        print_to_console("\r\n");
+    } else {
+        print_to_console("  Raw    : (no transfer completed)\r\n");
+    }
 
     /* Show all active points from the last read */
     for (uint8_t i = 0; i < FT5X06_NUM_POINTS; i++) {

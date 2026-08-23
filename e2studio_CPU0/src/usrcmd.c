@@ -66,6 +66,7 @@
 #include "port/dave2d_port.h"
 #include "port/mipi_port.h"
 #include "port/lv_port_indev.h"
+#include "port/audio_port.h"
 #include "ui/ui_main_screen.h"
 #include "ai_application/ai_cmd.h"
 #include "fall_detection_cmd.h"
@@ -137,6 +138,7 @@ static int usrcmd_mw(int argc, char **argv);
  */
 static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("ai",      "AI inference: ai model|config|preproc|status|time|detect|nms", usrcmd_ai),
+    NTSHELL_CMD("audio",   "Audio out: audio status|init|start|stop|tone|volume|mute|reg", usrcmd_audio),
     NTSHELL_CMD("camera",  "Camera: camera thread|phy|csi|sensor|status|start|stop|capture|info|fb|display|test", usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
     NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
