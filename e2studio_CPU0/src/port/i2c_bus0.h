@@ -80,6 +80,17 @@ extern "C" {
  *  owner is reported instead of hanging the caller forever. */
 #define I2C_BUS0_LOCK_TIMEOUT_MS    (1000)
 
+/**
+ * Lock attempts made by i2c_bus0_open_once() before it gives up.
+ *
+ * One-shot initialisation may have to wait behind a camera diagnostic that
+ * holds the bus through i2c_bus0_suspend(), so a single
+ * I2C_BUS0_LOCK_TIMEOUT_MS is not a meaningful deadline there. 30 attempts is
+ * ~30 s: far longer than any diagnostic, short enough that a real deadlock
+ * still surfaces as an error rather than hanging the caller forever.
+ */
+#define I2C_BUS0_OPEN_LOCK_ATTEMPTS (30U)
+
 /**********************************************************************************************************************
  Exported global functions
  *********************************************************************************************************************/

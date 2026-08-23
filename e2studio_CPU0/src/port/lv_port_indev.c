@@ -560,8 +560,24 @@ void lv_port_indev_init(void)
      * middleware's own bus mutex does not exist in this build
      * (rm_comms_i2c.h:90-93 with BSP_CFG_RTOS == 0).
      */
+    /*
+     * Not an assert: assert() reaches newlib's abort() in this build (NDEBUG
+     * is not defined) and would hang lvgl_task forever, taking the whole UI
+     * with it, while the shell keeps answering. Losing the touch panel is bad;
+     * losing the display too is worse. Leave s_touch_status at
+     * NOT_INITIALIZED so `touch status` reports it and the LVGL side still
+     * comes up.
+     */
     err = i2c_bus0_open_once();
-    assert(FSP_SUCCESS == err);
+    if (FSP_SUCCESS != err)
+    {
+        char err_buf[TOUCH_PRINT_BUF_SIZE];
+        snprintf(err_buf, sizeof(err_buf),
+                 "lv_port_indev: IIC1 shared bus unavailable (err=0x%lX); touch disabled.\r\n",
+                 (unsigned long)err);
+        print_to_console(err_buf);
+        return;
+    }
 
     /*
      * Step 4: Open the I2C communication device

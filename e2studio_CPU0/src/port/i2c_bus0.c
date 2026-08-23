@@ -185,10 +185,33 @@ fsp_err_t i2c_bus0_open_once(void)
         tk_dly_tsk(10);
     }
 
-    err = i2c_bus0_lock();
-    if (FSP_SUCCESS != err)
+    /*
+     * Retry the lock instead of failing on the first timeout.
+     *
+     * This is a one-shot INITIALISATION path and it may legitimately have to
+     * wait: i2c_bus0_suspend() now holds the lock for a whole camera
+     * diagnostic, which can easily outlast I2C_BUS0_LOCK_TIMEOUT_MS if one
+     * OV5640 access burns its own timeout. Treating that expected hold as
+     * fatal is what breaks the callers - lv_port_indev_init() would fail its
+     * open and audio_init() would go to AUDIO_STATE_ERROR, i.e. an early
+     * `camera diag` from the shell would permanently disable touch and audio.
+     *
+     * Bounded rather than unbounded so a genuine deadlock still surfaces as an
+     * error instead of hanging the caller forever. The camera hand-over above
+     * is the only long holder and is nowhere near this budget.
+     */
+    for (uint32_t attempt = 0; ; attempt++)
     {
-        return err;
+        err = i2c_bus0_lock();
+        if (FSP_SUCCESS == err)
+        {
+            break;
+        }
+
+        if ((FSP_ERR_TIMEOUT != err) || ((attempt + 1U) >= I2C_BUS0_OPEN_LOCK_ATTEMPTS))
+        {
+            return err;
+        }
     }
 
     if (s_bus0_open)                /* another task won the race */
