@@ -871,9 +871,28 @@ static void mipi_cmd_diag(void)
         }
     }
 
-    /* ---- OV5640 System State ---- */
-    print_to_console("[OV5640 System State]\r\n");
+    /*
+     * Whether the OV5640 sections below can actually talk to the sensor.
+     *
+     * Without this every ov5640_read_reg() returns the 0xFF error sentinel and
+     * the command would print fabricated register values, PLL dividers and
+     * frame timings as if they were real - far worse than omitting the
+     * section. Note this is NOT `diag_i2c_opened`: the camera master may have
+     * been open already, in which case we did not open it and must not close
+     * it, but the reads are still valid.
+     */
+    const bool cam_i2c_usable = (0 != g_i2c_master_camera_ctrl.open);
+
+    if (!cam_i2c_usable)
     {
+        print_to_console("[OV5640 Registers]\r\n");
+        print_to_console("  SKIPPED: camera I2C unavailable.\r\n\r\n");
+    }
+
+    /* ---- OV5640 System State ---- */
+    if (cam_i2c_usable)
+    {
+        print_to_console("[OV5640 System State]\r\n");
         uint8_t reg_3008 = ov5640_read_reg(0x3008);   /* System control */
         uint8_t reg_4202 = ov5640_read_reg(0x4202);   /* Stream control */
 
@@ -889,8 +908,9 @@ static void mipi_cmd_diag(void)
     }
 
     /* ---- OV5640 PLL Configuration ---- */
-    print_to_console("[OV5640 PLL Registers]\r\n");
+    if (cam_i2c_usable)
     {
+        print_to_console("[OV5640 PLL Registers]\r\n");
         uint8_t reg_3034 = ov5640_read_reg(0x3034);   /* PLL ctrl0: MIPI bit mode */
         uint8_t reg_3035 = ov5640_read_reg(0x3035);   /* PLL ctrl1: sys/MIPI div */
         uint8_t reg_3036 = ov5640_read_reg(0x3036);   /* PLL ctrl2: multiplier */
@@ -921,8 +941,9 @@ static void mipi_cmd_diag(void)
     }
 
     /* ---- OV5640 MIPI Configuration ---- */
-    print_to_console("[OV5640 MIPI Configuration]\r\n");
+    if (cam_i2c_usable)
     {
+        print_to_console("[OV5640 MIPI Configuration]\r\n");
         uint8_t reg_300e = ov5640_read_reg(0x300e);   /* MIPI control 00 */
         uint8_t reg_4800 = ov5640_read_reg(0x4800);   /* MIPI CTRL 00 */
         uint8_t reg_4814 = ov5640_read_reg(0x4814);   /* Virtual channel */
@@ -950,8 +971,9 @@ static void mipi_cmd_diag(void)
     }
 
     /* ---- OV5640 Frame Timing ---- */
-    print_to_console("[OV5640 Frame Timing]\r\n");
+    if (cam_i2c_usable)
     {
+        print_to_console("[OV5640 Frame Timing]\r\n");
         /* Output resolution (DVPHO/DVPVO) */
         uint16_t dvpho = ((uint16_t)ov5640_read_reg(0x3808) << 8) |
                            (uint16_t)ov5640_read_reg(0x3809);
@@ -1006,8 +1028,9 @@ static void mipi_cmd_diag(void)
     }
 
     /* ---- OV5640 ISP/Output Format ---- */
-    print_to_console("[OV5640 Output Format]\r\n");
+    if (cam_i2c_usable)
     {
+        print_to_console("[OV5640 Output Format]\r\n");
         uint8_t reg_4300 = ov5640_read_reg(0x4300);   /* Format control */
         uint8_t reg_501f = ov5640_read_reg(0x501f);   /* ISP format select */
         uint8_t reg_5001 = ov5640_read_reg(0x5001);   /* ISP control */

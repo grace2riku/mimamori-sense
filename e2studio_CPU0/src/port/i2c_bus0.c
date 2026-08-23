@@ -35,17 +35,26 @@ static ID s_bus0_mtxid = 0;
 static volatile bool s_bus0_open = false;
 
 /**
- * true ONLY while i2c_bus0_suspend() actually closed the bus and is holding
- * the lock on behalf of the caller.
+ * true while i2c_bus0_suspend() is holding the lock on behalf of its caller.
  *
- * i2c_bus0_suspend() has a no-op path (the bus was never opened, e.g. a camera
- * diagnostic issued from the shell before touch/audio got there) and can also
- * fail. In both cases it returns WITHOUT taking the mutex and WITHOUT closing
- * anything, so the paired resume must not open the bus - doing so would
- * bypass the camera_thread_i2c_done() ordering that i2c_bus0_open_once()
- * enforces - and must not unlock a mutex this task never acquired.
+ * Set only when the lock was actually acquired, so a FAILED suspend leaves it
+ * false and the paired resume becomes a no-op instead of unlocking a mutex
+ * this task never took.
  */
 static volatile bool s_bus0_suspended = false;
+
+/**
+ * true when the suspend that is currently in effect actually closed the bus,
+ * i.e. resume must re-open it.
+ *
+ * The bus may not have been opened yet when a camera diagnostic runs (the
+ * shell is up long before touch/audio get there). That case still has to
+ * RESERVE the bus for the duration - otherwise i2c_bus0_open_once() could run
+ * concurrently and steal the camera's IIC1 IRQ context - but resume must not
+ * open the bus, because that would bypass the camera_thread_i2c_done()
+ * ordering that i2c_bus0_open_once() enforces.
+ */
+static volatile bool s_bus0_reopen_on_resume = false;
 
 /**********************************************************************************************************************
  Exported global functions
@@ -245,22 +254,30 @@ bool i2c_bus0_is_ready(void)
 fsp_err_t i2c_bus0_suspend(void)
 {
     fsp_err_t err;
+    bool      was_open;
 
-    if (!s_bus0_open)
-    {
-        /* Nothing opened yet (boot-time camera init runs before this bus is
-         * opened, which is why greenpak/board-switch need no pairing). */
-        return FSP_SUCCESS;
-    }
-
-    /* Held until i2c_bus0_resume(): no touch or codec transfer may start while
-     * the channel belongs to somebody else. */
+    /*
+     * Take the lock FIRST and unconditionally - held until i2c_bus0_resume().
+     *
+     * This is required even when the bus is not open yet. The shell is running
+     * long before touch/audio call i2c_bus0_open_once(), so a diagnostic can
+     * start, open the camera master and then block on an OV5640 transfer; if
+     * the bus were left unreserved, another task could pass the
+     * camera_thread_i2c_done() wait and open the shared master right then,
+     * replacing the camera's IIC1 IRQ context. The diagnostic's close would
+     * then disable the shared master's interrupts with nothing to restore
+     * them. i2c_bus0_open_once() takes this same lock before opening, so
+     * holding it here blocks that race.
+     */
     err = i2c_bus0_lock();
     if (FSP_SUCCESS != err)
     {
         return err;
     }
 
+    was_open = s_bus0_open;
+
+    if (was_open)
     {
         i2c_master_instance_t * p_driver_instance =
             (i2c_master_instance_t *)g_comms_i2c_bus0_extended_cfg.p_driver_instance;
@@ -271,10 +288,13 @@ fsp_err_t i2c_bus0_suspend(void)
             (void)i2c_bus0_unlock();
             return err;
         }
+
+        s_bus0_open = false;
     }
 
-    s_bus0_open      = false;
-    s_bus0_suspended = true;
+    /* Only re-open on resume if this suspend is what closed it. */
+    s_bus0_reopen_on_resume = was_open;
+    s_bus0_suspended        = true;
 
     return FSP_SUCCESS;
 }
@@ -284,18 +304,17 @@ fsp_err_t i2c_bus0_suspend(void)
  */
 fsp_err_t i2c_bus0_resume(void)
 {
-    fsp_err_t err;
+    fsp_err_t err = FSP_SUCCESS;
 
     if (!s_bus0_suspended)
     {
-        /* Nothing to undo: suspend() either took the no-op path (the bus had
-         * never been opened) or failed outright. It holds no lock and closed
-         * nothing, so opening the bus here would both bypass the
-         * camera_thread_i2c_done() ordering and unlock a mutex this task never
-         * acquired. */
+        /* Nothing to undo: the paired suspend() FAILED, so it holds no lock
+         * and closed nothing. Unlocking here would target a mutex this task
+         * never acquired. */
         return FSP_SUCCESS;
     }
 
+    if (s_bus0_reopen_on_resume)
     {
         i2c_master_instance_t * p_driver_instance =
             (i2c_master_instance_t *)g_comms_i2c_bus0_extended_cfg.p_driver_instance;
@@ -323,7 +342,8 @@ fsp_err_t i2c_bus0_resume(void)
 
     /* Cleared even if the re-open failed, so the lock is always released and a
      * later i2c_bus0_open_once() can retry the open. */
-    s_bus0_suspended = false;
+    s_bus0_reopen_on_resume = false;
+    s_bus0_suspended        = false;
 
     (void)i2c_bus0_unlock();
 

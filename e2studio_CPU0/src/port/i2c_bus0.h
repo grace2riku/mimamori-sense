@@ -153,13 +153,21 @@ fsp_err_t i2c_bus0_abort_transfer(void);
  *          transfer times out until reboot. This is the Issue #93 failure
  *          again, now with the codec as a second victim.
  *
- *          suspend() takes the bus lock (held until resume()) and closes
- *          g_i2c_master0; resume() re-opens it and releases the lock.
+ *          suspend() ALWAYS takes the bus lock (held until resume()) and
+ *          closes g_i2c_master0 if it was open; resume() re-opens it only if
+ *          this suspend closed it, then releases the lock.
+ *
+ *          The lock is taken even when the bus is not open yet, because that
+ *          is exactly when a concurrent i2c_bus0_open_once() could squeeze in
+ *          while the caller is blocked on its own transfer and steal the IIC1
+ *          IRQ context back.
  *
  * @warning Must be paired. If the caller's own open fails it still has to call
  *          i2c_bus0_resume(), otherwise the bus stays locked and closed.
+ *          On FAILURE nothing is locked or closed, so the caller must NOT
+ *          proceed to open its own master - see the callers in mipi_port.c.
  *
- * @retval FSP_SUCCESS  Bus suspended (or it was never opened - nothing to do).
+ * @retval FSP_SUCCESS  Bus reserved (and closed if it had been open).
  * @return              Error from i2c_bus0_lock() or the close otherwise.
  */
 fsp_err_t i2c_bus0_suspend(void);
