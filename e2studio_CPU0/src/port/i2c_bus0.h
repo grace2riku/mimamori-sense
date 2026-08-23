@@ -1,0 +1,247 @@
+/**
+ * @file i2c_bus0.h
+ * @brief IIC1 (SYS_I2C) shared-bus ownership and mutual exclusion (Issue #46)
+ * @details
+ * Centralises the open responsibility and the mutual exclusion of the
+ * `g_comms_i2c_bus0` shared I2C bus (lower level driver `g_i2c_master0`,
+ * IIC channel 1 = SYS_I2C, P511/P512).
+ *
+ * Why this module exists
+ * ----------------------
+ * Up to Issue #45 the touch panel was the ONLY `rm_comms_i2c` device on the
+ * bus, so no arbitration was needed and `lv_port_indev_init()` opened
+ * `g_i2c_master0` on its own (see the historical comment block in
+ * `src/port/lv_port_indev.c`). Issue #46 adds the DA7212 audio CODEC
+ * (`g_comms_i2c_codec`, slave 0x1A) on the SAME bus
+ * (`ra_gen/hal_data.c:14` -> `.p_extend = &g_comms_i2c_bus0_extended_cfg`),
+ * which breaks that assumption for two independent reasons:
+ *
+ *  1. `rm_comms_i2c` keeps ONE shared "current device" pointer per bus
+ *     (`p_current_ctrl`, `ra_gen/common_data.c:540`). Every transfer calls
+ *     `rm_comms_i2c_bus_reconfigure()`
+ *     (`ra/fsp/src/rm_comms_i2c/rm_comms_i2c_driver_ra.c:345-380`) which,
+ *     when the requesting device differs from `p_current_ctrl`, rewrites the
+ *     IIC slave address AND the lower level driver callback. If that happens
+ *     while another device's transfer is still in flight, the in-flight
+ *     transfer completes into the wrong callback / wrong slave address.
+ *  2. The middleware's own bus mutex is NOT available in this build. The
+ *     members `p_bus_recursive_mutex` / `p_blocking_semaphore` only exist
+ *     inside `#if BSP_CFG_RTOS` (`ra/fsp/inc/instances/rm_comms_i2c.h:90-93`)
+ *     and `BSP_CFG_RTOS` resolves to 0 here
+ *     (`ra_cfg/fsp_cfg/bsp/bsp_cfg.h:13-22`). This is a COMPILE-TIME fact:
+ *     the members do not exist, so "assign a non-NULL mutex" is not an option.
+ *     Arbitration therefore has to live in the application.
+ *
+ * On top of that, IIC1 is also used by the camera through a SECOND, separate
+ * `R_IIC_MASTER` instance (`g_i2c_master_camera`). Opening two
+ * `R_IIC_MASTER` control blocks on the same channel makes the later
+ * `R_BSP_IrqCfgEnable()` overwrite the IRQ context so the earlier owner stops
+ * receiving completion callbacks (Issue #93 root cause;
+ * `ra/fsp/src/r_iic_master/r_iic_master.c:784-787`). The camera therefore
+ * signals `camera_thread_i2c_done()` once it has closed its instance, and
+ * `i2c_bus0_open_once()` waits for that before opening `g_i2c_master0`.
+ *
+ * Usage contract
+ * --------------
+ *  - `i2c_bus0_sync_init()` MUST run before any task that touches the bus is
+ *    started. It is called from `usermain()` before the first `tk_cre_tsk()`
+ *    (`src/usermain.c`), i.e. from the uT-Kernel initial task
+ *    (`itskpri = 1`, `mtk3_bsp2/mtkernel/include/sys/inittask.h:26`) which
+ *    runs to completion before any created task can be dispatched.
+ *    It is idempotent and is also invoked lazily by `i2c_bus0_lock()` /
+ *    `i2c_bus0_open_once()` as a safety net.
+ *  - Every bus user calls `i2c_bus0_open_once()` once, then wraps EACH
+ *    transfer (submit + completion wait) in
+ *    `i2c_bus0_lock()` / `i2c_bus0_unlock()`.
+ *  - Task context only. Never call these from an ISR.
+ */
+
+#ifndef I2C_BUS0_H
+#define I2C_BUS0_H
+
+/**********************************************************************************************************************
+ Includes   <System Includes> , "Project Includes"
+ *********************************************************************************************************************/
+#include <stdbool.h>
+
+#include "hal_data.h"
+#include "common_data.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**********************************************************************************************************************
+ Macro definitions
+ *********************************************************************************************************************/
+
+/** Default timeout (ms) used by i2c_bus0_lock(). Long enough to cover the
+ *  slowest single transfer plus scheduling jitter, short enough that a stuck
+ *  owner is reported instead of hanging the caller forever. */
+#define I2C_BUS0_LOCK_TIMEOUT_MS    (1000)
+
+/**
+ * Lock attempts made by i2c_bus0_open_once() before it gives up.
+ *
+ * One-shot initialisation may have to wait behind a camera diagnostic that
+ * holds the bus through i2c_bus0_suspend(), so a single
+ * I2C_BUS0_LOCK_TIMEOUT_MS is not a meaningful deadline there. 30 attempts is
+ * ~30 s: far longer than any diagnostic, short enough that a real deadlock
+ * still surfaces as an error rather than hanging the caller forever.
+ */
+#define I2C_BUS0_OPEN_LOCK_ATTEMPTS (30U)
+
+/**********************************************************************************************************************
+ Exported global functions
+ *********************************************************************************************************************/
+
+/**
+ * Create the uT-Kernel mutex that guards the IIC1 shared bus.
+ *
+ * Idempotent. Must be called before any bus user task is started; see the
+ * file header for the ordering argument.
+ *
+ * @retval FSP_SUCCESS          Mutex available.
+ * @retval FSP_ERR_INTERNAL     tk_cre_mtx() failed.
+ */
+fsp_err_t i2c_bus0_sync_init(void);
+
+/**
+ * Open the lower level I2C master (`g_i2c_master0`) exactly once.
+ *
+ * Blocks until the camera thread has released IIC1
+ * (`camera_thread_i2c_done()`), then opens the driver and switches the
+ * `rm_comms_i2c` bus to callback mode. Safe to call from several tasks; only
+ * the first call performs the open.
+ *
+ * @retval FSP_SUCCESS          Bus is open and usable.
+ * @retval FSP_ERR_INTERNAL     Mutex not available.
+ * @retval FSP_ERR_TIMEOUT      Could not acquire the bus mutex.
+ * @return                      Any error returned by `i2c_master_api_t::open`.
+ */
+fsp_err_t i2c_bus0_open_once(void);
+
+/**
+ * Open the shared master (if needed) AND an rm_comms_i2c device, atomically.
+ *
+ * @details This is what every rm_comms_i2c user must call - NOT
+ *          i2c_bus0_open_once() followed by RM_COMMS_I2C_Open().
+ *
+ *          RM_COMMS_I2C_Open() refuses to open a device while the lower level
+ *          driver is closed: it calls rm_comms_i2c_bus_status_check() and
+ *          returns FSP_ERR_COMMS_BUS_NOT_OPEN. Doing the two opens as separate
+ *          locked steps leaves a window in which a camera diagnostic can take
+ *          the bus through i2c_bus0_suspend() and close the master, so the
+ *          device open fails for a reason the caller cannot do anything about.
+ *          Holding one lock across both closes that window.
+ *
+ * @param[in] p_ctrl  rm_comms_i2c device control block.
+ * @param[in] p_cfg   Matching device configuration.
+ *
+ * @retval FSP_SUCCESS  Bus and device are open.
+ * @return              Error from the bus acquisition, the master open or
+ *                      RM_COMMS_I2C_Open().
+ */
+fsp_err_t i2c_bus0_open_device(rm_comms_ctrl_t * const p_ctrl,
+                               rm_comms_cfg_t const * const p_cfg);
+
+/**
+ * @retval true   `g_i2c_master0` has been opened by i2c_bus0_open_once().
+ * @retval false  Not open yet.
+ */
+bool i2c_bus0_is_ready(void);
+
+/**
+ * Abort an in-flight transfer on the shared IIC1 bus.
+ *
+ * @details Call this when a completion wait TIMED OUT, BEFORE releasing the
+ *          bus lock. A timeout does not stop the lower level transfer: it can
+ *          still be running, and rm_comms_i2c rewrites the shared slave
+ *          address and lower level callback on the next device switch
+ *          (rm_comms_i2c_driver_ra.c rm_comms_i2c_bus_reconfigure). Without an
+ *          abort the stale transfer can complete under the next device's
+ *          configuration and its callback can satisfy that device's wait as a
+ *          false completion.
+ *
+ *          The caller must also clear its own completion event flag, because a
+ *          late callback that fires between the timeout and the abort leaves
+ *          the flag set and would satisfy the NEXT wait immediately.
+ *
+ * @retval FSP_SUCCESS       Transfer aborted (or none was in progress).
+ * @retval FSP_ERR_NOT_OPEN  The shared bus has not been opened yet.
+ * @return                   Error from i2c_master_api_t::abort otherwise.
+ */
+fsp_err_t i2c_bus0_abort_transfer(void);
+
+/**
+ * Hand IIC1 over to a DIFFERENT i2c_master instance (the camera's).
+ *
+ * @details Required by anything that opens `g_i2c_master_camera_ctrl` on IIC1
+ *          after this bus has been opened - the camera diagnostic shell
+ *          commands do exactly that.
+ *
+ *          R_IIC_MASTER_Open() re-points the channel's ISR context at the new
+ *          control block with R_BSP_IrqCfgEnable() (r_iic_master.c:783-787),
+ *          and R_IIC_MASTER_Close() only calls R_BSP_IrqDisable() - it does
+ *          NOT restore the previous owner. So a camera open/close cycle leaves
+ *          IIC1's interrupts DISABLED, and every later touch and DA7212
+ *          transfer times out until reboot. This is the Issue #93 failure
+ *          again, now with the codec as a second victim.
+ *
+ *          suspend() ALWAYS takes the bus lock (held until resume()) and
+ *          closes g_i2c_master0 if it was open; resume() re-opens it only if
+ *          this suspend closed it, then releases the lock.
+ *
+ *          The lock is taken even when the bus is not open yet, because that
+ *          is exactly when a concurrent i2c_bus0_open_once() could squeeze in
+ *          while the caller is blocked on its own transfer and steal the IIC1
+ *          IRQ context back.
+ *
+ * @warning Must be paired. If the caller's own open fails it still has to call
+ *          i2c_bus0_resume(), otherwise the bus stays locked and closed.
+ *          On FAILURE nothing is locked or closed, so the caller must NOT
+ *          proceed to open its own master - see the callers in mipi_port.c.
+ *
+ * @retval FSP_SUCCESS  Bus reserved (and closed if it had been open).
+ * @return              Error from i2c_bus0_lock() or the close otherwise.
+ */
+fsp_err_t i2c_bus0_suspend(void);
+
+/**
+ * Take IIC1 back after i2c_bus0_suspend(). See that function.
+ *
+ * @details Re-opens g_i2c_master0 (restoring the ISR context and re-enabling
+ *          the channel interrupts) and releases the bus lock. Also clears the
+ *          rm_comms_i2c cached device so the next transfer re-programs the
+ *          slave address and callback.
+ *
+ * @retval FSP_SUCCESS  Bus is usable again (or was never suspended).
+ * @return              Error from the re-open otherwise.
+ */
+fsp_err_t i2c_bus0_resume(void);
+
+/**
+ * Acquire exclusive use of the IIC1 shared bus.
+ *
+ * Must wrap the whole transfer, i.e. from the `RM_COMMS_I2C_*` submit call
+ * until the completion callback has been observed by the caller.
+ *
+ * @retval FSP_SUCCESS          Bus acquired.
+ * @retval FSP_ERR_INTERNAL     Mutex not available / lock failed.
+ * @retval FSP_ERR_TIMEOUT      Timed out after I2C_BUS0_LOCK_TIMEOUT_MS.
+ */
+fsp_err_t i2c_bus0_lock(void);
+
+/**
+ * Release the IIC1 shared bus acquired with i2c_bus0_lock().
+ *
+ * @retval FSP_SUCCESS          Released.
+ * @retval FSP_ERR_INTERNAL     Mutex not available / unlock failed.
+ */
+fsp_err_t i2c_bus0_unlock(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* I2C_BUS0_H */

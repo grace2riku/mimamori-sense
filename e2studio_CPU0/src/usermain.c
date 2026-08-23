@@ -43,6 +43,17 @@
  * d1_heap_init() は何もせず E_OK を返すスタブ（src/d1_heap_mtkernel.c）。 */
 #include "d1_heap_mtkernel.h"
 
+/* IIC1（SYS_I2C）共有バスの排他ミューテックス（Issue #46 / src/port/i2c_bus0.c）。
+ * タッチパネル（lvgl_task）と DA7212 オーディオコーデック（audio_task）が
+ * 同一バスを共有するため、どちらのタスクよりも先に生成する必要がある。 */
+#include "port/i2c_bus0.h"
+
+/* オーディオ出力タスク本体（Issue #46 / src/port/audio_port.c）。
+ * uT-Kernel タスク形式 void audio_task(INT stacd, void *exinf)。
+ * 他タスクは ra_gen 由来のヘッダが無いため extern 宣言を直書きしているが、
+ * 本タスクは自前ヘッダがあるのでそちらを取り込む（型不一致を検出できる）。 */
+#include "port/audio_port.h"
+
 /*
  * ボード LED 定義（FSP 提供）。
  * FreeRTOS 版 blinky_thread_entry.c と同じく g_bsp_leds を使用する。
@@ -253,6 +264,34 @@ LOCAL T_CTSK ctsk_ai_inference = {
 };
 
 /* ---------------------------------------------------------------------------
+ *  オーディオ出力タスクの生成情報（Issue #46 / S-005-2）
+ *
+ *  本体は src/port/audio_port.c の audio_task()。
+ *  - 優先度: itskpri=16。優先度表:
+ *      blink=10 / camera=11 / ntshell=12 / dave2d・swdraw=13 / lvgl=14 /
+ *      ai=15 / audio=16
+ *    audio_task は起動時に audio_init() を 1 回実行して以降は
+ *    tk_slp_tsk(TMO_FEVR) で眠るだけであり、実際の連続再生は SSI 送信割り込み
+ *    （優先度 2 の ISR。ra_gen/hal_data.c:348）が担うため、タスク優先度が
+ *    再生品質に影響しない。よって最下位に置く。
+ *  - audio_init() は DA7212 のデータシート規定の待ち（合計約 0.4 秒）と
+ *    IIC1 解放待ちでブロックするため、ntshell_task 側で初期化すると
+ *    シェルのプロンプト表示が遅れる。専用タスクにしてある。
+ *  - スタック: 4096 バイト（camera_task / ntshell_task と同値）。audio_task ->
+ *    audio_init(char buf[144]) -> da7212_init(char buf[128]) と入れ子になり、
+ *    各段で snprintf（newlib の vfprintf）を呼ぶため余裕を持たせる。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_audio = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = audio_task,
+    .itskpri = 16,            /* ai_inference(15) より低い最下位 */
+    .stksz   = 4096,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
  *  usermain()
  *
  *  μT-Kernel 3.0 の初期タスクから呼ばれる（mtkernel/kernel/inittask/inittask.c）。
@@ -336,6 +375,29 @@ EXPORT INT usermain(void)
     R_BSP_SecondaryCoreStart();
     tm_putstring((UB *)"[usermain] secondary core (CPU1) started.\n");
 #endif
+
+    /* ---------------------------------------------------------------------
+     * IIC1（SYS_I2C）共有バスの排他ミューテックスを生成する ― Issue #46
+     *
+     * 生成タイミング（重要）: 本ミューテックスの利用者は
+     *   - lvgl_task -> lv_port_indev_init() / touchpad_get_xy()（タッチパネル）
+     *   - audio_task -> audio_init() -> da7212_init()（DA7212 コーデック）
+     * の 2 経路だけで、いずれも本関数の後段 tk_cre_tsk() で生成されるタスク
+     * からしか到達しない。usermain() は uT-Kernel 初期タスク（itskpri = 1、
+     * mtk3_bsp2/mtkernel/include/sys/inittask.h:26）から呼ばれ、生成した
+     * タスク（itskpri >= 10）より高優先度のまま最後の tk_slp_tsk(TMO_FEVR)
+     * まで走り切るため、ここで生成しておけば「初期化前アクセス」経路は無い。
+     * ISR からは呼ばれない（i2c_bus0_* はタスクコンテキスト専用）。
+     *
+     * なお i2c_bus0_lock() 自身も tk_dis_dsp() で保護した遅延生成を持つので
+     * 二重の安全策になっている（src/port/i2c_bus0.c）。
+     * --------------------------------------------------------------------- */
+    if (FSP_SUCCESS != i2c_bus0_sync_init()) {
+        /* タッチパネルもオーディオも I2C バスを使えなくなるため起動を止める。 */
+        tm_putstring((UB *)"[usermain] i2c_bus0_sync_init failed.\n");
+        return -1;
+    }
+    tm_putstring((UB *)"[usermain] i2c_bus0 mutex created (IIC1 shared bus).\n");
 
     /* LED 点滅タスクを生成・起動 */
     tskid = tk_cre_tsk(&ctsk_blink);
@@ -461,6 +523,28 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] ai_inference_task created & started.\n");
+
+    /* ---------------------------------------------------------------------
+     * オーディオ出力タスクを生成・起動（Issue #46 / S-005-2）
+     *
+     * 最後に起動する。audio_init() は内部で i2c_bus0_open_once() を呼び、
+     * camera_thread_i2c_done()（src/camera_thread_entry.c:731）が真になるまで
+     * 待ってから IIC1 を開くため、camera / lvgl との起動順に制約は無い。
+     * ログは他タスクと同じく T-Monitor（SCI8 一本化 ― R-005 の注意参照）。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_audio);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(audio) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(audio) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] audio_task created & started.\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */
