@@ -374,6 +374,26 @@ static volatile uint32_t s_req_seq   = 0;   /**< ticket source */
 static volatile uint32_t s_start_seq = 0;   /**< newest start / retarget */
 static volatile uint32_t s_stop_seq  = 0;   /**< newest stop */
 
+/**
+ * Newest "make sound" ticket whose owner gave up before committing.
+ *
+ * A ticket is claimed before the mutex, so a start can end up owning the
+ * NEWEST ticket and then never act on it - its alarm_lock() times out (the
+ * holder is inside audio_start() for seconds), or audio_start() itself fails.
+ * Its requested pattern is stored nowhere, so nobody can carry it out.
+ *
+ * Left unmarked, that dead ticket makes every other request stand down for a
+ * request that will never happen: the mutex holder takes the SUPERSEDED exit
+ * "for" it and returns FSP_ERR_ABORTED while its own older pattern keeps
+ * playing, and an older stop skips its teardown for the same reason.
+ *
+ * So a ticket counts only while its owner can still commit. Every exit from
+ * alarm_sound_start() / alarm_sound_set_pattern() that does NOT commit marks
+ * its ticket here. Monotonic like the others - it is raised, never lowered -
+ * so out-of-order abandonment cannot resurrect a dead ticket.
+ */
+static volatile uint32_t s_abandon_seq = 0;
+
 /** Waveform and digital amplitude. Single words, read by the ISR once per
  *  buffer, written from task context - a change simply takes effect on the
  *  next buffer. */
@@ -418,6 +438,7 @@ static bool      alarm_owns_stream(void);
 static void      alarm_discard_completion(void);
 static bool      alarm_seq_newer(uint32_t a, uint32_t b);
 static alarm_req_state_t alarm_req_state(uint32_t my_seq);
+static void      alarm_abandon_start_seq(uint32_t my_seq);
 static uint32_t  alarm_claim_start_seq(void);
 static uint32_t  alarm_claim_stop_seq(void);
 static fsp_err_t alarm_stop_locked(void);
@@ -553,14 +574,47 @@ static alarm_req_state_t alarm_req_state(uint32_t my_seq)
     const uint32_t stop_seq  = s_stop_seq;
     const uint32_t start_seq = s_start_seq;
 
-    if (alarm_seq_newer(stop_seq, my_seq) || alarm_seq_newer(start_seq, my_seq))
+    /* A start ticket counts only while its owner can still act on it; see
+     * s_abandon_seq. */
+    const bool start_live  = alarm_seq_newer(start_seq, s_abandon_seq);
+    const bool start_newer = start_live && alarm_seq_newer(start_seq, my_seq);
+    const bool stop_newer  = alarm_seq_newer(stop_seq, my_seq);
+
+    if (start_newer && ((!stop_newer) || alarm_seq_newer(start_seq, stop_seq)))
     {
-        return alarm_seq_newer(stop_seq, start_seq) ? ALARM_REQ_STOPPED
-                                                    : ALARM_REQ_SUPERSEDED;
+        return ALARM_REQ_SUPERSEDED;
+    }
+
+    if (stop_newer)
+    {
+        return ALARM_REQ_STOPPED;
     }
 
     return ALARM_REQ_CURRENT;
 }
+
+/**
+ * Mark a "make sound" ticket as one that will never commit.
+ *
+ * Called from every exit of alarm_sound_start() / alarm_sound_set_pattern()
+ * that does not commit. Task-atomic and raise-only, so two callers abandoning
+ * out of order cannot lower the mark and bring a dead ticket back to life.
+ */
+static void alarm_abandon_start_seq(uint32_t my_seq)
+{
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+    if (alarm_seq_newer(my_seq, s_abandon_seq))
+    {
+        s_abandon_seq = my_seq;
+    }
+
+    if (dispatch_off)
+    {
+        (void)tk_ena_dsp();
+    }
+}
+
 
 /**
  * Take a ticket for a "make sound" request (start or retarget).
@@ -977,6 +1031,10 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
     err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
+        /* We never got to act on this ticket, so it must stop counting - see
+         * s_abandon_seq. This is the common way it happens: the mutex holder
+         * is inside audio_start() for longer than ALARM_LOCK_TIMEOUT_MS. */
+        alarm_abandon_start_seq(my_seq);
         return err;
     }
 
@@ -1053,6 +1111,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
     if (FSP_SUCCESS != err)
     {
         s_pattern = ALARM_PATTERN_NONE;
+        alarm_abandon_start_seq(my_seq);
         alarm_unlock();
         return err;
     }
@@ -1096,6 +1155,7 @@ cancelled:
      */
     (void)alarm_stop_locked();
 
+    alarm_abandon_start_seq(my_seq);
     alarm_unlock();
 
     return FSP_ERR_ABORTED;
@@ -1106,8 +1166,11 @@ superseded:
      * A newer "make sound" request is the latest one. Its alarm - which may
      * already be playing - is what the caller of THAT request asked for, so
      * touch nothing here; if it has not run yet it is waiting on this mutex
-     * and will take over as soon as we release it.
+     * and will take over as soon as we release it. If instead it gave up
+     * waiting for this mutex, it has already marked its own ticket abandoned,
+     * so we would not be here.
      */
+    alarm_abandon_start_seq(my_seq);
     alarm_unlock();
 
     return FSP_ERR_ABORTED;
@@ -1143,7 +1206,7 @@ fsp_err_t alarm_sound_stop(void)
         return err;
     }
 
-    if (alarm_seq_newer(s_start_seq, my_seq))
+    if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
     {
         /*
          * A start issued AFTER this stop got the mutex first and is now
@@ -1156,6 +1219,11 @@ fsp_err_t alarm_sound_stop(void)
          * caller asked for silence, so leave it alone and report that this
          * request was superseded. The lock-free silencing above is already
          * moot: that newer start rewrote s_pattern under this mutex.
+         *
+         * alarm_req_state() rather than a bare ticket comparison, so that a
+         * start which claimed the newest ticket and then gave up (see
+         * s_abandon_seq) does not make this stop skip a teardown that nobody
+         * else is going to perform.
          */
         alarm_unlock();
         return FSP_ERR_ABORTED;
@@ -1187,6 +1255,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
+        alarm_abandon_start_seq(my_seq);
         return err;
     }
 
@@ -1195,6 +1264,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * one that "audio start" has taken over (see alarm_owns_stream()). */
     if ((!alarm_owns_stream()) || (AUDIO_STATE_PLAYING != audio_get_state()))
     {
+        alarm_abandon_start_seq(my_seq);
         alarm_unlock();
         return FSP_ERR_NOT_OPEN;
     }
@@ -1204,6 +1274,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * cannot be undone. */
     if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
     {
+        alarm_abandon_start_seq(my_seq);
         alarm_unlock();
         return FSP_ERR_ABORTED;
     }
@@ -1228,11 +1299,13 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
     {
         case ALARM_REQ_STOPPED:
             (void)alarm_stop_locked();
+            alarm_abandon_start_seq(my_seq);
             alarm_unlock();
             return FSP_ERR_ABORTED;
 
         case ALARM_REQ_SUPERSEDED:
             /* A newer start will retarget the stream; leave it alone. */
+            alarm_abandon_start_seq(my_seq);
             alarm_unlock();
             return FSP_ERR_ABORTED;
 
@@ -1539,6 +1612,14 @@ int usrcmd_alarm(int argc, char **argv)
         err = is_start ? alarm_sound_start(pattern) : alarm_sound_set_pattern(pattern);
         if (FSP_SUCCESS != err)
         {
+            /* FSP_ERR_ABORTED covers two outcomes - a newer stop won, or a
+             * newer start won and is still playing - so report what is
+             * actually true now instead of guessing the cause. */
+            const char *abort_note =
+                alarm_sound_is_active()
+                    ? " - superseded by a newer request, which is now playing"
+                    : " - cancelled by a newer 'alarm stop'";
+
             snprintf(buf, sizeof(buf), "alarm %s failed (err=0x%lX)%s\r\n",
                      argv[1],
                      (unsigned long)err,
@@ -1547,7 +1628,7 @@ int usrcmd_alarm(int argc, char **argv)
                          : ((FSP_ERR_IN_USE == err)
                                 ? " - device busy, try 'audio stop'"
                                 : ((FSP_ERR_ABORTED == err)
-                                       ? " - cancelled by a concurrent 'alarm stop'"
+                                       ? abort_note
                                        : "")));
             print_to_console(buf);
             return CMD_ERR_EXECUTE;

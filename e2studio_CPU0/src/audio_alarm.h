@@ -148,11 +148,19 @@ fsp_err_t alarm_sound_init(void);
  *                                  that is not this module (e.g. the
  *                                  "audio start" test tone), or it is still
  *                                  stopping. The other stream keeps playing.
- * @retval FSP_ERR_ABORTED          An alarm_sound_stop() was issued after this
- *                                  call began and therefore won. The alarm is
- *                                  NOT playing: this call performed the
- *                                  teardown itself, because that stop may have
- *                                  timed out on the mutex and returned already.
+ * @retval FSP_ERR_ABORTED          A NEWER request won, so this one did not
+ *                                  take effect. Two outcomes share this code:
+ *                                  a newer alarm_sound_stop() won, in which
+ *                                  case nothing is playing (this call tore the
+ *                                  alarm down itself, because that stop may
+ *                                  have timed out on the mutex and returned
+ *                                  already); or a newer alarm_sound_start() /
+ *                                  alarm_sound_set_pattern() won, in which
+ *                                  case ITS alarm is deliberately left
+ *                                  playing. Query alarm_sound_is_active() /
+ *                                  alarm_sound_get_pattern() to find out which
+ *                                  before deciding on any recovery - do not
+ *                                  assume silence.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
@@ -201,8 +209,12 @@ fsp_err_t alarm_sound_stop(void);
  *                                  AUDIO_STATE_PLAYING, or another caller has
  *                                  taken the stream over - use
  *                                  alarm_sound_start().
- * @retval FSP_ERR_ABORTED          An alarm_sound_stop() was issued after this
- *                                  call began and won; the alarm is stopped.
+ * @retval FSP_ERR_ABORTED          A newer request won, so this one did not
+ *                                  take effect. As for alarm_sound_start():
+ *                                  the alarm may be stopped (newer stop) or
+ *                                  playing the newer request's pattern - query
+ *                                  alarm_sound_is_active() /
+ *                                  alarm_sound_get_pattern().
  */
 fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern);
 
