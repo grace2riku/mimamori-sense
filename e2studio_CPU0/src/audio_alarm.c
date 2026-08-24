@@ -69,12 +69,28 @@
  *  AND its tail has been played out. Consumed by alarm_task(). */
 #define ALARM_EVT_FINISHED          (1U << 0)
 
-/** Timeout when taking the module mutex.
- *  Must exceed the worst case of the longest critical section, which is
- *  alarm_stop_locked() -> audio_stop(): da7212_mute() can wait up to
- *  I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms for the shared IIC1 bus
- *  (src/port/i2c_bus0.h:81, src/port/i2c_bus0.c:114) and the idle wait is
- *  AUDIO_STOP_TIMEOUT_MS = 70 ms (src/port/audio_port.c:65). */
+/**
+ * Timeout when taking the module mutex.
+ *
+ * This value does NOT cover the worst case, and is not required to.
+ *
+ * The longest critical section is alarm_sound_start() -> audio_start(), whose
+ * unmute retry loop can make AUDIO_UNMUTE_ATTEMPTS (3) attempts
+ * (src/port/audio_port.c:626-637), each able to block for
+ * I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms on the shared IIC1 bus
+ * (src/port/i2c_bus0.h:81, src/port/i2c_bus0.c:114) - roughly 3 s, more than
+ * this timeout. alarm_stop_locked() -> audio_stop() is shorter: one
+ * da7212_mute() plus the AUDIO_STOP_TIMEOUT_MS = 70 ms idle wait
+ * (src/port/audio_port.c:65).
+ *
+ * Making the timeout large enough to cover that would only trade one problem
+ * for another: "alarm stop" from the shell would then block for seconds.
+ * Instead every caller is written to tolerate the timeout -
+ * alarm_sound_stop() silences the generator BEFORE taking the lock, and
+ * alarm_task() re-posts the completion event when the lock fails - so the
+ * value only decides how long a caller waits, never whether the module stays
+ * consistent.
+ */
 #define ALARM_LOCK_TIMEOUT_MS       (2000)
 
 /** Retry delay used by alarm_task() if tk_wai_flg() ever fails. */
@@ -1005,6 +1021,42 @@ void alarm_task(INT stacd, void *exinf)
 
         if (FSP_SUCCESS != alarm_lock())
         {
+            /*
+             * The lock timed out, but TWF_BITCLR above has ALREADY consumed
+             * the completion event, and the generator has moved on to
+             * ALARM_GEN_IDLE so it will never set that bit again
+             * (alarm_fill_cb() signals once, when s_drain_fills reaches 0).
+             * Simply continuing would therefore block on tk_wai_flg() forever
+             * while the device stays PLAYING silence with s_active true, until
+             * some later alarm command happens to clean it up.
+             *
+             * This is reachable, not theoretical: alarm_sound_start() holds
+             * this mutex across audio_start(), and audio_start() starts the
+             * PCM stream BEFORE making up to AUDIO_UNMUTE_ATTEMPTS (3) unmute
+             * attempts (src/port/audio_port.c:626-637). Each attempt goes
+             * through da7212_apply_mute() -> da7212_update_reg() ->
+             * da7212_read_reg()/da7212_write_reg(), which take the shared IIC1
+             * bus lock with a I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms timeout
+             * (src/port/da7212.c:426,468 and src/port/i2c_bus0.c:114). Under
+             * IIC1 contention that is roughly 3 s of holding this mutex,
+             * longer than ALARM_LOCK_TIMEOUT_MS (2000 ms) - and a 100 ms beep
+             * finishes long before that.
+             *
+             * Re-post the event so the stop is retried rather than lost.
+             * s_finished is the durable state; the flag is only the wake-up
+             * hint, so it is safe to re-derive one from the other. Reading
+             * s_finished unlocked can at worst re-post a bit that a concurrent
+             * start/stop has just cleared, and the next iteration then simply
+             * finds nothing to do.
+             */
+            if (s_finished && (s_alarm_flgid > 0))
+            {
+                (void)tk_set_flg(s_alarm_flgid, ALARM_EVT_FINISHED);
+            }
+
+            /* Back off so a lock that fails immediately (e.g. the
+             * synchronisation objects could not be created) cannot spin. */
+            tk_dly_tsk(ALARM_TASK_ERR_DELAY_MS);
             continue;
         }
 

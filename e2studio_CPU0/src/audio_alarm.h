@@ -237,6 +237,12 @@ alarm_pattern_t alarm_pattern_from_name(const char *name);
 /**
  * uT-Kernel task entry: waits for the "one-shot pattern finished" event from
  * the generator ISR and performs the audio_stop() that the ISR cannot do.
+ *
+ * If the module mutex cannot be taken in time - alarm_sound_start() can hold
+ * it for seconds while audio_start() retries the codec unmute over a
+ * contended IIC1 bus - the event is re-posted and the stop retried, so a
+ * completed one-shot is never left playing silence.
+ *
  * Created and started from usermain().
  */
 void alarm_task(INT stacd, void *exinf);
