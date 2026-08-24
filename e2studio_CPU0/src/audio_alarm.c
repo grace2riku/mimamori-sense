@@ -355,6 +355,7 @@ static ID s_alarm_mtxid = 0;
 static fsp_err_t alarm_lock(void);
 static void      alarm_unlock(void);
 static bool      alarm_owns_stream(void);
+static void      alarm_discard_completion(void);
 static fsp_err_t alarm_stop_locked(void);
 static void      alarm_generator_reset(void);
 static void      alarm_load_step(uint32_t idx);
@@ -427,6 +428,34 @@ static bool alarm_owns_stream(void)
 }
 
 /**
+ * Drop a pending "one shot finished" completion.
+ *
+ * MUST be called by every path that retargets or tears down the stream while
+ * holding the mutex, because the generator raises the completion from the SSI
+ * ISR and can therefore do so at ANY instruction boundary in task context -
+ * including between a `!s_finished` test and the s_pattern assignment that
+ * follows it. A completion left behind belongs to the pattern that has just
+ * been replaced, and alarm_task() would act on it by stopping the alarm the
+ * caller just asked for.
+ *
+ * Both halves matter: s_finished is what alarm_task() re-checks under the
+ * mutex, and the event flag is what wakes it up in the first place.
+ *
+ * Factored out on purpose. This clearing used to be written out at each call
+ * site, and the copy in alarm_sound_start()'s live-switch branch was simply
+ * missing - the exact bug this helper exists to make unrepeatable.
+ */
+static void alarm_discard_completion(void)
+{
+    s_finished = false;
+
+    if (s_alarm_flgid > 0)
+    {
+        (void)tk_clr_flg(s_alarm_flgid, (UINT)~ALARM_EVT_FINISHED);
+    }
+}
+
+/**
  * Stop playback. The mutex must already be held.
  *
  * Order matters: s_pattern is cleared BEFORE audio_stop() is called, because
@@ -459,11 +488,7 @@ static fsp_err_t alarm_stop_locked(void)
     /* Drop a pending "one shot finished" event so that alarm_task() cannot
      * stop a later alarm because of it (it re-checks s_finished under the
      * mutex as well). */
-    s_finished = false;
-    if (s_alarm_flgid > 0)
-    {
-        (void)tk_clr_flg(s_alarm_flgid, (UINT)~ALARM_EVT_FINISHED);
-    }
+    alarm_discard_completion();
 
     return err;
 }
@@ -490,7 +515,12 @@ static void alarm_generator_reset(void)
     s_drain_fills    = 0;
     s_phase          = 0;
     s_phase_step     = 0;
-    s_finished       = false;
+
+    /* Clears the event flag as well as s_finished. Clearing only half of the
+     * completion is what the divergence fixed above was made of, so this path
+     * uses the same helper as every other one even though it is only reached
+     * with the stream already stopped. */
+    alarm_discard_completion();
 }
 
 /**
@@ -793,6 +823,14 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         {
             /* Live pattern switch - no restart, no click. */
             s_pattern = pattern;
+
+            /* The one-shot being replaced may have completed in the ISR
+             * between the !s_finished test above and the assignment just
+             * made, which would leave a completion raised for the OLD
+             * pattern. Without this, alarm_task() would honour it and stop
+             * the alarm this call just reported as started. */
+            alarm_discard_completion();
+
             alarm_unlock();
             return FSP_SUCCESS;
         }
@@ -905,11 +943,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * as the flag is set, see the priority table in src/usermain.c:277-278),
      * but the generator has already moved to ALARM_GEN_IDLE by then, so the
      * new pattern is genuinely live and must not be torn down. */
-    s_finished = false;
-    if (s_alarm_flgid > 0)
-    {
-        (void)tk_clr_flg(s_alarm_flgid, (UINT)~ALARM_EVT_FINISHED);
-    }
+    alarm_discard_completion();
 
     alarm_unlock();
 
