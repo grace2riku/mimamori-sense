@@ -60,6 +60,7 @@
 #include "cmd_utils.h"
 #include "diag_config.h"
 #include "fw_version.h"
+#include "audio_alarm.h"
 #include "led_ctrl.h"
 #include "port/sdram_port.h"
 #include "port/glcdc_port.h"
@@ -138,6 +139,7 @@ static int usrcmd_mw(int argc, char **argv);
  */
 static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("ai",      "AI inference: ai model|config|preproc|status|time|detect|nms", usrcmd_ai),
+    NTSHELL_CMD("alarm",   "Alarm tone: alarm start|stop|status|pattern|wave|amp|volume", usrcmd_alarm),
     NTSHELL_CMD("audio",   "Audio out: audio status|init|start|stop|tone|volume|mute|reg", usrcmd_audio),
     NTSHELL_CMD("camera",  "Camera: camera thread|phy|csi|sensor|status|start|stop|capture|info|fb|display|test", usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
