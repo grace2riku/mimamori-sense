@@ -187,6 +187,17 @@ typedef struct st_alarm_pattern_def
     bool                loop;           /**< true = repeat, false = one shot */
 } alarm_pattern_def_t;
 
+/**
+ * Where a request stands relative to the newest one (see s_req_seq).
+ */
+typedef enum e_alarm_req_state
+{
+    ALARM_REQ_CURRENT = 0,      /**< nothing newer: this request may commit */
+    ALARM_REQ_STOPPED,          /**< the newest request is a STOP: tear down */
+    ALARM_REQ_SUPERSEDED,       /**< the newest request is another START:
+                                 *   leave ITS alarm alone */
+} alarm_req_state_t;
+
 /** Generator state machine (ISR side). */
 typedef enum e_alarm_gen_state
 {
@@ -326,16 +337,22 @@ static volatile bool s_finished = false;
  *
  * Every "make sound" request (alarm_sound_start, alarm_sound_set_pattern) and
  * every "stop" request takes a ticket from s_req_seq and records it in
- * s_start_seq / s_stop_seq respectively. A request commits only if no request
- * of the opposite kind carries a NEWER ticket:
+ * s_start_seq / s_stop_seq respectively. A request commits only if NO request
+ * of ANY kind carries a newer ticket - see alarm_req_state():
  *
- *   start / retarget : aborts if s_stop_seq  is newer -> tears the alarm down
- *   stop             : skips the teardown if s_start_seq is newer
+ *   newest is a stop  -> the stale request tears the alarm down, because that
+ *                        stop may have timed out on the mutex and given up
+ *   newest is a start -> the stale request touches nothing, because that
+ *                        start's alarm is the one that should be playing
  *
- * Both directions are needed. Ordering only the stops leaves the mirror case
- * open: a stop that is preempted before alarm_lock() lets a later start run
- * to completion, and then silences that newer alarm when it finally acquires
- * the mutex.
+ * All three orderings matter and each was a separate defect:
+ *   stop  after start : a stop preempted before alarm_lock() would be erased
+ *                       by the start that already held the mutex
+ *   start after stop  : a stop that acquired the mutex later would silence an
+ *                       alarm raised after the caller asked for silence
+ *   start after start : comparing only against s_stop_seq let an OLDER start
+ *                       live-switch s_pattern back over a NEWER one, both
+ *                       returning success
  *
  * Tickets are never cleared. A "stop pending" flag cannot work here: a stop
  * whose own alarm_lock() times out - exactly what happens when a start holds
@@ -400,6 +417,7 @@ static void      alarm_unlock(void);
 static bool      alarm_owns_stream(void);
 static void      alarm_discard_completion(void);
 static bool      alarm_seq_newer(uint32_t a, uint32_t b);
+static alarm_req_state_t alarm_req_state(uint32_t my_seq);
 static uint32_t  alarm_claim_start_seq(void);
 static uint32_t  alarm_claim_stop_seq(void);
 static fsp_err_t alarm_stop_locked(void);
@@ -509,6 +527,39 @@ static void alarm_discard_completion(void)
 static bool alarm_seq_newer(uint32_t a, uint32_t b)
 {
     return (((int32_t)(a - b)) > 0);
+}
+
+/**
+ * Classify a request against the newest one that has been issued.
+ *
+ * Both directions have to be compared. Testing only s_stop_seq lets an OLDER
+ * start overwrite a NEWER one: start A takes ticket N and is preempted before
+ * it can lock, start B takes N+1 and runs to completion, then A acquires the
+ * mutex, sees no stop at all and live-switches s_pattern back to its own,
+ * older pattern - both returning success.
+ *
+ * When something newer exists, which of the two it is decides what the stale
+ * request must do:
+ *   - a newer STOP is the latest      -> somebody has to tear the alarm down,
+ *                                        and that stop may have timed out on
+ *                                        this very mutex, so we must do it
+ *   - a newer START is the latest     -> its alarm is the one that should be
+ *                                        playing; touch nothing
+ * Note s_start_seq holds OUR ticket while we are the newest start, so the
+ * comparison against it is false in the common, uncontended case.
+ */
+static alarm_req_state_t alarm_req_state(uint32_t my_seq)
+{
+    const uint32_t stop_seq  = s_stop_seq;
+    const uint32_t start_seq = s_start_seq;
+
+    if (alarm_seq_newer(stop_seq, my_seq) || alarm_seq_newer(start_seq, my_seq))
+    {
+        return alarm_seq_newer(stop_seq, start_seq) ? ALARM_REQ_STOPPED
+                                                    : ALARM_REQ_SUPERSEDED;
+    }
+
+    return ALARM_REQ_CURRENT;
 }
 
 /**
@@ -929,10 +980,12 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return err;
     }
 
-    if (alarm_seq_newer(s_stop_seq, my_seq))
+    switch (alarm_req_state(my_seq))
     {
-        /* Cancelled while we waited for the mutex - do not start at all. */
-        goto cancelled;
+        /* Superseded while we waited for the mutex - do not start at all. */
+        case ALARM_REQ_STOPPED:    goto cancelled;
+        case ALARM_REQ_SUPERSEDED: goto superseded;
+        default:                   break;
     }
 
     if (s_active)
@@ -941,6 +994,15 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
             (!s_finished) &&
             (AUDIO_STATE_PLAYING == audio_get_state()))
         {
+            /* A newer start may already have retargeted this stream; its
+             * pattern must not be clobbered by our older request. Checked
+             * before the write, unlike the stop case below, because a stale
+             * write cannot be undone. */
+            if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
+            {
+                goto superseded;
+            }
+
             /* Live pattern switch - no restart, no click. */
             s_pattern = pattern;
 
@@ -951,9 +1013,11 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
              * the alarm this call just reported as started. */
             alarm_discard_completion();
 
-            if (alarm_seq_newer(s_stop_seq, my_seq))
+            switch (alarm_req_state(my_seq))
             {
-                goto cancelled;
+                case ALARM_REQ_STOPPED:    goto cancelled;
+                case ALARM_REQ_SUPERSEDED: goto superseded;
+                default:                   break;
             }
 
             alarm_unlock();
@@ -997,11 +1061,17 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
      * it is what tells alarm_stop_locked() that there is a device to stop. */
     s_active = true;
 
-    if (alarm_seq_newer(s_stop_seq, my_seq))
+    switch (alarm_req_state(my_seq))
     {
-        /* Cancelled while we were inside audio_start(), which can take seconds
-         * when the IIC1 bus is contended. */
-        goto cancelled;
+        /* Superseded while we were inside audio_start(), which can take
+         * seconds when the IIC1 bus is contended. */
+        case ALARM_REQ_STOPPED:    goto cancelled;
+
+        /* A newer start is waiting on this mutex and will retarget the stream
+         * we just brought up, so leave it running for it. */
+        case ALARM_REQ_SUPERSEDED: goto superseded;
+
+        default:                   break;
     }
 
     alarm_unlock();
@@ -1026,6 +1096,18 @@ cancelled:
      */
     (void)alarm_stop_locked();
 
+    alarm_unlock();
+
+    return FSP_ERR_ABORTED;
+
+superseded:
+
+    /*
+     * A newer "make sound" request is the latest one. Its alarm - which may
+     * already be playing - is what the caller of THAT request asked for, so
+     * touch nothing here; if it has not run yet it is waiting on this mutex
+     * and will take over as soon as we release it.
+     */
     alarm_unlock();
 
     return FSP_ERR_ABORTED;
@@ -1117,6 +1199,15 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
         return FSP_ERR_NOT_OPEN;
     }
 
+    /* As in alarm_sound_start()'s live-switch branch: never clobber a newer
+     * request's pattern. Checked before the write, because a stale write
+     * cannot be undone. */
+    if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
+    {
+        alarm_unlock();
+        return FSP_ERR_ABORTED;
+    }
+
     s_pattern = pattern;
 
     /* Drop a pending "one shot finished" event, exactly as the start and stop
@@ -1133,11 +1224,20 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * new pattern is genuinely live and must not be torn down. */
     alarm_discard_completion();
 
-    if (alarm_seq_newer(s_stop_seq, my_seq))
+    switch (alarm_req_state(my_seq))
     {
-        (void)alarm_stop_locked();
-        alarm_unlock();
-        return FSP_ERR_ABORTED;
+        case ALARM_REQ_STOPPED:
+            (void)alarm_stop_locked();
+            alarm_unlock();
+            return FSP_ERR_ABORTED;
+
+        case ALARM_REQ_SUPERSEDED:
+            /* A newer start will retarget the stream; leave it alone. */
+            alarm_unlock();
+            return FSP_ERR_ABORTED;
+
+        default:
+            break;
     }
 
     alarm_unlock();
@@ -1475,7 +1575,13 @@ int usrcmd_alarm(int argc, char **argv)
                             : "FAILED"),
                  (unsigned long)err);
         print_to_console(buf);
-        return (FSP_SUCCESS == err) ? CMD_OK : CMD_ERR_EXECUTE;
+        /* A superseded stop is a normal outcome, so it must not reach
+         * usrcmd_ntopt_callback()'s generic failure reporting
+         * (src/usrcmd.c:218-220), which would contradict the message
+         * printed just above. */
+        return ((FSP_SUCCESS == err) || (FSP_ERR_ABORTED == err))
+                   ? CMD_OK
+                   : CMD_ERR_EXECUTE;
     }
 
     if (0 == ntlibc_strcmp(argv[1], "wave"))
