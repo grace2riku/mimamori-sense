@@ -752,6 +752,11 @@ uint32_t audio_get_sample_rate(void)
     return (uint32_t)AUDIO_SAMPLE_RATE_HZ;
 }
 
+audio_fill_cb_t audio_get_fill_cb(void)
+{
+    return s_fill_cb;
+}
+
 /**
  * uT-Kernel task entry.
  *

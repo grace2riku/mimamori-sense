@@ -338,6 +338,7 @@ static ID s_alarm_mtxid = 0;
  *********************************************************************************************************************/
 static fsp_err_t alarm_lock(void);
 static void      alarm_unlock(void);
+static bool      alarm_owns_stream(void);
 static fsp_err_t alarm_stop_locked(void);
 static void      alarm_generator_reset(void);
 static void      alarm_load_step(uint32_t idx);
@@ -383,6 +384,33 @@ static void alarm_unlock(void)
 }
 
 /**
+ * Is the audio stream still OURS?
+ *
+ * s_active alone is not enough. audio_start() overwrites the installed
+ * producer unconditionally (src/port/audio_port.c:577) and audio_stop() does
+ * not clear it, so another caller can take the device over behind our back
+ * while s_active stays true:
+ *
+ *   alarm start emergency   -> producer = alarm_fill_cb, s_active = true
+ *   audio stop              -> device READY, s_active STILL true
+ *   audio start             -> producer = audio_tone_fill, device PLAYING
+ *
+ * At that point the device really is AUDIO_STATE_PLAYING, but it is playing
+ * the built-in test tone. Testing the device state only would make
+ * alarm_sound_start() report success for a pattern that is never rendered,
+ * and would make alarm_sound_stop() tear down a stream belonging to somebody
+ * else. Comparing the installed producer against our own callback is what
+ * distinguishes the two cases.
+ *
+ * @return true when this module installed the producer that audio_port is
+ *         currently using.
+ */
+static bool alarm_owns_stream(void)
+{
+    return (s_active && (alarm_fill_cb == audio_get_fill_cb()));
+}
+
+/**
  * Stop playback. The mutex must already be held.
  *
  * Order matters: s_pattern is cleared BEFORE audio_stop() is called, because
@@ -401,7 +429,14 @@ static fsp_err_t alarm_stop_locked(void)
 
     if (s_active)
     {
-        err      = audio_stop();
+        /* Stop the DEVICE only while the stream is still ours; otherwise just
+         * drop our own bookkeeping, because audio_stop() here would silence a
+         * stream another caller started (see alarm_owns_stream()). */
+        if (alarm_owns_stream())
+        {
+            err = audio_stop();
+        }
+
         s_active = false;
     }
 
@@ -736,7 +771,9 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
 
     if (s_active)
     {
-        if ((!s_finished) && (AUDIO_STATE_PLAYING == audio_get_state()))
+        if (alarm_owns_stream() &&
+            (!s_finished) &&
+            (AUDIO_STATE_PLAYING == audio_get_state()))
         {
             /* Live pattern switch - no restart, no click. */
             s_pattern = pattern;
@@ -745,6 +782,9 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         }
 
         /* We still think we own the stream, but it is not usable as-is:
+         *   - !alarm_owns_stream(): another caller replaced the producer
+         *     (e.g. "audio start"), so the device may well be PLAYING but it
+         *     is not playing US,
          *   - s_finished: a one-shot pattern has already ended and
          *     alarm_task() has not torn the stream down yet (it is either not
          *     scheduled or waiting for this mutex), or
@@ -752,7 +792,10 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
          *     behind our back (e.g. "audio stop").
          * Tearing it down here makes the restart below clean, and
          * alarm_stop_locked() clears the pending event so alarm_task() will
-         * not stop the alarm we are about to start. */
+         * not stop the alarm we are about to start. In the first case
+         * alarm_stop_locked() deliberately leaves the other stream running,
+         * so the audio_start() below reports FSP_ERR_IN_USE instead of
+         * silently hijacking it. */
         (void)alarm_stop_locked();
     }
 
@@ -823,9 +866,10 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
         return err;
     }
 
-    /* The device state is checked as well, so that a pattern change cannot
-     * report success on a stream that "audio stop" has already killed. */
-    if ((!s_active) || (AUDIO_STATE_PLAYING != audio_get_state()))
+    /* Ownership AND device state are checked, so that a pattern change cannot
+     * report success on a stream that "audio stop" has already killed, nor on
+     * one that "audio start" has taken over (see alarm_owns_stream()). */
+    if ((!alarm_owns_stream()) || (AUDIO_STATE_PLAYING != audio_get_state()))
     {
         alarm_unlock();
         return FSP_ERR_NOT_OPEN;
@@ -858,7 +902,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
 
 bool alarm_sound_is_active(void)
 {
-    return s_active;
+    return alarm_owns_stream();
 }
 
 alarm_pattern_t alarm_sound_get_pattern(void)
@@ -1007,7 +1051,8 @@ static void alarm_cmd_status(void)
     print_to_console("Alarm tone generator (Issue #47 / S-005-3)\r\n");
 
     snprintf(buf, sizeof(buf), "  Playback     : %s, pattern '%s', generator %s\r\n",
-             s_active ? "ACTIVE" : "stopped",
+             alarm_owns_stream() ? "ACTIVE"
+                                 : (s_active ? "LOST (device taken over)" : "stopped"),
              alarm_pattern_name(s_pattern),
              gen_str);
     print_to_console(buf);

@@ -122,14 +122,18 @@ fsp_err_t alarm_sound_init(void);
  * If this module is not playing yet, the generator is reset to the first step
  * of @p pattern and audio_start() is called with the internal fill callback.
  *
- * If it IS already playing (and the device really still is PLAYING, and the
- * pattern in progress has not already finished), only the pattern is replaced
- * - exactly as alarm_sound_set_pattern() does - and FSP_SUCCESS is returned;
- * the stream is not restarted, so there is no gap or click at the switch.
- * In the two remaining cases - a one-shot pattern that has just ended, or a
- * stream that was stopped behind our back by "audio stop" - the stream is torn
- * down first and then started again, so a repeated
- * alarm_sound_start(ALARM_PATTERN_BEEP) always beeps.
+ * If it IS already playing - meaning this module still owns the installed
+ * producer, the device really still is PLAYING, and the pattern in progress
+ * has not already finished - only the pattern is replaced, exactly as
+ * alarm_sound_set_pattern() does, and FSP_SUCCESS is returned; the stream is
+ * not restarted, so there is no gap or click at the switch.
+ * In the three remaining cases - a one-shot pattern that has just ended, a
+ * stream that was stopped behind our back by "audio stop", or a stream that
+ * "audio start" has taken over - the stale bookkeeping is dropped first and
+ * the stream is started again, so a repeated
+ * alarm_sound_start(ALARM_PATTERN_BEEP) always beeps. In the take-over case
+ * the other stream is deliberately left running and FSP_ERR_IN_USE is
+ * returned rather than hijacking it.
  *
  * Non-blocking with respect to the sound: it returns as soon as the stream is
  * running and the ISR keeps producing samples. Task context only.
@@ -143,7 +147,7 @@ fsp_err_t alarm_sound_init(void);
  * @retval FSP_ERR_IN_USE           The audio device is busy with something
  *                                  that is not this module (e.g. the
  *                                  "audio start" test tone), or it is still
- *                                  stopping.
+ *                                  stopping. The other stream keeps playing.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
@@ -155,6 +159,8 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  * even taken - and the device is stopped afterwards, so the output is
  * guaranteed to go quiet within 3 x AUDIO_BUFFER_MS (30 ms) whatever the
  * codec mute inside audio_stop() and the lock contention do.
+ * If another caller has taken the stream over in the meantime, only this
+ * module's own state is cleared; the other stream is left running.
  * Task context only.
  *
  * @retval FSP_SUCCESS      Stopped (or was not playing).
@@ -175,14 +181,17 @@ fsp_err_t alarm_sound_stop(void);
  *
  * @retval FSP_SUCCESS              Pattern changed.
  * @retval FSP_ERR_INVALID_ARGUMENT @p pattern out of range or NONE.
- * @retval FSP_ERR_NOT_OPEN         Not currently playing (either this module
- *                                  never started, or the device is no longer
- *                                  in AUDIO_STATE_PLAYING) - use
+ * @retval FSP_ERR_NOT_OPEN         Not currently playing: this module never
+ *                                  started, the device is no longer in
+ *                                  AUDIO_STATE_PLAYING, or another caller has
+ *                                  taken the stream over - use
  *                                  alarm_sound_start().
  */
 fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern);
 
-/** @return true while this module owns the audio stream. */
+/** @return true while this module owns the audio stream, i.e. the producer
+ *          audio_port currently uses is this module's. Goes false on its own
+ *          if another caller takes the device over. */
 bool alarm_sound_is_active(void);
 
 /** @return the pattern requested by the last alarm_sound_start() /

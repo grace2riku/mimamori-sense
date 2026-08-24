@@ -237,6 +237,21 @@ audio_state_t audio_get_state(void);
 uint32_t audio_get_sample_rate(void);
 
 /**
+ * Return the producer currently installed by audio_start().
+ *
+ * Exists so that a waveform module can tell whether the stream is still ITS
+ * stream. audio_start() overwrites the producer unconditionally
+ * (audio_port.c:577) and audio_stop() leaves it alone, so device state alone
+ * cannot answer that question: after "alarm start", "audio stop",
+ * "audio start", the device is PLAYING again but the built-in test tone owns
+ * it, not the alarm.
+ *
+ * @return the installed callback, audio_tone_fill for the built-in test tone,
+ *         or NULL if audio_start() has never run.
+ */
+audio_fill_cb_t audio_get_fill_cb(void);
+
+/**
  * uT-Kernel task entry: runs audio_init() once, then sleeps forever.
  * Created and started from usermain().
  */
