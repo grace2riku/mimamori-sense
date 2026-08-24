@@ -148,10 +148,11 @@ fsp_err_t alarm_sound_init(void);
  *                                  that is not this module (e.g. the
  *                                  "audio start" test tone), or it is still
  *                                  stopping. The other stream keeps playing.
- * @retval FSP_ERR_ABORTED          A concurrent alarm_sound_stop() cancelled
- *                                  this start while it held the mutex. The
- *                                  alarm is NOT playing; that stop completes
- *                                  the teardown.
+ * @retval FSP_ERR_ABORTED          An alarm_sound_stop() was issued after this
+ *                                  call began and therefore won. The alarm is
+ *                                  NOT playing: this call performed the
+ *                                  teardown itself, because that stop may have
+ *                                  timed out on the mutex and returned already.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
@@ -167,8 +168,10 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  * module's own state is cleared; the other stream is left running.
  *
  * The cancellation is recorded before the lock-free silencing, so a
- * concurrent alarm_sound_start() that already holds the mutex cannot erase it:
- * that start aborts with FSP_ERR_ABORTED instead of resurrecting the alarm.
+ * concurrent alarm_sound_start() / alarm_sound_set_pattern() that already
+ * holds the mutex cannot erase it: that call aborts with FSP_ERR_ABORTED and
+ * tears the alarm down itself instead of resurrecting it. This holds even
+ * when THIS call returns FSP_ERR_TIMEOUT without ever taking the mutex.
  * Task context only.
  *
  * @retval FSP_SUCCESS      Stopped (or was not playing).
@@ -194,6 +197,8 @@ fsp_err_t alarm_sound_stop(void);
  *                                  AUDIO_STATE_PLAYING, or another caller has
  *                                  taken the stream over - use
  *                                  alarm_sound_start().
+ * @retval FSP_ERR_ABORTED          An alarm_sound_stop() was issued after this
+ *                                  call began and won; the alarm is stopped.
  */
 fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern);
 

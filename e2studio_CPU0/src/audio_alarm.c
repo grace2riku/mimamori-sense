@@ -315,26 +315,32 @@ static volatile bool s_active = false;
 static volatile bool s_finished = false;
 
 /**
- * A stop has been requested and has not run yet.
+ * Number of stop requests ever issued. Monotonic, and NEVER cleared.
  *
  * alarm_sound_stop() silences the generator BEFORE taking the mutex, so that
  * going quiet does not depend on lock contention. That lock-free write is
- * exactly what a concurrent alarm_sound_start() would otherwise erase: the
- * start can already hold the mutex, and it can then sit inside audio_start()
- * for seconds retrying the codec unmute over a contended IIC1 bus, so the
- * cancellation would be lost and the alarm would sound anyway.
+ * what a concurrent alarm_sound_start() would otherwise erase: the start can
+ * already hold the mutex, and it can then sit inside audio_start() for
+ * seconds retrying the codec unmute over a contended IIC1 bus.
  *
- * This flag makes the cancellation survive that window. It is raised BEFORE
- * the lock-free silencing and lowered only by the stop that raised it, and
- * alarm_sound_start() refuses to commit while it is set, handing the teardown
- * over to the stop that is already blocked on the mutex.
+ * A start therefore samples this counter on entry and re-checks it at every
+ * point where it would commit; a different value means "a stop was requested
+ * after I began", and the start tears down instead of reporting success.
+ *
+ * It MUST be a counter that nobody clears, not a "stop pending" flag. A stop
+ * whose own alarm_lock() times out - which is precisely what happens when a
+ * start holds the mutex for longer than ALARM_LOCK_TIMEOUT_MS - would have to
+ * lower such a flag before returning, and the in-flight start would then see a
+ * clean slate and report success for an alarm that was already called off,
+ * leaving the device PLAYING silence and locking out every other audio user.
+ * A counter stays visible whether or not the stop ever runs.
  *
  * Only reachable with more than one task driving this module. Today the shell
  * is the only caller, but the module exists so that the fall-detection logic
- * can raise and clear alarms from another task, which is exactly when this
- * starts to matter.
+ * can raise and clear alarms from another task, which is when this starts to
+ * matter.
  */
-static volatile bool s_stop_pending = false;
+static volatile uint32_t s_stop_gen = 0;
 
 /** Waveform and digital amplitude. Single words, read by the ISR once per
  *  buffer, written from task context - a change simply takes effect on the
@@ -831,10 +837,21 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return FSP_ERR_INVALID_ARGUMENT;
     }
 
+    /* Sample BEFORE anything else: every stop issued from here on is a
+     * cancellation of THIS start and must win, whether or not that stop ever
+     * manages to take the mutex (see s_stop_gen). */
+    const uint32_t stop_gen = s_stop_gen;
+
     err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
         return err;
+    }
+
+    if (s_stop_gen != stop_gen)
+    {
+        /* Cancelled while we waited for the mutex - do not start at all. */
+        goto cancelled;
     }
 
     if (s_active)
@@ -853,13 +870,9 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
              * the alarm this call just reported as started. */
             alarm_discard_completion();
 
-            if (s_stop_pending)
+            if (s_stop_gen != stop_gen)
             {
-                /* Cancelled while we held the mutex - see s_stop_pending.
-                 * Undo the retarget and let the waiting stop finish the job. */
-                s_pattern = ALARM_PATTERN_NONE;
-                alarm_unlock();
-                return FSP_ERR_ABORTED;
+                goto cancelled;
             }
 
             alarm_unlock();
@@ -899,25 +912,42 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return err;
     }
 
-    /* The stream is up, so s_active must be set even if we abort below: it is
-     * what tells the pending stop's alarm_stop_locked() that there is a device
-     * to shut down. */
+    /* The stream is up, so s_active must be set before any cancellation exit:
+     * it is what tells alarm_stop_locked() that there is a device to stop. */
     s_active = true;
 
-    if (s_stop_pending)
+    if (s_stop_gen != stop_gen)
     {
-        /* Cancelled while we were inside audio_start() - which can take
-         * seconds when the IIC1 bus is contended. Do not report success for an
-         * alarm that was called off; the stop is blocked on this mutex and
-         * runs audio_stop() as soon as we release it. */
-        s_pattern = ALARM_PATTERN_NONE;
-        alarm_unlock();
-        return FSP_ERR_ABORTED;
+        /* Cancelled while we were inside audio_start(), which can take seconds
+         * when the IIC1 bus is contended. */
+        goto cancelled;
     }
 
     alarm_unlock();
 
     return FSP_SUCCESS;
+
+cancelled:
+
+    /*
+     * A stop was requested after this call began.
+     *
+     * Tear the alarm down HERE rather than leaving it to that stop. The stop
+     * may have timed out on the mutex we are holding and already returned to
+     * its caller, in which case nobody else will ever do it - and the device
+     * would stay PLAYING silence, blocking the test tone and every other user
+     * of audio_port until some later alarm command cleaned it up.
+     *
+     * alarm_stop_locked() is safe to run even when nothing was started: it
+     * clears s_pattern, skips audio_stop() unless s_active, and discards any
+     * completion. A stop that IS still waiting on the mutex therefore simply
+     * finds the work already done when it finally runs.
+     */
+    (void)alarm_stop_locked();
+
+    alarm_unlock();
+
+    return FSP_ERR_ABORTED;
 }
 
 /**
@@ -934,21 +964,22 @@ fsp_err_t alarm_sound_stop(void)
      * aligned word, so clearing it outside the lock is safe; the deadline
      * therefore does not depend on lock contention at all.
      * alarm_stop_locked() clears it again - the assignment is idempotent. */
-    s_stop_pending = true;
-    s_pattern      = ALARM_PATTERN_NONE;
+    /* Publish the cancellation FIRST, so that a start which already holds the
+     * mutex cannot erase it. Deliberately never undone, not even when the
+     * alarm_lock() below times out: that timeout is exactly the case where an
+     * in-flight start still has to learn about this stop (see s_stop_gen). */
+    s_stop_gen++;
+    s_pattern = ALARM_PATTERN_NONE;
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
-        /* This stop will not run, so it must not keep blocking future starts.
-         * The caller is told it failed and the generator is already silent. */
-        s_stop_pending = false;
+        /* The generator is already silent and the cancellation stays visible;
+         * the start that is holding the mutex performs the teardown. */
         return err;
     }
 
     err = alarm_stop_locked();
-
-    s_stop_pending = false;
 
     alarm_unlock();
 
@@ -964,6 +995,13 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
     {
         return FSP_ERR_INVALID_ARGUMENT;
     }
+
+    /* Same reasoning as alarm_sound_start(): a stop issued from here on is a
+     * cancellation of THIS call. Retargeting a running alarm is the same kind
+     * of commit as starting one - it writes s_pattern - so it must lose to a
+     * concurrent stop, including one whose alarm_lock() times out and which
+     * therefore never gets to write s_pattern itself. */
+    const uint32_t stop_gen = s_stop_gen;
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
@@ -995,6 +1033,13 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * but the generator has already moved to ALARM_GEN_IDLE by then, so the
      * new pattern is genuinely live and must not be torn down. */
     alarm_discard_completion();
+
+    if (s_stop_gen != stop_gen)
+    {
+        (void)alarm_stop_locked();
+        alarm_unlock();
+        return FSP_ERR_ABORTED;
+    }
 
     alarm_unlock();
 
