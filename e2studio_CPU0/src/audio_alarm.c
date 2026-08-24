@@ -69,29 +69,28 @@
  *  AND its tail has been played out. Consumed by alarm_task(). */
 #define ALARM_EVT_FINISHED          (1U << 0)
 
+/** Event flag bit set by alarm_post_request() when a caller has declared a
+ *  new desired state. Consumed by alarm_task(). */
+#define ALARM_EVT_REQUEST           (1U << 1)
+
+/** Every bit alarm_task() waits on. */
+#define ALARM_EVT_ANY               (ALARM_EVT_FINISHED | ALARM_EVT_REQUEST)
+
 /**
- * Timeout when taking the module mutex.
+ * How long the synchronous API wrappers wait for alarm_task to apply their
+ * request before reporting "outcome not known yet".
  *
- * This value does NOT cover the worst case, and is not required to.
- *
- * The longest critical section is alarm_sound_start() -> audio_start(), whose
- * unmute retry loop can make AUDIO_UNMUTE_ATTEMPTS (3) attempts
- * (src/port/audio_port.c:626-637), each able to block for
- * I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms on the shared IIC1 bus
- * (src/port/i2c_bus0.h:81, src/port/i2c_bus0.c:114) - roughly 3 s, more than
- * this timeout. alarm_stop_locked() -> audio_stop() is shorter: one
- * da7212_mute() plus the AUDIO_STOP_TIMEOUT_MS = 70 ms idle wait
- * (src/port/audio_port.c:65).
- *
- * Making the timeout large enough to cover that would only trade one problem
- * for another: "alarm stop" from the shell would then block for seconds.
- * Instead every caller is written to tolerate the timeout -
- * alarm_sound_stop() silences the generator BEFORE taking the lock, and
- * alarm_task() re-posts the completion event when the lock fails - so the
- * value only decides how long a caller waits, never whether the module stays
- * consistent.
+ * REPORTING ONLY - the request itself is never dropped. Sized above the worst
+ * case of one reconcile pass: audio_start() can spend AUDIO_UNMUTE_ATTEMPTS
+ * (3) x I2C_BUS0_LOCK_TIMEOUT_MS (1000 ms) retrying the codec unmute over a
+ * contended IIC1 bus (src/port/audio_port.c:626-637, src/port/i2c_bus0.c:114),
+ * and a preceding audio_stop() can add its own mute plus
+ * AUDIO_STOP_TIMEOUT_MS (70 ms).
  */
-#define ALARM_LOCK_TIMEOUT_MS       (2000)
+#define ALARM_SETTLE_TIMEOUT_MS     (5000U)
+
+/** Poll interval of that wait. */
+#define ALARM_SETTLE_POLL_MS        (5U)
 
 /** Retry delay used by alarm_task() if tk_wai_flg() ever fails. */
 #define ALARM_TASK_ERR_DELAY_MS     (100)
@@ -186,17 +185,6 @@ typedef struct st_alarm_pattern_def
     uint8_t             step_count;     /**< entries in p_steps */
     bool                loop;           /**< true = repeat, false = one shot */
 } alarm_pattern_def_t;
-
-/**
- * Where a request stands relative to the newest one (see s_req_seq).
- */
-typedef enum e_alarm_req_state
-{
-    ALARM_REQ_CURRENT = 0,      /**< nothing newer: this request may commit */
-    ALARM_REQ_STOPPED,          /**< the newest request is a STOP: tear down */
-    ALARM_REQ_SUPERSEDED,       /**< the newest request is another START:
-                                 *   leave ITS alarm alone */
-} alarm_req_state_t;
 
 /** Generator state machine (ISR side). */
 typedef enum e_alarm_gen_state
@@ -317,82 +305,58 @@ static const alarm_pattern_def_t s_pattern_defs[ALARM_PATTERN_COUNT] = {
 static volatile alarm_pattern_t s_pattern = ALARM_PATTERN_NONE;
 
 /** true while this module owns the audio stream (audio_start() succeeded and
- *  audio_stop() has not run yet). Task context only, guarded by the mutex. */
+ *  audio_stop() has not run yet). Written by alarm_task ONLY, which is the
+ *  only task that calls audio_start() / audio_stop(); everybody else reads. */
 static volatile bool s_active = false;
 
 /** Set by the generator when a one-shot pattern has finished and its tail has
- *  been played out. Cleared by every start / stop under the mutex, which is
- *  what stops a stale event from tearing down a freshly restarted alarm. */
+ *  been played out. Cleared by alarm_task whenever it applies a pattern, so
+ *  a completion always belongs to the pattern currently being rendered. */
 static volatile bool s_finished = false;
 
 /**
- * Request ordering: the NEWEST request wins.
+ * Requested state, and the change counter that goes with it.
  *
- * alarm_sound_stop() silences the generator BEFORE taking the mutex, so that
- * going quiet does not depend on lock contention. Ordering the requests is
- * what keeps that lock-free write honest, because the mutex alone cannot:
- * a caller can hold it for seconds inside audio_start() retrying the codec
- * unmute over a contended IIC1 bus, so the order in which callers ACQUIRE the
- * mutex has nothing to do with the order in which they were ISSUED.
+ * This module used to let every caller drive the device directly under a
+ * mutex. That could not be made correct: alarm_sound_start() holds the mutex
+ * across audio_start(), which blocks for seconds retrying the codec unmute
+ * over a contended IIC1 bus, so the order in which callers ACQUIRED the mutex
+ * had nothing to do with the order in which they were ISSUED. Six successive
+ * attempts to recover that order with tickets, generations and abandonment
+ * watermarks each left a hole (see the PR history for Issue #47).
  *
- * Every "make sound" request (alarm_sound_start, alarm_sound_set_pattern) and
- * every "stop" request takes a ticket from s_req_seq and records it in
- * s_start_seq / s_stop_seq respectively. A request commits only if NO request
- * of ANY kind carries a newer ticket - see alarm_req_state():
+ * The concurrency is gone instead of being managed. A request now only
+ * DECLARES what should be playing:
  *
- *   newest is a stop  -> the stale request tears the alarm down, because that
- *                        stop may have timed out on the mutex and given up
- *   newest is a start -> the stale request touches nothing, because that
- *                        start's alarm is the one that should be playing
+ *   caller  : s_desired_pattern = X; s_request_seq++;  (one task-atomic step)
+ *   alarm_task : drives audio_start() / audio_stop() until the device matches
  *
- * All three orderings matter and each was a separate defect:
- *   stop  after start : a stop preempted before alarm_lock() would be erased
- *                       by the start that already held the mutex
- *   start after stop  : a stop that acquired the mutex later would silence an
- *                       alarm raised after the caller asked for silence
- *   start after start : comparing only against s_stop_seq let an OLDER start
- *                       live-switch s_pattern back over a NEWER one, both
- *                       returning success
+ * alarm_task is the only task that touches audio_port, so there is no mutex,
+ * no lock timeout, and nothing to order: "the newest request wins" is simply
+ * the last write to a single word. A request that arrives while alarm_task is
+ * inside a multi-second audio_start() is picked up by the reconcile loop as
+ * soon as that call returns.
  *
- * Tickets are never cleared. A "stop pending" flag cannot work here: a stop
- * whose own alarm_lock() times out - exactly what happens when a start holds
- * the mutex longer than ALARM_LOCK_TIMEOUT_MS - would have to lower the flag
- * before returning, and the in-flight start would then see a clean slate and
- * report success for an alarm that was already called off, leaving the device
- * PLAYING silence and locking out every other audio user.
- *
- * Taking a ticket and publishing whatever goes with it (the stop's silencing
- * of s_pattern) is done under tk_dis_dsp() so the two cannot be observed out
- * of step - see alarm_claim_start_seq() / alarm_claim_stop_seq().
- *
- * Only reachable with more than one task driving this module. Today the shell
- * is the only caller, but the module exists so that the fall-detection logic
- * can raise and clear alarms from another task, which is when this starts to
- * matter.
+ * s_request_seq exists only to answer "has anything been asked for since I
+ * last applied?" - it distinguishes a repeated request for the SAME pattern
+ * (alarm start beep, twice) from no request at all. It is NOT an ordering
+ * ticket; nothing compares one caller's value against another's.
  */
-static volatile uint32_t s_req_seq   = 0;   /**< ticket source */
-static volatile uint32_t s_start_seq = 0;   /**< newest start / retarget */
-static volatile uint32_t s_stop_seq  = 0;   /**< newest stop */
+static volatile alarm_pattern_t s_desired_pattern = ALARM_PATTERN_NONE;
+static volatile uint32_t        s_request_seq     = 0;
 
-/**
- * Newest "make sound" ticket whose owner gave up before committing.
- *
- * A ticket is claimed before the mutex, so a start can end up owning the
- * NEWEST ticket and then never act on it - its alarm_lock() times out (the
- * holder is inside audio_start() for seconds), or audio_start() itself fails.
- * Its requested pattern is stored nowhere, so nobody can carry it out.
- *
- * Left unmarked, that dead ticket makes every other request stand down for a
- * request that will never happen: the mutex holder takes the SUPERSEDED exit
- * "for" it and returns FSP_ERR_ABORTED while its own older pattern keeps
- * playing, and an older stop skips its teardown for the same reason.
- *
- * So a ticket counts only while its owner can still commit. Every exit from
- * alarm_sound_start() / alarm_sound_set_pattern() that does NOT commit marks
- * its ticket here. Monotonic like the others - it is raised, never lowered -
- * so out-of-order abandonment cannot resurrect a dead ticket.
- */
-static volatile uint32_t s_abandon_seq = 0;
+/* --- Written by alarm_task only ------------------------------------------- */
+
+/** s_request_seq / s_desired_pattern as of the last completed reconcile. */
+static volatile uint32_t        s_applied_seq     = 0;
+static volatile alarm_pattern_t s_applied_pattern = ALARM_PATTERN_NONE;
+
+/** Result of the last reconcile, reported by the API wrappers and by
+ *  "alarm status". */
+static volatile fsp_err_t s_last_error = FSP_SUCCESS;
+
+/** Number of completed reconcile passes ("alarm status" diagnostics). */
+static volatile uint32_t s_settle_count = 0;
 
 /** Waveform and digital amplitude. Single words, read by the ISR once per
  *  buffer, written from task context - a change simply takes effect on the
@@ -421,27 +385,20 @@ static volatile uint32_t s_finish_count = 0;
 
 /* --- Synchronisation ------------------------------------------------------ */
 
-/** Event flag signalled by the generator, waited on by alarm_task(). */
+/** Event flag: ALARM_EVT_REQUEST from the API wrappers, ALARM_EVT_FINISHED
+ *  from the generator ISR. Both wake alarm_task's reconcile loop. */
 static ID s_alarm_flgid = 0;
-
-/** Serialises alarm_sound_start() / alarm_sound_stop() /
- *  alarm_sound_set_pattern() and alarm_task()'s auto-stop, so that the shell
- *  and the auto-stop can never both be inside audio_stop(). */
-static ID s_alarm_mtxid = 0;
 
 /**********************************************************************************************************************
  Private (static) function prototypes
  *********************************************************************************************************************/
-static fsp_err_t alarm_lock(void);
-static void      alarm_unlock(void);
 static bool      alarm_owns_stream(void);
 static void      alarm_discard_completion(void);
-static bool      alarm_seq_newer(uint32_t a, uint32_t b);
-static alarm_req_state_t alarm_req_state(uint32_t my_seq);
-static void      alarm_abandon_start_seq(uint32_t my_seq);
-static uint32_t  alarm_claim_start_seq(void);
-static uint32_t  alarm_claim_stop_seq(void);
-static fsp_err_t alarm_stop_locked(void);
+static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
+static void      alarm_reconcile(void);
+static fsp_err_t alarm_wait_settled(uint32_t seq);
+static fsp_err_t alarm_apply_stop(void);
+static fsp_err_t alarm_apply_start(alarm_pattern_t pattern);
 static void      alarm_generator_reset(void);
 static void      alarm_load_step(uint32_t idx);
 static void      alarm_next_step(void);
@@ -457,55 +414,19 @@ static void      alarm_cmd_usage(void);
  *********************************************************************************************************************/
 
 /**
- * Take the module mutex, creating the synchronisation objects if needed.
- */
-static fsp_err_t alarm_lock(void)
-{
-    fsp_err_t err = alarm_sound_init();
-    if (FSP_SUCCESS != err)
-    {
-        return err;
-    }
-
-    ER ercd = tk_loc_mtx(s_alarm_mtxid, (TMO)ALARM_LOCK_TIMEOUT_MS);
-    if (E_TMOUT == ercd)
-    {
-        return FSP_ERR_TIMEOUT;
-    }
-    if (E_OK != ercd)
-    {
-        return FSP_ERR_INTERNAL;
-    }
-
-    return FSP_SUCCESS;
-}
-
-static void alarm_unlock(void)
-{
-    (void)tk_unl_mtx(s_alarm_mtxid);
-}
-
-/**
  * Is the audio stream still OURS?
  *
- * s_active alone is not enough. audio_start() overwrites the installed
- * producer unconditionally (src/port/audio_port.c:577) and audio_stop() does
- * not clear it, so another caller can take the device over behind our back
- * while s_active stays true:
+ * audio_start() overwrites the installed producer unconditionally
+ * (src/port/audio_port.c:577) and audio_stop() does not clear it, so another
+ * caller can take the device over behind our back while s_active stays true:
  *
  *   alarm start emergency   -> producer = alarm_fill_cb, s_active = true
  *   audio stop              -> device READY, s_active STILL true
  *   audio start             -> producer = audio_tone_fill, device PLAYING
  *
  * At that point the device really is AUDIO_STATE_PLAYING, but it is playing
- * the built-in test tone. Testing the device state only would make
- * alarm_sound_start() report success for a pattern that is never rendered,
- * and would make alarm_sound_stop() tear down a stream belonging to somebody
- * else. Comparing the installed producer against our own callback is what
- * distinguishes the two cases.
- *
- * @return true when this module installed the producer that audio_port is
- *         currently using.
+ * the built-in test tone. Comparing the installed producer against our own
+ * callback is what distinguishes the two cases.
  */
 static bool alarm_owns_stream(void)
 {
@@ -515,20 +436,9 @@ static bool alarm_owns_stream(void)
 /**
  * Drop a pending "one shot finished" completion.
  *
- * MUST be called by every path that retargets or tears down the stream while
- * holding the mutex, because the generator raises the completion from the SSI
- * ISR and can therefore do so at ANY instruction boundary in task context -
- * including between a `!s_finished` test and the s_pattern assignment that
- * follows it. A completion left behind belongs to the pattern that has just
- * been replaced, and alarm_task() would act on it by stopping the alarm the
- * caller just asked for.
- *
- * Both halves matter: s_finished is what alarm_task() re-checks under the
- * mutex, and the event flag is what wakes it up in the first place.
- *
- * Factored out on purpose. This clearing used to be written out at each call
- * site, and the copy in alarm_sound_start()'s live-switch branch was simply
- * missing - the exact bug this helper exists to make unrepeatable.
+ * Called by alarm_task whenever it installs a pattern, so that a completion
+ * always refers to the pattern currently being rendered and never to the one
+ * that was just replaced.
  */
 static void alarm_discard_completion(void)
 {
@@ -541,146 +451,54 @@ static void alarm_discard_completion(void)
 }
 
 /**
- * Is ticket @p a newer than ticket @p b?
+ * Declare what should be playing and wake alarm_task.
  *
- * Signed difference, so the answer stays correct across the uint32 wrap.
+ * The pattern and the change counter are published in one task-atomic step so
+ * that alarm_task can never sample a counter that does not belong to the
+ * pattern beside it. tk_dis_dsp() is the right scope: the only writers are
+ * TASKS, and the ISR only ever reads s_pattern.
+ *
+ * A stop additionally silences the generator right here, because going quiet
+ * is the part with a deadline (Issue #47: within 100 ms) and it must not wait
+ * for alarm_task to be scheduled or for the I2C mute inside audio_stop().
+ * alarm_task writes s_pattern again when it reconciles; it is idempotent.
+ *
+ * @param[in]  pattern  desired pattern, ALARM_PATTERN_NONE to stop.
+ * @param[out] p_seq    the change counter published for this request, so the
+ *                      caller can wait for it. May be NULL.
  */
-static bool alarm_seq_newer(uint32_t a, uint32_t b)
-{
-    return (((int32_t)(a - b)) > 0);
-}
-
-/**
- * Classify a request against the newest one that has been issued.
- *
- * Both directions have to be compared. Testing only s_stop_seq lets an OLDER
- * start overwrite a NEWER one: start A takes ticket N and is preempted before
- * it can lock, start B takes N+1 and runs to completion, then A acquires the
- * mutex, sees no stop at all and live-switches s_pattern back to its own,
- * older pattern - both returning success.
- *
- * When something newer exists, which of the two it is decides what the stale
- * request must do:
- *   - a newer STOP is the latest      -> somebody has to tear the alarm down,
- *                                        and that stop may have timed out on
- *                                        this very mutex, so we must do it
- *   - a newer START is the latest     -> its alarm is the one that should be
- *                                        playing; touch nothing
- * Note s_start_seq holds OUR ticket while we are the newest start, so the
- * comparison against it is false in the common, uncontended case.
- */
-static alarm_req_state_t alarm_req_state(uint32_t my_seq)
-{
-    const uint32_t stop_seq  = s_stop_seq;
-    const uint32_t start_seq = s_start_seq;
-
-    /* A start ticket counts only while its owner can still act on it; see
-     * s_abandon_seq. */
-    const bool start_live  = alarm_seq_newer(start_seq, s_abandon_seq);
-    const bool start_newer = start_live && alarm_seq_newer(start_seq, my_seq);
-    const bool stop_newer  = alarm_seq_newer(stop_seq, my_seq);
-
-    if (start_newer && ((!stop_newer) || alarm_seq_newer(start_seq, stop_seq)))
-    {
-        return ALARM_REQ_SUPERSEDED;
-    }
-
-    if (stop_newer)
-    {
-        return ALARM_REQ_STOPPED;
-    }
-
-    return ALARM_REQ_CURRENT;
-}
-
-/**
- * Mark a "make sound" ticket as one that will never commit.
- *
- * Called from every exit of alarm_sound_start() / alarm_sound_set_pattern()
- * that does not commit. Task-atomic and raise-only, so two callers abandoning
- * out of order cannot lower the mark and bring a dead ticket back to life.
- */
-static void alarm_abandon_start_seq(uint32_t my_seq)
+static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 {
     const bool dispatch_off = (E_OK == tk_dis_dsp());
 
-    if (alarm_seq_newer(my_seq, s_abandon_seq))
+    s_desired_pattern = pattern;
+    s_request_seq++;
+
+    if (ALARM_PATTERN_NONE == pattern)
     {
-        s_abandon_seq = my_seq;
+        s_pattern = ALARM_PATTERN_NONE;
+    }
+
+    if (NULL != p_seq)
+    {
+        *p_seq = s_request_seq;
     }
 
     if (dispatch_off)
     {
         (void)tk_ena_dsp();
     }
-}
 
-
-/**
- * Take a ticket for a "make sound" request (start or retarget).
- *
- * Task-atomic: the ticket and s_start_seq must become visible together, or a
- * concurrent stop could read a stale s_start_seq and tear down an alarm that
- * is in fact newer than it.
- */
-static uint32_t alarm_claim_start_seq(void)
-{
-    const bool dispatch_off = (E_OK == tk_dis_dsp());
-
-    const uint32_t seq = ++s_req_seq;
-    s_start_seq = seq;
-
-    if (dispatch_off)
+    if (s_alarm_flgid > 0)
     {
-        (void)tk_ena_dsp();
+        (void)tk_set_flg(s_alarm_flgid, ALARM_EVT_REQUEST);
     }
-
-    return seq;
 }
 
 /**
- * Take a ticket for a stop request AND silence the generator.
- *
- * Task-atomic for two reasons. The obvious one is the read-modify-write of
- * s_req_seq. The subtle one is that a start samples its own ticket in the
- * same way: if it could observe the state BETWEEN the ticket bump and the
- * silencing, it would take a ticket newer than this stop - so it would
- * rightly consider itself the winner - and then have its own s_pattern
- * overwritten by the silencing a moment later, ending up playing silence
- * while reporting success.
- *
- * tk_dis_dsp() is the right scope: the only writers of these variables are
- * TASKS, never the ISR, which merely reads s_pattern. If it fails the
- * silencing still happens - the 100 ms stop deadline outranks atomicity.
+ * Stop the device. alarm_task context only.
  */
-static uint32_t alarm_claim_stop_seq(void)
-{
-    const bool dispatch_off = (E_OK == tk_dis_dsp());
-
-    const uint32_t seq = ++s_req_seq;
-    s_stop_seq = seq;
-    s_pattern  = ALARM_PATTERN_NONE;
-
-    if (dispatch_off)
-    {
-        (void)tk_ena_dsp();
-    }
-
-    return seq;
-}
-
-/**
- * Stop playback. The mutex must already be held.
- *
- * Order matters: s_pattern is cleared BEFORE audio_stop() is called, because
- * that is the part of the stop that has a hard deadline. The generator sees
- * the change on its next fill (<= AUDIO_BUFFER_MS) and emits zeros, so the
- * output is silent within 3 x AUDIO_BUFFER_MS at the latest even if the codec
- * mute inside audio_stop() has to wait for the shared IIC1 bus (up to
- * I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms, src/port/i2c_bus0.c:114). In practice
- * the mute wins by a wide margin and silence is immediate.
- */
-static fsp_err_t alarm_stop_locked(void)
+static fsp_err_t alarm_apply_stop(void)
 {
     fsp_err_t err = FSP_SUCCESS;
 
@@ -699,12 +517,165 @@ static fsp_err_t alarm_stop_locked(void)
         s_active = false;
     }
 
-    /* Drop a pending "one shot finished" event so that alarm_task() cannot
-     * stop a later alarm because of it (it re-checks s_finished under the
-     * mutex as well). */
     alarm_discard_completion();
 
     return err;
+}
+
+/**
+ * Make @p pattern play. alarm_task context only.
+ *
+ * Retargets the running stream when we already own it, and brings the device
+ * up otherwise. This is the only place audio_start() is called from.
+ */
+static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
+{
+    fsp_err_t err;
+
+    if (alarm_owns_stream() && (AUDIO_STATE_PLAYING == audio_get_state()))
+    {
+        /* Live pattern switch - no restart, no click. The phase accumulator is
+         * not reset, which is what keeps the transition click-free. */
+        s_pattern = pattern;
+        alarm_discard_completion();
+
+        return FSP_SUCCESS;
+    }
+
+    /* The stream is not ours, or not running: drop whatever we still think we
+     * own, then start fresh. alarm_apply_stop() deliberately leaves another
+     * caller's stream running, so audio_start() below reports FSP_ERR_IN_USE
+     * instead of silently hijacking it. */
+    (void)alarm_apply_stop();
+
+    alarm_generator_reset();
+    s_pattern = pattern;
+
+    /* audio_start() validates the device state for us: FSP_ERR_NOT_OPEN when
+     * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
+     * already PLAYING (e.g. the "audio start" test tone) or still STOPPING
+     * (src/port/audio_port.c:562-575). */
+    err = audio_start(alarm_fill_cb, NULL);
+    if (FSP_SUCCESS != err)
+    {
+        s_pattern = ALARM_PATTERN_NONE;
+        return err;
+    }
+
+    s_active = true;
+
+    return FSP_SUCCESS;
+}
+
+/**
+ * Drive the device until it matches what has been requested.
+ *
+ * alarm_task context only - which is what makes the whole module safe: no
+ * other task ever calls audio_start() / audio_stop(), so there is nothing to
+ * serialise and no lock that could time out.
+ *
+ * The loop re-samples the request after every device operation, because
+ * audio_start() can take seconds and a caller may well have changed its mind
+ * in the meantime.
+ */
+static void alarm_reconcile(void)
+{
+    for (;;)
+    {
+        alarm_pattern_t want;
+        uint32_t        seq;
+
+        /* Sample the pair atomically: alarm_post_request() publishes both
+         * together, so they have to be read together. */
+        {
+            const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+            want = s_desired_pattern;
+            seq  = s_request_seq;
+
+            if (dispatch_off)
+            {
+                (void)tk_ena_dsp();
+            }
+        }
+
+        if (seq == s_applied_seq)
+        {
+            /*
+             * Nothing new has been asked for. A one-shot that has played out
+             * now stops itself; comparing the counters is what distinguishes
+             * that from "alarm start beep" issued a second time, which is a
+             * NEW request for the same pattern and must replay it.
+             */
+            if (!s_finished)
+            {
+                s_settle_count++;
+                return;                 /* converged */
+            }
+
+            want = ALARM_PATTERN_NONE;
+        }
+
+        if (ALARM_PATTERN_NONE == want)
+        {
+            s_last_error = alarm_apply_stop();
+        }
+        else
+        {
+            s_last_error = alarm_apply_start(want);
+        }
+
+        s_applied_pattern = want;
+        s_applied_seq     = seq;
+        s_settle_count++;
+    }
+}
+
+/**
+ * Wait until alarm_task has processed request @p seq, so that a synchronous
+ * caller can be told what happened.
+ *
+ * REPORTING ONLY. The device converges on the requested state whether or not
+ * this wait succeeds, so a timeout here is not a failure of the request - it
+ * only means the outcome is not known yet. Polling is deliberate: it keeps
+ * this reporting path out of the event flag that alarm_task waits on, where a
+ * second waiter could otherwise swallow a wake-up.
+ *
+ * Caveat, deliberately not engineered away: s_last_error holds the result of
+ * the LAST reconcile pass, and a one-shot that plays out is stopped under the
+ * same s_applied_seq as the start that launched it. A caller that is still
+ * polling when that happens would read the stop's result instead of its own.
+ * The window needs the alarm to end within the few milliseconds between two
+ * polls of a request that has only just been applied; distinguishing the two
+ * would need a per-request result slot, which is not worth it for a message.
+ *
+ * @retval FSP_SUCCESS      request applied, and it succeeded.
+ * @retval FSP_ERR_ABORTED  a newer request was applied instead.
+ * @retval FSP_ERR_TIMEOUT  still queued; the outcome is not known yet.
+ * @return                  whatever error alarm_task recorded otherwise.
+ */
+static fsp_err_t alarm_wait_settled(uint32_t seq)
+{
+    for (uint32_t waited = 0; waited < ALARM_SETTLE_TIMEOUT_MS;
+         waited += ALARM_SETTLE_POLL_MS)
+    {
+        const uint32_t applied = s_applied_seq;
+
+        if (applied == seq)
+        {
+            return s_last_error;
+        }
+
+        /* Signed difference so the comparison survives the uint32 wrap. */
+        if (((int32_t)(applied - seq)) > 0)
+        {
+            return FSP_ERR_ABORTED;
+        }
+
+        tk_dly_tsk(ALARM_SETTLE_POLL_MS);
+    }
+
+    return FSP_ERR_TIMEOUT;
 }
 
 /**********************************************************************************************************************
@@ -964,13 +935,13 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
  */
 fsp_err_t alarm_sound_init(void)
 {
-    if ((s_alarm_flgid > 0) && (s_alarm_mtxid > 0))
+    if (s_alarm_flgid > 0)
     {
         return FSP_SUCCESS;
     }
 
     /* Re-check with dispatching disabled so two tasks racing on the lazy path
-     * cannot both create an object (same pattern as i2c_bus0_sync_init(),
+     * cannot both create the flag (same pattern as i2c_bus0_sync_init(),
      * src/port/i2c_bus0.c:72-100). Task context only. */
     if (E_OK != tk_dis_dsp())
     {
@@ -992,23 +963,9 @@ fsp_err_t alarm_sound_init(void)
         }
     }
 
-    if (s_alarm_mtxid <= 0)
-    {
-        T_CMTX cmtx = {
-            .exinf  = NULL,
-            .mtxatr = TA_INHERIT,
-        };
-
-        ID mtxid = tk_cre_mtx(&cmtx);
-        if (mtxid > E_OK)
-        {
-            s_alarm_mtxid = mtxid;
-        }
-    }
-
     (void)tk_ena_dsp();
 
-    return ((s_alarm_flgid > 0) && (s_alarm_mtxid > 0)) ? FSP_SUCCESS : FSP_ERR_INTERNAL;
+    return (s_alarm_flgid > 0) ? FSP_SUCCESS : FSP_ERR_INTERNAL;
 }
 
 /**
@@ -1016,6 +973,7 @@ fsp_err_t alarm_sound_init(void)
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
 {
+    uint32_t  seq = 0;
     fsp_err_t err;
 
     if ((ALARM_PATTERN_NONE == pattern) || (pattern >= ALARM_PATTERN_COUNT))
@@ -1023,157 +981,15 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* Take a ticket BEFORE anything else. Any stop issued after this point
-     * carries a newer ticket and must win, whether or not it ever manages to
-     * take the mutex (see the request-ordering comment above s_req_seq). */
-    const uint32_t my_seq = alarm_claim_start_seq();
-
-    err = alarm_lock();
+    err = alarm_sound_init();
     if (FSP_SUCCESS != err)
     {
-        /* We never got to act on this ticket, so it must stop counting - see
-         * s_abandon_seq. This is the common way it happens: the mutex holder
-         * is inside audio_start() for longer than ALARM_LOCK_TIMEOUT_MS. */
-        alarm_abandon_start_seq(my_seq);
         return err;
     }
 
-    switch (alarm_req_state(my_seq))
-    {
-        /* Superseded while we waited for the mutex - do not start at all. */
-        case ALARM_REQ_STOPPED:    goto cancelled;
-        case ALARM_REQ_SUPERSEDED: goto superseded;
-        default:                   break;
-    }
+    alarm_post_request(pattern, &seq);
 
-    if (s_active)
-    {
-        if (alarm_owns_stream() &&
-            (!s_finished) &&
-            (AUDIO_STATE_PLAYING == audio_get_state()))
-        {
-            /* A newer start may already have retargeted this stream; its
-             * pattern must not be clobbered by our older request. Checked
-             * before the write, unlike the stop case below, because a stale
-             * write cannot be undone. */
-            if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
-            {
-                goto superseded;
-            }
-
-            /* Live pattern switch - no restart, no click. */
-            s_pattern = pattern;
-
-            /* The one-shot being replaced may have completed in the ISR
-             * between the !s_finished test above and the assignment just
-             * made, which would leave a completion raised for the OLD
-             * pattern. Without this, alarm_task() would honour it and stop
-             * the alarm this call just reported as started. */
-            alarm_discard_completion();
-
-            switch (alarm_req_state(my_seq))
-            {
-                case ALARM_REQ_STOPPED:    goto cancelled;
-                case ALARM_REQ_SUPERSEDED: goto superseded;
-                default:                   break;
-            }
-
-            alarm_unlock();
-            return FSP_SUCCESS;
-        }
-
-        /* We still think we own the stream, but it is not usable as-is:
-         *   - !alarm_owns_stream(): another caller replaced the producer
-         *     (e.g. "audio start"), so the device may well be PLAYING but it
-         *     is not playing US,
-         *   - s_finished: a one-shot pattern has already ended and
-         *     alarm_task() has not torn the stream down yet (it is either not
-         *     scheduled or waiting for this mutex), or
-         *   - the device is no longer PLAYING because somebody stopped it
-         *     behind our back (e.g. "audio stop").
-         * Tearing it down here makes the restart below clean, and
-         * alarm_stop_locked() clears the pending event so alarm_task() will
-         * not stop the alarm we are about to start. In the first case
-         * alarm_stop_locked() deliberately leaves the other stream running,
-         * so the audio_start() below reports FSP_ERR_IN_USE instead of
-         * silently hijacking it. */
-        (void)alarm_stop_locked();
-    }
-
-    alarm_generator_reset();
-    s_pattern = pattern;
-
-    /* audio_start() validates the device state for us: FSP_ERR_NOT_OPEN when
-     * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
-     * already PLAYING (e.g. the "audio start" test tone) or still STOPPING
-     * (src/port/audio_port.c:562-575). */
-    err = audio_start(alarm_fill_cb, NULL);
-    if (FSP_SUCCESS != err)
-    {
-        s_pattern = ALARM_PATTERN_NONE;
-        alarm_abandon_start_seq(my_seq);
-        alarm_unlock();
-        return err;
-    }
-
-    /* The stream is up, so s_active must be set before any cancellation exit:
-     * it is what tells alarm_stop_locked() that there is a device to stop. */
-    s_active = true;
-
-    switch (alarm_req_state(my_seq))
-    {
-        /* Superseded while we were inside audio_start(), which can take
-         * seconds when the IIC1 bus is contended. */
-        case ALARM_REQ_STOPPED:    goto cancelled;
-
-        /* A newer start is waiting on this mutex and will retarget the stream
-         * we just brought up, so leave it running for it. */
-        case ALARM_REQ_SUPERSEDED: goto superseded;
-
-        default:                   break;
-    }
-
-    alarm_unlock();
-
-    return FSP_SUCCESS;
-
-cancelled:
-
-    /*
-     * A stop was requested after this call began.
-     *
-     * Tear the alarm down HERE rather than leaving it to that stop. The stop
-     * may have timed out on the mutex we are holding and already returned to
-     * its caller, in which case nobody else will ever do it - and the device
-     * would stay PLAYING silence, blocking the test tone and every other user
-     * of audio_port until some later alarm command cleaned it up.
-     *
-     * alarm_stop_locked() is safe to run even when nothing was started: it
-     * clears s_pattern, skips audio_stop() unless s_active, and discards any
-     * completion. A stop that IS still waiting on the mutex therefore simply
-     * finds the work already done when it finally runs.
-     */
-    (void)alarm_stop_locked();
-
-    alarm_abandon_start_seq(my_seq);
-    alarm_unlock();
-
-    return FSP_ERR_ABORTED;
-
-superseded:
-
-    /*
-     * A newer "make sound" request is the latest one. Its alarm - which may
-     * already be playing - is what the caller of THAT request asked for, so
-     * touch nothing here; if it has not run yet it is waiting on this mutex
-     * and will take over as soon as we release it. If instead it gave up
-     * waiting for this mutex, it has already marked its own ticket abandoned,
-     * so we would not be here.
-     */
-    alarm_abandon_start_seq(my_seq);
-    alarm_unlock();
-
-    return FSP_ERR_ABORTED;
+    return alarm_wait_settled(seq);
 }
 
 /**
@@ -1181,59 +997,21 @@ superseded:
  */
 fsp_err_t alarm_sound_stop(void)
 {
-    /*
-     * Silence the generator BEFORE taking the mutex.
-     *
-     * Going quiet is the part of the stop that has a deadline (Issue #47:
-     * within 100 ms), and the mutex can legitimately be held for much longer
-     * by another task that is inside audio_start() / audio_stop(). The ISR
-     * only ever READS s_pattern (alarm_fill_cb()), and this is a single
-     * aligned word, so clearing it outside the lock is safe; the deadline
-     * therefore does not depend on lock contention at all.
-     * alarm_stop_locked() clears it again - the assignment is idempotent.
-     *
-     * The ticket is taken in the same task-atomic step as the silencing; see
-     * alarm_claim_stop_seq() for why they must not be separable.
-     */
-    const uint32_t my_seq = alarm_claim_stop_seq();
+    uint32_t  seq = 0;
+    fsp_err_t err;
 
-    fsp_err_t err = alarm_lock();
+    err = alarm_sound_init();
     if (FSP_SUCCESS != err)
     {
-        /* The generator is already silent and this stop's ticket stays
-         * visible, so the start that is holding the mutex sees it and
-         * performs the teardown itself. */
         return err;
     }
 
-    if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
-    {
-        /*
-         * A start issued AFTER this stop got the mutex first and is now
-         * playing. Acquiring the mutex later than that start does not make
-         * this stop newer than it - mutex order and issue order are unrelated
-         * here, because a start can hold the mutex for seconds inside
-         * audio_start().
-         *
-         * Silencing it would cancel a fall alarm that was raised after the
-         * caller asked for silence, so leave it alone and report that this
-         * request was superseded. The lock-free silencing above is already
-         * moot: that newer start rewrote s_pattern under this mutex.
-         *
-         * alarm_req_state() rather than a bare ticket comparison, so that a
-         * start which claimed the newest ticket and then gave up (see
-         * s_abandon_seq) does not make this stop skip a teardown that nobody
-         * else is going to perform.
-         */
-        alarm_unlock();
-        return FSP_ERR_ABORTED;
-    }
+    /* alarm_post_request() silences the generator before returning, so the
+     * output is quiet within 3 x AUDIO_BUFFER_MS whatever alarm_task and the
+     * codec mute are busy with. The wait below only collects the outcome. */
+    alarm_post_request(ALARM_PATTERN_NONE, &seq);
 
-    err = alarm_stop_locked();
-
-    alarm_unlock();
-
-    return err;
+    return alarm_wait_settled(seq);
 }
 
 /**
@@ -1241,81 +1019,31 @@ fsp_err_t alarm_sound_stop(void)
  */
 fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
 {
+    uint32_t  seq = 0;
+    fsp_err_t err;
+
     if ((ALARM_PATTERN_NONE == pattern) || (pattern >= ALARM_PATTERN_COUNT))
     {
         return FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* Same ordering as alarm_sound_start(): retargeting a running alarm is the
-     * same kind of commit as starting one - it writes s_pattern - so it takes
-     * a "make sound" ticket, loses to any newer stop, and wins over an older
-     * one that has not managed to take the mutex yet. */
-    const uint32_t my_seq = alarm_claim_start_seq();
-
-    fsp_err_t err = alarm_lock();
-    if (FSP_SUCCESS != err)
+    /* Retargeting only makes sense while we own a running stream. This is a
+     * snapshot: alarm_task may tear the stream down a moment later, in which
+     * case the request simply brings it back up. */
+    if (!alarm_sound_is_active())
     {
-        alarm_abandon_start_seq(my_seq);
-        return err;
-    }
-
-    /* Ownership AND device state are checked, so that a pattern change cannot
-     * report success on a stream that "audio stop" has already killed, nor on
-     * one that "audio start" has taken over (see alarm_owns_stream()). */
-    if ((!alarm_owns_stream()) || (AUDIO_STATE_PLAYING != audio_get_state()))
-    {
-        alarm_abandon_start_seq(my_seq);
-        alarm_unlock();
         return FSP_ERR_NOT_OPEN;
     }
 
-    /* As in alarm_sound_start()'s live-switch branch: never clobber a newer
-     * request's pattern. Checked before the write, because a stale write
-     * cannot be undone. */
-    if (ALARM_REQ_SUPERSEDED == alarm_req_state(my_seq))
+    err = alarm_sound_init();
+    if (FSP_SUCCESS != err)
     {
-        alarm_abandon_start_seq(my_seq);
-        alarm_unlock();
-        return FSP_ERR_ABORTED;
+        return err;
     }
 
-    s_pattern = pattern;
+    alarm_post_request(pattern, &seq);
 
-    /* Drop a pending "one shot finished" event, exactly as the start and stop
-     * paths do.
-     *
-     * Without this, switching away from a one-shot pattern in the window
-     * between the generator finishing it and alarm_task() acting on the event
-     * would install the new pattern and then have alarm_task() immediately
-     * stop it: alarm_task() re-checks s_finished under this same mutex, and
-     * nothing else would have cleared it. The window is tiny in practice
-     * (alarm_task runs at priority 11 and preempts ntshell_task at 12 as soon
-     * as the flag is set, see the priority table in src/usermain.c:277-278),
-     * but the generator has already moved to ALARM_GEN_IDLE by then, so the
-     * new pattern is genuinely live and must not be torn down. */
-    alarm_discard_completion();
-
-    switch (alarm_req_state(my_seq))
-    {
-        case ALARM_REQ_STOPPED:
-            (void)alarm_stop_locked();
-            alarm_abandon_start_seq(my_seq);
-            alarm_unlock();
-            return FSP_ERR_ABORTED;
-
-        case ALARM_REQ_SUPERSEDED:
-            /* A newer start will retarget the stream; leave it alone. */
-            alarm_abandon_start_seq(my_seq);
-            alarm_unlock();
-            return FSP_ERR_ABORTED;
-
-        default:
-            break;
-    }
-
-    alarm_unlock();
-
-    return FSP_SUCCESS;
+    return alarm_wait_settled(seq);
 }
 
 bool alarm_sound_is_active(void)
@@ -1393,9 +1121,14 @@ alarm_pattern_t alarm_pattern_from_name(const char *name)
 /**
  * uT-Kernel task entry.
  *
- * Sleeps on ALARM_EVT_FINISHED and performs the audio_stop() that the
- * generator ISR is not allowed to perform. Nothing else runs here, so the
- * task is idle except for the few milliseconds after a one-shot pattern.
+ * The single owner of the audio device for this module: every audio_start() /
+ * audio_stop() call in audio_alarm.c happens here. Callers only declare what
+ * should be playing (alarm_post_request), which is why the module needs no
+ * mutex and has no lock that could time out.
+ *
+ * Woken by ALARM_EVT_REQUEST (a caller changed the desired state) and by
+ * ALARM_EVT_FINISHED (the generator finished a one-shot); both simply run the
+ * reconcile loop, which drives the device until it matches the request.
  */
 void alarm_task(INT stacd, void *exinf)
 {
@@ -1408,7 +1141,7 @@ void alarm_task(INT stacd, void *exinf)
     {
         UINT flgptn = 0;
         ER   ercd   = tk_wai_flg(s_alarm_flgid,
-                                 (UINT)ALARM_EVT_FINISHED,
+                                 (UINT)ALARM_EVT_ANY,
                                  TWF_ORW | TWF_BITCLR,
                                  &flgptn,
                                  TMO_FEVR);
@@ -1421,56 +1154,15 @@ void alarm_task(INT stacd, void *exinf)
             continue;
         }
 
-        if (FSP_SUCCESS != alarm_lock())
-        {
-            /*
-             * The lock timed out, but TWF_BITCLR above has ALREADY consumed
-             * the completion event, and the generator has moved on to
-             * ALARM_GEN_IDLE so it will never set that bit again
-             * (alarm_fill_cb() signals once, when s_drain_fills reaches 0).
-             * Simply continuing would therefore block on tk_wai_flg() forever
-             * while the device stays PLAYING silence with s_active true, until
-             * some later alarm command happens to clean it up.
-             *
-             * This is reachable, not theoretical: alarm_sound_start() holds
-             * this mutex across audio_start(), and audio_start() starts the
-             * PCM stream BEFORE making up to AUDIO_UNMUTE_ATTEMPTS (3) unmute
-             * attempts (src/port/audio_port.c:626-637). Each attempt goes
-             * through da7212_apply_mute() -> da7212_update_reg() ->
-             * da7212_read_reg()/da7212_write_reg(), which take the shared IIC1
-             * bus lock with a I2C_BUS0_LOCK_TIMEOUT_MS = 1000 ms timeout
-             * (src/port/da7212.c:426,468 and src/port/i2c_bus0.c:114). Under
-             * IIC1 contention that is roughly 3 s of holding this mutex,
-             * longer than ALARM_LOCK_TIMEOUT_MS (2000 ms) - and a 100 ms beep
-             * finishes long before that.
-             *
-             * Re-post the event so the stop is retried rather than lost.
-             * s_finished is the durable state; the flag is only the wake-up
-             * hint, so it is safe to re-derive one from the other. Reading
-             * s_finished unlocked can at worst re-post a bit that a concurrent
-             * start/stop has just cleared, and the next iteration then simply
-             * finds nothing to do.
-             */
-            if (s_finished && (s_alarm_flgid > 0))
-            {
-                (void)tk_set_flg(s_alarm_flgid, ALARM_EVT_FINISHED);
-            }
-
-            /* Back off so a lock that fails immediately (e.g. the
-             * synchronisation objects could not be created) cannot spin. */
-            tk_dly_tsk(ALARM_TASK_ERR_DELAY_MS);
-            continue;
-        }
-
-        /* Re-check under the mutex: alarm_sound_start()/stop() clear
-         * s_finished, so an event that was overtaken by a restart is ignored
-         * here instead of killing the new alarm. */
-        if (s_finished && s_active)
-        {
-            (void)alarm_stop_locked();
-        }
-
-        alarm_unlock();
+        /*
+         * The event is only a hint that something MIGHT have changed; the
+         * durable state is s_desired_pattern / s_request_seq / s_finished,
+         * and alarm_reconcile() reads those. A wake-up that turns out to have
+         * nothing to do simply converges immediately, and a request that
+         * arrives while we are inside a multi-second audio_start() is picked
+         * up by the loop without needing its own wake-up to survive.
+         */
+        alarm_reconcile();
     }
 }
 
@@ -1556,6 +1248,19 @@ static void alarm_cmd_status(void)
              (unsigned long)s_step_changes,
              (unsigned long)s_finish_count,
              (unsigned long)s_drain_fills);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Requests     : desired '%s' seq=%lu / applied '%s' seq=%lu\r\n",
+             alarm_pattern_name(s_desired_pattern),
+             (unsigned long)s_request_seq,
+             alarm_pattern_name(s_applied_pattern),
+             (unsigned long)s_applied_seq);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Reconcile    : %lu passes, last err=0x%lX%s\r\n",
+             (unsigned long)s_settle_count,
+             (unsigned long)s_last_error,
+             (s_request_seq == s_applied_seq) ? "" : " (pending)");
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Device       : audio state=%d, fs=%lu Hz, volume %u%%\r\n",

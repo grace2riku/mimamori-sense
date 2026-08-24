@@ -25,11 +25,15 @@
  *     no float, no division, no blocking call - see the notes in
  *     audio_alarm.c.
  *   - alarm_sound_start() / alarm_sound_stop() / alarm_sound_set_pattern()
- *     are TASK CONTEXT ONLY, because audio_start() / audio_stop() use I2C and
- *     uT-Kernel wait services (src/port/audio_port.c:661,675-679).
- *   - A one-shot pattern therefore cannot stop the device from the ISR. The
- *     ISR only switches to silence and signals alarm_task(), which performs
- *     the real audio_stop() from task context.
+ *     are TASK CONTEXT ONLY. They do not touch the audio device themselves:
+ *     each one DECLARES the pattern that should be playing and wakes
+ *     alarm_task(), which is the only task that calls audio_start() /
+ *     audio_stop(). That is what makes the module free of locks - "the newest
+ *     request wins" is just the last write to a single word - and it is why a
+ *     one-shot can stop itself even though the ISR may not call audio_stop().
+ *   - The wrappers then wait for alarm_task() to report the outcome, so they
+ *     still read as synchronous calls. The wait is REPORTING ONLY: the device
+ *     converges on the request whether or not it succeeds.
  *
  * Volume
  * ------
@@ -119,24 +123,18 @@ fsp_err_t alarm_sound_init(void);
 /**
  * Start (or re-target) alarm playback.
  *
- * If this module is not playing yet, the generator is reset to the first step
- * of @p pattern and audio_start() is called with the internal fill callback.
+ * Declares @p pattern as the pattern that should be playing and waits for
+ * alarm_task() to act on it. If the alarm is already running this is a live
+ * retarget - the stream is not restarted, so there is no gap or click; if it
+ * is not, the device is brought up.
  *
- * If it IS already playing - meaning this module still owns the installed
- * producer, the device really still is PLAYING, and the pattern in progress
- * has not already finished - only the pattern is replaced, exactly as
- * alarm_sound_set_pattern() does, and FSP_SUCCESS is returned; the stream is
- * not restarted, so there is no gap or click at the switch.
- * In the three remaining cases - a one-shot pattern that has just ended, a
- * stream that was stopped behind our back by "audio stop", or a stream that
- * "audio start" has taken over - the stale bookkeeping is dropped first and
- * the stream is started again, so a repeated
- * alarm_sound_start(ALARM_PATTERN_BEEP) always beeps. In the take-over case
- * the other stream is deliberately left running and FSP_ERR_IN_USE is
- * returned rather than hijacking it.
+ * The declaration cannot be lost: it is a single word that alarm_task() reads,
+ * so a request issued while alarm_task() is inside a multi-second
+ * audio_start() is applied as soon as that call returns. If another caller
+ * declares something else in the meantime, the LAST declaration wins and this
+ * call reports FSP_ERR_ABORTED.
  *
- * Non-blocking with respect to the sound: it returns as soon as the stream is
- * running and the ISR keeps producing samples. Task context only.
+ * Task context only.
  *
  * @param[in] pattern       Pattern to play. ALARM_PATTERN_NONE is rejected;
  *                          use alarm_sound_stop().
@@ -148,19 +146,14 @@ fsp_err_t alarm_sound_init(void);
  *                                  that is not this module (e.g. the
  *                                  "audio start" test tone), or it is still
  *                                  stopping. The other stream keeps playing.
- * @retval FSP_ERR_ABORTED          A NEWER request won, so this one did not
- *                                  take effect. Two outcomes share this code:
- *                                  a newer alarm_sound_stop() won, in which
- *                                  case nothing is playing (this call tore the
- *                                  alarm down itself, because that stop may
- *                                  have timed out on the mutex and returned
- *                                  already); or a newer alarm_sound_start() /
- *                                  alarm_sound_set_pattern() won, in which
- *                                  case ITS alarm is deliberately left
- *                                  playing. Query alarm_sound_is_active() /
- *                                  alarm_sound_get_pattern() to find out which
- *                                  before deciding on any recovery - do not
- *                                  assume silence.
+ * @retval FSP_ERR_ABORTED          A newer request was applied instead, so
+ *                                  this one never took effect. Query
+ *                                  alarm_sound_is_active() /
+ *                                  alarm_sound_get_pattern() to see what is
+ *                                  playing now - do not assume silence.
+ * @retval FSP_ERR_TIMEOUT          The request is still queued and its outcome
+ *                                  is not known yet. It has NOT been dropped;
+ *                                  alarm_task() will still apply it.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
@@ -168,27 +161,22 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
 /**
  * Stop alarm playback.
  *
- * The generator is switched to silence FIRST - before the module mutex is
- * even taken - and the device is stopped afterwards, so the output is
- * guaranteed to go quiet within 3 x AUDIO_BUFFER_MS (30 ms) whatever the
- * codec mute inside audio_stop() and the lock contention do.
+ * The generator is silenced immediately, before alarm_task() is even woken,
+ * so the output is guaranteed to go quiet within 3 x AUDIO_BUFFER_MS (30 ms)
+ * whatever the codec mute and the task scheduling do. Tearing the device down
+ * happens afterwards, in alarm_task().
+ *
  * If another caller has taken the stream over in the meantime, only this
  * module's own state is cleared; the other stream is left running.
- *
- * Requests are ordered so that the NEWEST one wins, independently of who
- * acquires the mutex first: a start issued before this stop aborts with
- * FSP_ERR_ABORTED and tears its own alarm down (even if this stop returns
- * FSP_ERR_TIMEOUT without ever taking the mutex), while a start issued AFTER
- * this stop supersedes it - this call then leaves that alarm playing and
- * returns FSP_ERR_ABORTED itself.
  * Task context only.
  *
  * @retval FSP_SUCCESS      Stopped (or was not playing).
- * @retval FSP_ERR_TIMEOUT  audio_stop() did not observe I2S_EVENT_IDLE; the
- *                          output is silent but the device is still STOPPING.
- * @retval FSP_ERR_ABORTED  Superseded: an alarm_sound_start() /
- *                          alarm_sound_set_pattern() issued after this call
- *                          won, and its alarm is left playing.
+ * @retval FSP_ERR_TIMEOUT  audio_stop() did not observe I2S_EVENT_IDLE, or the
+ *                          teardown has not been reported yet. The output is
+ *                          silent either way.
+ * @retval FSP_ERR_ABORTED  A newer request was applied instead: something is
+ *                          deliberately playing again. Query
+ *                          alarm_sound_is_active() / alarm_sound_get_pattern().
  * @retval FSP_ERR_INTERNAL Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_stop(void);
@@ -196,9 +184,9 @@ fsp_err_t alarm_sound_stop(void);
 /**
  * Change the pattern of a running alarm.
  *
- * The change takes effect on the next buffer the ISR produces, i.e. within
- * AUDIO_BUFFER_MS, and becomes audible one further buffer later. The phase
- * accumulator is NOT reset, which is what keeps the transition click-free.
+ * Identical to alarm_sound_start() except that it refuses when this module is
+ * not currently playing. The phase accumulator is NOT reset, which is what
+ * keeps the transition click-free.
  *
  * @param[in] pattern       New pattern. ALARM_PATTERN_NONE is rejected.
  *
@@ -209,12 +197,9 @@ fsp_err_t alarm_sound_stop(void);
  *                                  AUDIO_STATE_PLAYING, or another caller has
  *                                  taken the stream over - use
  *                                  alarm_sound_start().
- * @retval FSP_ERR_ABORTED          A newer request won, so this one did not
- *                                  take effect. As for alarm_sound_start():
- *                                  the alarm may be stopped (newer stop) or
- *                                  playing the newer request's pattern - query
- *                                  alarm_sound_is_active() /
- *                                  alarm_sound_get_pattern().
+ * @retval FSP_ERR_ABORTED          A newer request was applied instead - see
+ *                                  alarm_sound_start().
+ * @retval FSP_ERR_TIMEOUT          Still queued; the outcome is not known yet.
  */
 fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern);
 
@@ -264,13 +249,13 @@ const char *alarm_pattern_name(alarm_pattern_t pattern);
 alarm_pattern_t alarm_pattern_from_name(const char *name);
 
 /**
- * uT-Kernel task entry: waits for the "one-shot pattern finished" event from
- * the generator ISR and performs the audio_stop() that the ISR cannot do.
+ * uT-Kernel task entry: the single owner of the audio device for this module.
  *
- * If the module mutex cannot be taken in time - alarm_sound_start() can hold
- * it for seconds while audio_start() retries the codec unmute over a
- * contended IIC1 bus - the event is re-posted and the stop retried, so a
- * completed one-shot is never left playing silence.
+ * Every audio_start() / audio_stop() call in audio_alarm.c happens here. It
+ * waits for "a caller declared something" or "the generator finished a
+ * one-shot", then drives the device until it matches the declared state,
+ * re-reading that state after each operation so a request made during a
+ * multi-second audio_start() is not missed.
  *
  * Created and started from usermain().
  */
