@@ -461,14 +461,20 @@ fsp_err_t audio_init(void)
     if (!s_gpt_open)
     {
         /* -----------------------------------------------------------------
-         * Step 1: GPT2 -> GTIOC2A -> PD06 = MCLK for the DA7212.
+         * Step 1: GPT2. One timer, two consumers:
+         *   - GTIOC2A -> PD06 = MCLK for the DA7212
+         *   - internal connection = SSIE0 AUDIO_CLK (see audio_port.h)
          *
-         * FIRST, because the codec's PLL locks to MCLK and step 3 writes the
-         * PLL registers. The pin is already configured as the GPT peripheral
-         * output (ra_gen/pin_data.c:629-630) and the driver enables the
-         * output because gtioca.output_enabled is true
-         * (ra_gen/hal_data.c:176-177) which makes r_gpt.c:1412-1421 compute a
-         * GTIOR with OAE set (r_gpt.c:1760-1764).
+         * FIRST, because the codec's PLL locks to MCLK and step 2 writes the
+         * PLL registers, and because r_ssi only sets SSICR.CKS for
+         * SSI_AUDIO_CLOCK_INTERNAL (ra/fsp/src/r_ssi/r_ssi.c:259-266) and
+         * contains no GPT code at all, so nothing else starts the audio clock.
+         *
+         * The pin is already configured as the GPT peripheral output
+         * (ra_gen/pin_data.c:629-630) and the driver enables the output
+         * because gtioca.output_enabled is true (ra_gen/hal_data.c:176-177)
+         * which makes r_gpt.c:1412-1421 compute a GTIOR with OAE set
+         * (r_gpt.c:1760-1764).
          * -------------------------------------------------------------- */
         err = R_GPT_Open(&g_timer_audio_mclk_ctrl, &g_timer_audio_mclk_cfg);
         if ((FSP_SUCCESS != err) && (FSP_ERR_ALREADY_OPEN != err))
@@ -482,32 +488,11 @@ fsp_err_t audio_init(void)
             goto init_failed;
         }
 
-        /* -----------------------------------------------------------------
-         * Step 2: GPT1 -> GTIOC1A = SSIE internal AUDIO_CLK (= BCLK).
-         *
-         * Must run BEFORE R_SSI_Open(): r_ssi only sets SSICR.CKS for
-         * SSI_AUDIO_CLOCK_INTERNAL (ra/fsp/src/r_ssi/r_ssi.c:259-266) and
-         * contains no GPT code at all, so nothing else starts this clock.
-         * GTIOC1A has no pin assigned on purpose; the connection to the SSIE
-         * is internal.
-         * -------------------------------------------------------------- */
-        err = R_GPT_Open(&g_timer_audio_clk_ctrl, &g_timer_audio_clk_cfg);
-        if ((FSP_SUCCESS != err) && (FSP_ERR_ALREADY_OPEN != err))
-        {
-            goto init_failed;
-        }
-
-        err = R_GPT_Start(&g_timer_audio_clk_ctrl);
-        if (FSP_SUCCESS != err)
-        {
-            goto init_failed;
-        }
-
         s_gpt_open = true;
     }
 
     /* ---------------------------------------------------------------------
-     * Step 3: DA7212 over I2C. Uses the IIC1 shared bus lock internally and
+     * Step 2: DA7212 over I2C. Uses the IIC1 shared bus lock internally and
      * waits until the camera has released IIC1 (i2c_bus0_open_once()).
      * ------------------------------------------------------------------ */
     err = da7212_init();
@@ -517,8 +502,14 @@ fsp_err_t audio_init(void)
     }
 
     /* ---------------------------------------------------------------------
-     * Step 4: SSIE0. R_SSI_Open() also opens the DTC transmit instance
+     * Step 3: SSIE0. R_SSI_Open() also opens the DTC transmit instance
      * (r_ssi.c:713-720), so g_transfer_i2s_tx must never be opened here.
+     *
+     * SSICR.CKDV comes straight from the generated configuration since Issue
+     * #202 set "Bit Clock Divider" to Audio Clock / 24 (SSI_CLOCK_DIV_24 in
+     * ra_gen/hal_data.c, applied by r_ssi.c:259-266). The stop-gap that used
+     * to overwrite CKDV here is gone; `audio status` prints the live SSICR so
+     * the field can still be checked on hardware.
      * ------------------------------------------------------------------ */
     if (!s_ssi_open)
     {
@@ -526,28 +517,6 @@ fsp_err_t audio_init(void)
         if ((FSP_SUCCESS != err) && (FSP_ERR_ALREADY_OPEN != err))
         {
             goto init_failed;
-        }
-
-        /* -----------------------------------------------------------------
-         * Override SSICR.CKDV with the divider that hardware measurement
-         * showed is actually required (see AUDIO_SSI_BIT_CLOCK_DIV in
-         * audio_port.h). The generated configuration says /1, which produced a
-         * bit clock ~16.7x too fast because the SSIE internal audio clock is
-         * GPT2, not GPT1.
-         *
-         * Safe to poke here: R_SSI_Open() has just written SSICR in full
-         * (r_ssi.c:259-266) and R_SSI_Write()/r_ssi_start() only ever
-         * read-modify-write TEN/TUIEN into it (r_ssi.c r_ssi_start), so CKDV
-         * survives every later start/stop. CKDV is SSICR bits 7:4.
-         *
-         * This is a stop-gap: the real fix is the FSP "Bit Clock Divider"
-         * property, which lives in configuration.xml.
-         * -------------------------------------------------------------- */
-        {
-            uint32_t ssicr = R_SSI0->SSICR;
-            ssicr &= ~(0xFUL << 4);
-            ssicr |= (AUDIO_SSI_CKDV_VALUE << 4);
-            R_SSI0->SSICR = ssicr;
         }
 
         s_ssi_open = true;

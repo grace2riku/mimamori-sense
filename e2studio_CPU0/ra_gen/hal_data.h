@@ -25,16 +25,6 @@ extern const rm_comms_cfg_t g_comms_i2c_codec_cfg;
 void audio_codec_i2c_callback(rm_comms_callback_args_t *p_args);
 #endif
 /** Timer on GPT Instance. */
-extern const timer_instance_t g_timer_audio_clk;
-
-/** Access the GPT instance using these structures when calling API functions directly (::p_api is not used). */
-extern gpt_instance_ctrl_t g_timer_audio_clk_ctrl;
-extern const timer_cfg_t g_timer_audio_clk_cfg;
-
-#ifndef NULL
-void NULL(timer_callback_args_t *p_args);
-#endif
-/** Timer on GPT Instance. */
 extern const timer_instance_t g_timer_audio_mclk;
 
 /** Access the GPT instance using these structures when calling API functions directly (::p_api is not used). */

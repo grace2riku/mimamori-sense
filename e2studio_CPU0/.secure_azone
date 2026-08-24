@@ -302,7 +302,6 @@
         </peripheral>
         <peripheral name="SSIE0.CPU0" group="SSIE" security="s"/>
         <peripheral name="GPT2.CPU0" group="GPT" security="s"/>
-        <peripheral name="GPT1.CPU0" group="GPT" security="s"/>
         <peripheral name="ICU.CPU0">
             <slot name="IRQ0.CPU0" secure="true"/>
             <slot name="IRQ1.CPU0" secure="true"/>
