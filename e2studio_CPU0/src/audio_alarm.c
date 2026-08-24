@@ -315,35 +315,47 @@ static volatile bool s_active = false;
 static volatile bool s_finished = false;
 
 /**
- * Number of stop requests ever issued. Monotonic, and NEVER cleared.
+ * Request ordering: the NEWEST request wins.
  *
  * alarm_sound_stop() silences the generator BEFORE taking the mutex, so that
- * going quiet does not depend on lock contention. That lock-free write is
- * what a concurrent alarm_sound_start() would otherwise erase: the start can
- * already hold the mutex, and it can then sit inside audio_start() for
- * seconds retrying the codec unmute over a contended IIC1 bus.
+ * going quiet does not depend on lock contention. Ordering the requests is
+ * what keeps that lock-free write honest, because the mutex alone cannot:
+ * a caller can hold it for seconds inside audio_start() retrying the codec
+ * unmute over a contended IIC1 bus, so the order in which callers ACQUIRE the
+ * mutex has nothing to do with the order in which they were ISSUED.
  *
- * A start therefore samples this counter on entry and re-checks it at every
- * point where it would commit; a different value means "a stop was requested
- * after I began", and the start tears down instead of reporting success. For
- * that comparison to mean anything, alarm_sound_stop() must publish the bump
- * and the silencing of s_pattern as ONE task-atomic step - see the comment
- * there.
+ * Every "make sound" request (alarm_sound_start, alarm_sound_set_pattern) and
+ * every "stop" request takes a ticket from s_req_seq and records it in
+ * s_start_seq / s_stop_seq respectively. A request commits only if no request
+ * of the opposite kind carries a NEWER ticket:
  *
- * It MUST be a counter that nobody clears, not a "stop pending" flag. A stop
- * whose own alarm_lock() times out - which is precisely what happens when a
- * start holds the mutex for longer than ALARM_LOCK_TIMEOUT_MS - would have to
- * lower such a flag before returning, and the in-flight start would then see a
- * clean slate and report success for an alarm that was already called off,
- * leaving the device PLAYING silence and locking out every other audio user.
- * A counter stays visible whether or not the stop ever runs.
+ *   start / retarget : aborts if s_stop_seq  is newer -> tears the alarm down
+ *   stop             : skips the teardown if s_start_seq is newer
+ *
+ * Both directions are needed. Ordering only the stops leaves the mirror case
+ * open: a stop that is preempted before alarm_lock() lets a later start run
+ * to completion, and then silences that newer alarm when it finally acquires
+ * the mutex.
+ *
+ * Tickets are never cleared. A "stop pending" flag cannot work here: a stop
+ * whose own alarm_lock() times out - exactly what happens when a start holds
+ * the mutex longer than ALARM_LOCK_TIMEOUT_MS - would have to lower the flag
+ * before returning, and the in-flight start would then see a clean slate and
+ * report success for an alarm that was already called off, leaving the device
+ * PLAYING silence and locking out every other audio user.
+ *
+ * Taking a ticket and publishing whatever goes with it (the stop's silencing
+ * of s_pattern) is done under tk_dis_dsp() so the two cannot be observed out
+ * of step - see alarm_claim_start_seq() / alarm_claim_stop_seq().
  *
  * Only reachable with more than one task driving this module. Today the shell
  * is the only caller, but the module exists so that the fall-detection logic
  * can raise and clear alarms from another task, which is when this starts to
  * matter.
  */
-static volatile uint32_t s_stop_gen = 0;
+static volatile uint32_t s_req_seq   = 0;   /**< ticket source */
+static volatile uint32_t s_start_seq = 0;   /**< newest start / retarget */
+static volatile uint32_t s_stop_seq  = 0;   /**< newest stop */
 
 /** Waveform and digital amplitude. Single words, read by the ISR once per
  *  buffer, written from task context - a change simply takes effect on the
@@ -387,6 +399,9 @@ static fsp_err_t alarm_lock(void);
 static void      alarm_unlock(void);
 static bool      alarm_owns_stream(void);
 static void      alarm_discard_completion(void);
+static bool      alarm_seq_newer(uint32_t a, uint32_t b);
+static uint32_t  alarm_claim_start_seq(void);
+static uint32_t  alarm_claim_stop_seq(void);
 static fsp_err_t alarm_stop_locked(void);
 static void      alarm_generator_reset(void);
 static void      alarm_load_step(uint32_t idx);
@@ -484,6 +499,69 @@ static void alarm_discard_completion(void)
     {
         (void)tk_clr_flg(s_alarm_flgid, (UINT)~ALARM_EVT_FINISHED);
     }
+}
+
+/**
+ * Is ticket @p a newer than ticket @p b?
+ *
+ * Signed difference, so the answer stays correct across the uint32 wrap.
+ */
+static bool alarm_seq_newer(uint32_t a, uint32_t b)
+{
+    return (((int32_t)(a - b)) > 0);
+}
+
+/**
+ * Take a ticket for a "make sound" request (start or retarget).
+ *
+ * Task-atomic: the ticket and s_start_seq must become visible together, or a
+ * concurrent stop could read a stale s_start_seq and tear down an alarm that
+ * is in fact newer than it.
+ */
+static uint32_t alarm_claim_start_seq(void)
+{
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+    const uint32_t seq = ++s_req_seq;
+    s_start_seq = seq;
+
+    if (dispatch_off)
+    {
+        (void)tk_ena_dsp();
+    }
+
+    return seq;
+}
+
+/**
+ * Take a ticket for a stop request AND silence the generator.
+ *
+ * Task-atomic for two reasons. The obvious one is the read-modify-write of
+ * s_req_seq. The subtle one is that a start samples its own ticket in the
+ * same way: if it could observe the state BETWEEN the ticket bump and the
+ * silencing, it would take a ticket newer than this stop - so it would
+ * rightly consider itself the winner - and then have its own s_pattern
+ * overwritten by the silencing a moment later, ending up playing silence
+ * while reporting success.
+ *
+ * tk_dis_dsp() is the right scope: the only writers of these variables are
+ * TASKS, never the ISR, which merely reads s_pattern. If it fails the
+ * silencing still happens - the 100 ms stop deadline outranks atomicity.
+ */
+static uint32_t alarm_claim_stop_seq(void)
+{
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+    const uint32_t seq = ++s_req_seq;
+    s_stop_seq = seq;
+    s_pattern  = ALARM_PATTERN_NONE;
+
+    if (dispatch_off)
+    {
+        (void)tk_ena_dsp();
+    }
+
+    return seq;
 }
 
 /**
@@ -840,10 +918,10 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* Sample BEFORE anything else: every stop issued from here on is a
-     * cancellation of THIS start and must win, whether or not that stop ever
-     * manages to take the mutex (see s_stop_gen). */
-    const uint32_t stop_gen = s_stop_gen;
+    /* Take a ticket BEFORE anything else. Any stop issued after this point
+     * carries a newer ticket and must win, whether or not it ever manages to
+     * take the mutex (see the request-ordering comment above s_req_seq). */
+    const uint32_t my_seq = alarm_claim_start_seq();
 
     err = alarm_lock();
     if (FSP_SUCCESS != err)
@@ -851,7 +929,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return err;
     }
 
-    if (s_stop_gen != stop_gen)
+    if (alarm_seq_newer(s_stop_seq, my_seq))
     {
         /* Cancelled while we waited for the mutex - do not start at all. */
         goto cancelled;
@@ -873,7 +951,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
              * the alarm this call just reported as started. */
             alarm_discard_completion();
 
-            if (s_stop_gen != stop_gen)
+            if (alarm_seq_newer(s_stop_seq, my_seq))
             {
                 goto cancelled;
             }
@@ -919,7 +997,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
      * it is what tells alarm_stop_locked() that there is a device to stop. */
     s_active = true;
 
-    if (s_stop_gen != stop_gen)
+    if (alarm_seq_newer(s_stop_seq, my_seq))
     {
         /* Cancelled while we were inside audio_start(), which can take seconds
          * when the IIC1 bus is contended. */
@@ -969,35 +1047,36 @@ fsp_err_t alarm_sound_stop(void)
      * therefore does not depend on lock contention at all.
      * alarm_stop_locked() clears it again - the assignment is idempotent.
      *
-     * The bump of s_stop_gen and the silencing MUST be published together as
-     * one task-atomic step. A start samples s_stop_gen on entry, and if it
-     * could sample BETWEEN the two writes it would record the already-bumped
-     * generation - so it would consider this stop older than itself - and
-     * then have its own s_pattern overwritten by the second write moments
-     * later. It would go on to report success while the generator plays
-     * silence, which is exactly the hole this counter exists to close.
-     *
-     * tk_dis_dsp() is the right scope: the only other writers of these two
-     * variables are TASKS (this function and alarm_sound_start()), never the
-     * ISR, which merely reads s_pattern. Disabling dispatch also makes the
-     * read-modify-write of s_stop_gen safe against a concurrent stop.
+     * The ticket is taken in the same task-atomic step as the silencing; see
+     * alarm_claim_stop_seq() for why they must not be separable.
      */
-    const bool dispatch_off = (E_OK == tk_dis_dsp());
-
-    s_stop_gen++;
-    s_pattern = ALARM_PATTERN_NONE;
-
-    if (dispatch_off)
-    {
-        (void)tk_ena_dsp();
-    }
+    const uint32_t my_seq = alarm_claim_stop_seq();
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
-        /* The generator is already silent and the cancellation stays visible;
-         * the start that is holding the mutex performs the teardown. */
+        /* The generator is already silent and this stop's ticket stays
+         * visible, so the start that is holding the mutex sees it and
+         * performs the teardown itself. */
         return err;
+    }
+
+    if (alarm_seq_newer(s_start_seq, my_seq))
+    {
+        /*
+         * A start issued AFTER this stop got the mutex first and is now
+         * playing. Acquiring the mutex later than that start does not make
+         * this stop newer than it - mutex order and issue order are unrelated
+         * here, because a start can hold the mutex for seconds inside
+         * audio_start().
+         *
+         * Silencing it would cancel a fall alarm that was raised after the
+         * caller asked for silence, so leave it alone and report that this
+         * request was superseded. The lock-free silencing above is already
+         * moot: that newer start rewrote s_pattern under this mutex.
+         */
+        alarm_unlock();
+        return FSP_ERR_ABORTED;
     }
 
     err = alarm_stop_locked();
@@ -1017,12 +1096,11 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
         return FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* Same reasoning as alarm_sound_start(): a stop issued from here on is a
-     * cancellation of THIS call. Retargeting a running alarm is the same kind
-     * of commit as starting one - it writes s_pattern - so it must lose to a
-     * concurrent stop, including one whose alarm_lock() times out and which
-     * therefore never gets to write s_pattern itself. */
-    const uint32_t stop_gen = s_stop_gen;
+    /* Same ordering as alarm_sound_start(): retargeting a running alarm is the
+     * same kind of commit as starting one - it writes s_pattern - so it takes
+     * a "make sound" ticket, loses to any newer stop, and wins over an older
+     * one that has not managed to take the mutex yet. */
+    const uint32_t my_seq = alarm_claim_start_seq();
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
@@ -1055,7 +1133,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
      * new pattern is genuinely live and must not be torn down. */
     alarm_discard_completion();
 
-    if (s_stop_gen != stop_gen)
+    if (alarm_seq_newer(s_stop_seq, my_seq))
     {
         (void)alarm_stop_locked();
         alarm_unlock();
@@ -1386,8 +1464,16 @@ int usrcmd_alarm(int argc, char **argv)
     if (0 == ntlibc_strcmp(argv[1], "stop"))
     {
         err = alarm_sound_stop();
+
+        /* FSP_ERR_ABORTED is not a failure: a start issued after this stop
+         * superseded it, so an alarm is deliberately still playing. */
         snprintf(buf, sizeof(buf), "alarm stop: %s (err=0x%lX)\r\n",
-                 (FSP_SUCCESS == err) ? "OK" : "FAILED", (unsigned long)err);
+                 (FSP_SUCCESS == err)
+                     ? "OK"
+                     : ((FSP_ERR_ABORTED == err)
+                            ? "superseded by a newer 'alarm start'"
+                            : "FAILED"),
+                 (unsigned long)err);
         print_to_console(buf);
         return (FSP_SUCCESS == err) ? CMD_OK : CMD_ERR_EXECUTE;
     }

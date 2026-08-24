@@ -167,16 +167,20 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  * If another caller has taken the stream over in the meantime, only this
  * module's own state is cleared; the other stream is left running.
  *
- * The cancellation is recorded before the lock-free silencing, so a
- * concurrent alarm_sound_start() / alarm_sound_set_pattern() that already
- * holds the mutex cannot erase it: that call aborts with FSP_ERR_ABORTED and
- * tears the alarm down itself instead of resurrecting it. This holds even
- * when THIS call returns FSP_ERR_TIMEOUT without ever taking the mutex.
+ * Requests are ordered so that the NEWEST one wins, independently of who
+ * acquires the mutex first: a start issued before this stop aborts with
+ * FSP_ERR_ABORTED and tears its own alarm down (even if this stop returns
+ * FSP_ERR_TIMEOUT without ever taking the mutex), while a start issued AFTER
+ * this stop supersedes it - this call then leaves that alarm playing and
+ * returns FSP_ERR_ABORTED itself.
  * Task context only.
  *
  * @retval FSP_SUCCESS      Stopped (or was not playing).
  * @retval FSP_ERR_TIMEOUT  audio_stop() did not observe I2S_EVENT_IDLE; the
  *                          output is silent but the device is still STOPPING.
+ * @retval FSP_ERR_ABORTED  Superseded: an alarm_sound_start() /
+ *                          alarm_sound_set_pattern() issued after this call
+ *                          won, and its alarm is left playing.
  * @retval FSP_ERR_INTERNAL Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_stop(void);
