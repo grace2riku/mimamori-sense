@@ -148,6 +148,10 @@ fsp_err_t alarm_sound_init(void);
  *                                  that is not this module (e.g. the
  *                                  "audio start" test tone), or it is still
  *                                  stopping. The other stream keeps playing.
+ * @retval FSP_ERR_ABORTED          A concurrent alarm_sound_stop() cancelled
+ *                                  this start while it held the mutex. The
+ *                                  alarm is NOT playing; that stop completes
+ *                                  the teardown.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
 fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
@@ -161,6 +165,10 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  * codec mute inside audio_stop() and the lock contention do.
  * If another caller has taken the stream over in the meantime, only this
  * module's own state is cleared; the other stream is left running.
+ *
+ * The cancellation is recorded before the lock-free silencing, so a
+ * concurrent alarm_sound_start() that already holds the mutex cannot erase it:
+ * that start aborts with FSP_ERR_ABORTED instead of resurrecting the alarm.
  * Task context only.
  *
  * @retval FSP_SUCCESS      Stopped (or was not playing).

@@ -314,6 +314,28 @@ static volatile bool s_active = false;
  *  what stops a stale event from tearing down a freshly restarted alarm. */
 static volatile bool s_finished = false;
 
+/**
+ * A stop has been requested and has not run yet.
+ *
+ * alarm_sound_stop() silences the generator BEFORE taking the mutex, so that
+ * going quiet does not depend on lock contention. That lock-free write is
+ * exactly what a concurrent alarm_sound_start() would otherwise erase: the
+ * start can already hold the mutex, and it can then sit inside audio_start()
+ * for seconds retrying the codec unmute over a contended IIC1 bus, so the
+ * cancellation would be lost and the alarm would sound anyway.
+ *
+ * This flag makes the cancellation survive that window. It is raised BEFORE
+ * the lock-free silencing and lowered only by the stop that raised it, and
+ * alarm_sound_start() refuses to commit while it is set, handing the teardown
+ * over to the stop that is already blocked on the mutex.
+ *
+ * Only reachable with more than one task driving this module. Today the shell
+ * is the only caller, but the module exists so that the fall-detection logic
+ * can raise and clear alarms from another task, which is exactly when this
+ * starts to matter.
+ */
+static volatile bool s_stop_pending = false;
+
 /** Waveform and digital amplitude. Single words, read by the ISR once per
  *  buffer, written from task context - a change simply takes effect on the
  *  next buffer. */
@@ -831,6 +853,15 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
              * the alarm this call just reported as started. */
             alarm_discard_completion();
 
+            if (s_stop_pending)
+            {
+                /* Cancelled while we held the mutex - see s_stop_pending.
+                 * Undo the retarget and let the waiting stop finish the job. */
+                s_pattern = ALARM_PATTERN_NONE;
+                alarm_unlock();
+                return FSP_ERR_ABORTED;
+            }
+
             alarm_unlock();
             return FSP_SUCCESS;
         }
@@ -868,7 +899,21 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return err;
     }
 
+    /* The stream is up, so s_active must be set even if we abort below: it is
+     * what tells the pending stop's alarm_stop_locked() that there is a device
+     * to shut down. */
     s_active = true;
+
+    if (s_stop_pending)
+    {
+        /* Cancelled while we were inside audio_start() - which can take
+         * seconds when the IIC1 bus is contended. Do not report success for an
+         * alarm that was called off; the stop is blocked on this mutex and
+         * runs audio_stop() as soon as we release it. */
+        s_pattern = ALARM_PATTERN_NONE;
+        alarm_unlock();
+        return FSP_ERR_ABORTED;
+    }
 
     alarm_unlock();
 
@@ -889,15 +934,21 @@ fsp_err_t alarm_sound_stop(void)
      * aligned word, so clearing it outside the lock is safe; the deadline
      * therefore does not depend on lock contention at all.
      * alarm_stop_locked() clears it again - the assignment is idempotent. */
-    s_pattern = ALARM_PATTERN_NONE;
+    s_stop_pending = true;
+    s_pattern      = ALARM_PATTERN_NONE;
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
     {
+        /* This stop will not run, so it must not keep blocking future starts.
+         * The caller is told it failed and the generator is already silent. */
+        s_stop_pending = false;
         return err;
     }
 
     err = alarm_stop_locked();
+
+    s_stop_pending = false;
 
     alarm_unlock();
 
@@ -1249,7 +1300,11 @@ int usrcmd_alarm(int argc, char **argv)
                      (unsigned long)err,
                      (FSP_ERR_NOT_OPEN == err)
                          ? " - run 'audio init' / 'alarm start' first"
-                         : ((FSP_ERR_IN_USE == err) ? " - device busy, try 'audio stop'" : ""));
+                         : ((FSP_ERR_IN_USE == err)
+                                ? " - device busy, try 'audio stop'"
+                                : ((FSP_ERR_ABORTED == err)
+                                       ? " - cancelled by a concurrent 'alarm stop'"
+                                       : "")));
             print_to_console(buf);
             return CMD_ERR_EXECUTE;
         }

@@ -314,7 +314,7 @@ LOCAL T_CTSK ctsk_audio = {
  *    が間に合わなくなりうるため。本タスクは 99.9 % イベント待ちで眠っており、
  *    起床後も I2C レジスタ書き込み 2 回程度で再び眠るので、camera と同値でも
  *    他タスクの実行時間をほとんど奪わない。
- *  - スタック: 2048 バイト。alarm_task -> alarm_sound_stop() -> audio_stop()
+ *  - スタック: 2048 バイト。alarm_task -> alarm_stop_locked() -> audio_stop()
  *    -> da7212_mute() の経路には snprintf を使う関数が無い（audio_stop() と
  *    da7212_apply_mute() はローカルバッファを持たない）ため、audio_task の
  *    4096 バイトは不要。
