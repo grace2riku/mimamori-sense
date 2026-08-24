@@ -8,7 +8,7 @@
  * R_SSI_Write() hands one whole buffer to the DTC: it calls
  * transfer_api_t::reset with num_blocks = samples/2
  * (ra/fsp/src/r_ssi/r_ssi.c:822-850). The DTC transfer info is configured
- * with TRANSFER_IRQ_END (ra_gen/hal_data.c:286), which the transfer API
+ * with TRANSFER_IRQ_END (ra_gen/hal_data.c:160), which the transfer API
  * documents as "DTC triggers the interrupt of the activation source. Choosing
  * TRANSFER_IRQ_END with DTC will prevent activation source interrupts until
  * the transfer is complete" (ra/fsp/inc/api/r_transfer_api.h:159-163). The
@@ -272,15 +272,15 @@ static void audio_log(const char *msg)
 }
 
 /**********************************************************************************************************************
- FSP callback (declared by ra_gen/hal_data.h:61 and referenced by
- ra_gen/hal_data.c:331 - it MUST exist or the image does not link)
+ FSP callback (declared by ra_gen/hal_data.h:51 and referenced by
+ ra_gen/hal_data.c:205 - it MUST exist or the image does not link)
  *********************************************************************************************************************/
 
 /**
  * SSI transmit / idle callback.
  *
  * @details ISR context (SSI0 TXI and SSI0 INT, both at priority 2 -
- *          ra_gen/hal_data.c:348). Keeps the stream running by submitting the
+ *          ra_gen/hal_data.c:222). Keeps the stream running by submitting the
  *          other ping-pong buffer, then regenerating the buffer that was just
  *          drained.
  */
@@ -387,7 +387,7 @@ void audio_i2s_callback(i2s_callback_args_t *p_args)
         default:
         {
             /* I2S_EVENT_RX_FULL cannot occur: the receive interrupt is
-             * disabled (ra_gen/hal_data.c:338-341, rxi_irq =
+             * disabled (ra_gen/hal_data.c:213-215, rxi_irq =
              * FSP_INVALID_VECTOR). */
             break;
         }
@@ -472,7 +472,7 @@ fsp_err_t audio_init(void)
          *
          * The pin is already configured as the GPT peripheral output
          * (ra_gen/pin_data.c:629-630) and the driver enables the output
-         * because gtioca.output_enabled is true (ra_gen/hal_data.c:176-177)
+         * because gtioca.output_enabled is true (ra_gen/hal_data.c:50-51)
          * which makes r_gpt.c:1412-1421 compute a GTIOR with OAE set
          * (r_gpt.c:1760-1764).
          * -------------------------------------------------------------- */
