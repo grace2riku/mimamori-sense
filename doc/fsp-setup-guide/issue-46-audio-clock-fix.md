@@ -5,11 +5,18 @@
 | 版 | 日付 | 内容 |
 |---|---|---|
 | rev1 | 2026-08-23 | 初版。実機実測に基づき #45 の設定誤りを修正 |
+| rev2 | 2026-08-24 | #202 として実施。コード側の変更を先行反映。2-2節の fs 誤差の説明を訂正 |
 
 ## 対象Issue
 
+- 実施Issue: #202 (S-005: FSPプロジェクト設定 - オーディオクロック設定の修正)
 - 発見元: #46 (S-005-2: オーディオ出力デバイス初期化処理の実装)
 - 修正対象: #45 (S-005-1) で設定した r_ssi / GPT の構成
+
+> **rev2 時点の状態**: 本Issue (#202) のブランチで、手順 4-1（GPT1 の Open/Start 削除）と
+> 手順 5-3（SSICR 上書きの削除）は**コード側で実施済み**です。
+> 残っているのは e2 studio 上での手順 3・4・5-1（configuration.xml の変更と再生成）で、
+> **これを実施するまでビルドは通るが音は 16.7 倍速になります**（CKDV が生成値 `/1` のままになるため）。
 
 ## 対象プロジェクト
 
@@ -30,9 +37,10 @@ Issue #45 は **SSIE0 の内部 AUDIO_CLK を GPT1 が供給する**という前
 
 本書はこの2点を e2 studio 上で修正する手順です。
 
-> **現在の暫定処置**: `src/port/audio_port.c` の `audio_init()` が `R_SSI_Open()` 直後に
-> SSICR.CKDV を直接書き換えて `/24` を適用しています（`AUDIO_SSI_BIT_CLOCK_DIV`）。
-> 本手順を実施したら、この暫定処置は削除できます（削除は必須ではなく、値が一致していれば無害）。
+> **暫定処置について（rev2 で解消）**: #46 では `src/port/audio_port.c` の `audio_init()` が
+> `R_SSI_Open()` 直後に SSICR.CKDV を直接書き換えて `/24` を適用していました。
+> #202 でこの上書きは削除済みなので、**CKDV は FSP 設定がそのまま効きます**。
+> 逆に言えば、下記の手順を実施するまで実機の音は 16.7 倍速のままです。
 
 ---
 
@@ -123,8 +131,16 @@ MCLK が変われば DA7212 の PLL 帰還分周値も再計算が必要です
 | 誤差 | **+1.7%** |
 
 `ssi_clock_div_t`（`r_ssi.h`）に `/25` が無いため、12.5 MHz から 16 kHz ちょうどは作れません。
-実機では問題なく再生できています（DA7212 の `PC_RESYNC_AUTO`（`0x94` bit1、既定 1）が
-DAI とシステムクロックのドリフトを吸収します）。
+
+**実機では問題なく再生できています。** 理由は DA7212 の DAI が**スレーブ**であり、
+サンプルは WCLK のレートでそのまま消費されるためです。つまり +1.7 % は
+**再生ピッチが 1.7 % 高くなるだけ**で、バッファのオーバー／アンダーランは起きません。
+
+> **rev1 の記述の訂正**: rev1 は「`PC_RESYNC_AUTO`（`0x94` bit1、既定 1）がドリフトを吸収する」
+> と書いていましたが、これは誤りです。本プロジェクトの `src/port/da7212.c:799` は
+> `PC_COUNT`(`0x94`) に **`DA7212_PC_FREERUN` を明示的にセット**しており
+> （Linux の da7213 ドライバ既定に合わせたもの）、DAI の再同期は働きません。
+> 上記のスレーブ動作による説明が正となります。
 
 より正確な fs が必要な場合は GPT2 の周期と CKDV の組み合わせを再設計します。
 例: GPT2 周期 61（MCLK 4.098 MHz）＋ CKDV `/8` → fs 16,010 Hz（誤差 +0.06%）。
@@ -157,24 +173,22 @@ DAI とシステムクロックのドリフトを吸収します）。
 3. 削除後、**`g_timer_audio_mclk`（GPT2）は残す**ことを確認する
    （こちらが MCLK と AUDIO_CLK の両方を供給しているため、**削除してはいけない**）
 
-### 4-1. 削除に伴うコード変更（本手順の実施後に必要）
+### 4-1. 削除に伴うコード変更【rev2: 実施済み】
 
-`src/port/audio_port.c` の `audio_init()` に GPT1 の Open/Start があります。
-FSP から `g_timer_audio_clk` を削除すると `hal_data.h` から宣言が消えるため、
-**この2箇所を削除しないとビルドエラーになります**:
+`src/port/audio_port.c` の `audio_init()` にあった GPT1 の Open/Start は、
+**#202 のブランチで削除済み**です。`hal_data.h` から `g_timer_audio_clk` の宣言が
+消えてもビルドエラーになりません。
 
-```c
-/* Step 2: GPT1 -> GTIOC1A = SSIE internal AUDIO_CLK (= BCLK). */
-err = R_GPT_Open(&g_timer_audio_clk_ctrl, &g_timer_audio_clk_cfg);   /* ← 削除 */
-...
-err = R_GPT_Start(&g_timer_audio_clk_ctrl);                          /* ← 削除 */
-```
+削除済みのシンボル参照（`grep -rn "g_timer_audio_clk\|AUDIO_GPT_AUDIO_CLK_COUNTS" e2studio_CPU0/src/`
+がコメント以外にヒットしないことを確認済み）:
 
-`src/port/audio_port.h` の `AUDIO_GPT_AUDIO_CLK_COUNTS`（488）も未使用になります。
+| ファイル | 削除内容 |
+|---|---|
+| `src/port/audio_port.c` | `R_GPT_Open(&g_timer_audio_clk_ctrl, ...)` / `R_GPT_Start(&g_timer_audio_clk_ctrl)` |
+| `src/port/audio_port.h` | `AUDIO_GPT_AUDIO_CLK_COUNTS`（488、未使用化） |
 
-> **順序の注意**: 先にコードから GPT1 参照を削除してから Generate すると、
-> 一時的にもビルドエラーになりません。FSP 削除を先に行う場合はコード修正まで
-> 一気に行ってください。
+> **順序**: コード側を先に直してあるので、e2 studio 側はいつ Generate しても
+> ビルドが壊れません。
 
 ---
 
@@ -198,22 +212,50 @@ err = R_GPT_Start(&g_timer_audio_clk_ctrl);                          /* ← 削�
 - [ ] `extern const timer_instance_t g_timer_audio_clk;` が消えている
 - [ ] `extern const timer_instance_t g_timer_audio_mclk;` は残っている
 
-### 5-3. 暫定処置の削除（任意）
+`configuration.xml` は次のコマンドで確認できます（GUI を閉じてから実行）。
 
-FSP 側が `/24` になったので、`src/port/audio_port.c` の SSICR 上書きは不要になります。
-削除する場合は `R_SSI_Open()` 直後の以下のブロックを消してください:
+PowerShell（Windows の既定シェル。`grep` は存在しないので `Select-String` を使う）:
 
-```c
-{
-    uint32_t ssicr = R_SSI0->SSICR;
-    ssicr &= ~(0xFUL << 4);
-    ssicr |= (AUDIO_SSI_CKDV_VALUE << 4);
-    R_SSI0->SSICR = ssicr;
-}
+```powershell
+Select-String -Path e2studio_CPU0\configuration.xml -Pattern "module\.driver\.i2s\.audio_clock_div"
+# 期待: value="module.driver.i2s.audio_clock_div.24"   (変更前は ....1)
+
+(Select-String -Path e2studio_CPU0\configuration.xml -Pattern "g_timer_audio_clk").Count
+# 期待: 0
+
+(Select-String -Path e2studio_CPU0\configuration.xml -Pattern "g_timer_audio_mclk").Count
+# 期待: 1 以上
 ```
 
-残しても値が一致するため無害です。**削除する場合は 5-4 の実機確認を必ず再実施**してください
-（FSP 設定が意図どおり効いていることの確認になります）。
+Git Bash / WSL の場合:
+
+```bash
+grep -n "module.driver.i2s.audio_clock_div" e2studio_CPU0/configuration.xml
+grep -c "g_timer_audio_clk"  e2studio_CPU0/configuration.xml   # 期待: 0
+grep -c "g_timer_audio_mclk" e2studio_CPU0/configuration.xml   # 期待: 1 以上
+```
+
+`g_timer_audio_clk` の定義は `<module id="module.driver.timer_on_gpt.638972853">` で、
+`<stack module="module.driver.timer_on_gpt.638972853"/>` からも参照されています。
+GUI で Delete すればこの2箇所とも消えます。
+
+> **注意**: r_ssi の `module.driver.i2s.audio_clock` プロパティ値は
+> `audio_clock_gtioc1a` のままで正しい（FSP が「Internal AUDIO_CLK」に付けている
+> 列挙名で、生成コードでは `SSI_AUDIO_CLOCK_INTERNAL` になる）。名前は GPT1 を指して
+> いますが、実機の供給元は GPT2 です（1-2節）。**この値は変更しないでください。**
+
+### 5-3. 暫定処置の削除【rev2: 実施済み】
+
+`src/port/audio_port.c` にあった SSICR 上書き（`R_SSI_Open()` 直後の
+`ssicr |= AUDIO_SSI_CKDV_VALUE << 4`）は **#202 のブランチで削除済み**です。
+`AUDIO_SSI_CKDV_VALUE` マクロも削除しました。
+
+これにより CKDV は `R_SSI_Open()` が設定値からそのまま書く値になります
+（`ra/fsp/src/r_ssi/r_ssi.c:264` `ssicr |= p_extend->bit_clock_div << SSI_PRV_SSICR_CKDV_BIT`。
+マスタモードのときだけ実行される分岐で、本プロジェクトは `I2S_MODE_MASTER`）。
+
+> **したがって、3章の手順1（Bit Clock Divider → `/24`）を実施するまでは、
+> 音は 16.7 倍速のままになります。** 5-4 の実機確認が FSP 設定の唯一の検証手段です。
 
 ### 5-4. 実機での確認
 

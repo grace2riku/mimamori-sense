@@ -15,13 +15,14 @@
  *          GTIOCA once per timer period (r_gpt.c:1760-1790, GTIO setting
  *          "low at compare match / high at cycle end" with duty = period/2-1)
  *          => MCLK = 250 MHz / 20 = 12.5 MHz.
- *   BCLK : GPT1 GTIOC1A -> SSIE internal AUDIO_CLK, bit clock divider /1
- *          (ra_gen/hal_data.c:323-325 SSI_AUDIO_CLOCK_INTERNAL / SSI_CLOCK_DIV_1).
- *          g_timer_audio_clk_cfg.period_counts = 0x1e8 (= 488)
- *          (ra_gen/hal_data.c:131-134) => BCLK = 250 MHz / 488 = 512,295 Hz.
+ *   BCLK : the SAME GPT2 output is also the SSIE internal AUDIO_CLK
+ *          (SSI_AUDIO_CLOCK_INTERNAL; established by hardware measurement in
+ *          Issue #46, see AUDIO_SSI_BIT_CLOCK_DIV in audio_port.h). The bit
+ *          clock divider is /24 (SSI_CLOCK_DIV_24, set in configuration.xml by
+ *          Issue #202) => BCLK = 12.5 MHz / 24 = 520,833 Hz.
  *   WCLK : 16-bit PCM x 2 channels = 32 BCLK per frame
- *          (ra_gen/hal_data.c:328-331, I2S_PCM_WIDTH_16_BITS /
- *          I2S_WORD_LENGTH_16_BITS) => WCLK = 512,295 / 32 = 16,009.2 Hz.
+ *          (ra_gen/hal_data.c g_i2s_audio_cfg_extend, I2S_PCM_WIDTH_16_BITS /
+ *          I2S_WORD_LENGTH_16_BITS) => WCLK = 520,833 / 32 = 16,276 Hz.
  *
  * Clock mode choice (datasheet table 33 p50, and 13.38.1 p63):
  *   The MCU is the DAI master, so the DA7212 is a DAI SLAVE. PLL bypass mode
@@ -30,21 +31,28 @@
  *   integer-divided to 12.288 MHz (250/12.288 = 20.35).
  *   "Slave + PLL enabled" (normal PLL mode) is allowed by table 33 with
  *   Note 21 "MCLK must be synchronous with BCLK and WCLK". That condition
- *   holds here: MCLK (GPT2) and BCLK (GPT1) are both integer divisions of the
- *   same PCLKD, so they are frequency locked with no drift.
+ *   holds here: MCLK and BCLK are both derived from the same GPT2 output, so
+ *   they are frequency locked with no drift.
  *   Datasheet 13.38.1 states the SRM PLL mode is required only "if the WCLK
  *   input is not from the same clock source as the MCLK input" - not our case.
  *
- * KNOWN RESIDUAL ERROR (reported as an open item for this Issue):
+ * KNOWN RESIDUAL ERROR (open item):
  *   With the PLL locked to MCLK the codec's internal system clock is exactly
  *   12.288 MHz, from which SR = 16 kHz derives exactly 16,000.0 Hz, while the
- *   arriving WCLK is 16,009.2 Hz (+0.058 %). The DA7212 DAI is slave-clocked,
- *   so the audio is consumed at the WCLK rate; the mismatch against the
- *   internal rate is ~9 samples per second. Alternatives if this proves
- *   audible: (a) enable SRM PLL mode (PLL_SRM_EN) so the PLL tracks WCLK -
- *   this needs WCLK to be running before the lock check, i.e. it cannot be
- *   done in the "codec before R_SSI_Open" order required by this Issue;
- *   (b) trim the PLL feedback divider by +0.058 %.
+ *   arriving WCLK is 16,276 Hz (+1.7 %). The DA7212 DAI is slave-clocked, so
+ *   the audio is consumed at the WCLK rate and the samples are simply played
+ *   1.7 % fast (a pitch shift, not dropouts) - which is why the Issue #46
+ *   bring-up sounded clean. Note that this driver puts the codec's sample
+ *   counter in free-running mode (DA7212_PC_FREERUN, see below), so nothing
+ *   here resyncs the DAI to the internal system clock.
+ *   /24 is the closest r_ssi divider to the ideal /25 (ssi_clock_div_t has no
+ *   /25), so removing this error means re-picking the GPT2 period together
+ *   with the codec PLL settings - see
+ *   doc/fsp-setup-guide/issue-46-audio-clock-fix.md section 2-2.
+ *   Alternatives: (a) enable SRM PLL mode (PLL_SRM_EN) so the PLL tracks
+ *   WCLK - this needs WCLK to be running before the lock check, i.e. it
+ *   cannot be done in the "codec before R_SSI_Open" order required here;
+ *   (b) trim the PLL feedback divider.
  */
 
 /**********************************************************************************************************************
