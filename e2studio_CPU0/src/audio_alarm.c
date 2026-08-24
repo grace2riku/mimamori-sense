@@ -325,7 +325,10 @@ static volatile bool s_finished = false;
  *
  * A start therefore samples this counter on entry and re-checks it at every
  * point where it would commit; a different value means "a stop was requested
- * after I began", and the start tears down instead of reporting success.
+ * after I began", and the start tears down instead of reporting success. For
+ * that comparison to mean anything, alarm_sound_stop() must publish the bump
+ * and the silencing of s_pattern as ONE task-atomic step - see the comment
+ * there.
  *
  * It MUST be a counter that nobody clears, not a "stop pending" flag. A stop
  * whose own alarm_lock() times out - which is precisely what happens when a
@@ -955,7 +958,8 @@ cancelled:
  */
 fsp_err_t alarm_sound_stop(void)
 {
-    /* Silence the generator BEFORE taking the mutex.
+    /*
+     * Silence the generator BEFORE taking the mutex.
      *
      * Going quiet is the part of the stop that has a deadline (Issue #47:
      * within 100 ms), and the mutex can legitimately be held for much longer
@@ -963,13 +967,30 @@ fsp_err_t alarm_sound_stop(void)
      * only ever READS s_pattern (alarm_fill_cb()), and this is a single
      * aligned word, so clearing it outside the lock is safe; the deadline
      * therefore does not depend on lock contention at all.
-     * alarm_stop_locked() clears it again - the assignment is idempotent. */
-    /* Publish the cancellation FIRST, so that a start which already holds the
-     * mutex cannot erase it. Deliberately never undone, not even when the
-     * alarm_lock() below times out: that timeout is exactly the case where an
-     * in-flight start still has to learn about this stop (see s_stop_gen). */
+     * alarm_stop_locked() clears it again - the assignment is idempotent.
+     *
+     * The bump of s_stop_gen and the silencing MUST be published together as
+     * one task-atomic step. A start samples s_stop_gen on entry, and if it
+     * could sample BETWEEN the two writes it would record the already-bumped
+     * generation - so it would consider this stop older than itself - and
+     * then have its own s_pattern overwritten by the second write moments
+     * later. It would go on to report success while the generator plays
+     * silence, which is exactly the hole this counter exists to close.
+     *
+     * tk_dis_dsp() is the right scope: the only other writers of these two
+     * variables are TASKS (this function and alarm_sound_start()), never the
+     * ISR, which merely reads s_pattern. Disabling dispatch also makes the
+     * read-modify-write of s_stop_gen safe against a concurrent stop.
+     */
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+
     s_stop_gen++;
     s_pattern = ALARM_PATTERN_NONE;
+
+    if (dispatch_off)
+    {
+        (void)tk_ena_dsp();
+    }
 
     fsp_err_t err = alarm_lock();
     if (FSP_SUCCESS != err)
