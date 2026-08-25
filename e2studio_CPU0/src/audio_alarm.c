@@ -314,10 +314,27 @@ static volatile alarm_pattern_t s_pattern = ALARM_PATTERN_NONE;
  *  only task that calls audio_start() / audio_stop(); everybody else reads. */
 static volatile bool s_active = false;
 
-/** Set by the generator when a one-shot pattern has finished and its tail has
- *  been played out. Cleared by alarm_task whenever it applies a pattern, so
- *  a completion always belongs to the pattern currently being rendered. */
-static volatile bool s_finished = false;
+/**
+ * The generator request whose one-shot has finished and been played out, or 0
+ * when there is no completion outstanding.
+ *
+ * A TAG rather than a flag, because "discard the stale completion" cannot be
+ * ordered correctly against the ISR:
+ *   - clearing BEFORE publishing a new request lets a completion of the OLD
+ *     pattern that lands in between survive, and the new pattern is then
+ *     stopped for no reason;
+ *   - clearing AFTER publishing erases the completion of the NEW pattern when
+ *     the ISR gets there first - which is reachable, since re-enabling
+ *     dispatch can hand the CPU to another task for as long as it likes - and
+ *     the stream is then left PLAYING silence with nothing to end it.
+ * The ISR cannot be locked out either: tk_dis_dsp() does not mask it.
+ *
+ * Tagging removes the choice. The generator records WHICH request it finished,
+ * and alarm_reconcile() acts on it only while that is still the request in
+ * force, so publishing a new one invalidates an old completion without anybody
+ * having to clear anything.
+ */
+static volatile uint32_t s_finished_req = 0;
 
 /**
  * Requested state, and the change counter that goes with it.
@@ -430,12 +447,11 @@ static ID s_alarm_flgid = 0;
  Private (static) function prototypes
  *********************************************************************************************************************/
 static bool      alarm_owns_stream(void);
-static void      alarm_discard_completion(void);
 static void      alarm_gen_publish_locked(alarm_pattern_t pattern);
 static void      alarm_gen_publish(alarm_pattern_t pattern);
 static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
 static void      alarm_reconcile(void);
-static fsp_err_t alarm_apply_stop(void);
+static fsp_err_t alarm_apply_stop(uint32_t req_seq);
 static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq);
 static void      alarm_generator_reset(void);
 static void      alarm_load_step(uint32_t idx, uint32_t start_elapsed);
@@ -483,23 +499,6 @@ static bool alarm_owns_stream(void)
     return (s_active &&
             (alarm_fill_cb == audio_get_fill_cb()) &&
             (AUDIO_STATE_PLAYING == audio_get_state()));
-}
-
-/**
- * Drop a pending "one shot finished" completion.
- *
- * Called by alarm_task whenever it installs a pattern, so that a completion
- * always refers to the pattern currently being rendered and never to the one
- * that was just replaced.
- */
-static void alarm_discard_completion(void)
-{
-    s_finished = false;
-
-    if (s_alarm_flgid > 0)
-    {
-        (void)tk_clr_flg(s_alarm_flgid, (UINT)~ALARM_EVT_FINISHED);
-    }
 }
 
 /**
@@ -588,11 +587,38 @@ static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 /**
  * Stop the device. alarm_task context only.
  */
-static fsp_err_t alarm_apply_stop(void)
+static fsp_err_t alarm_apply_stop(uint32_t req_seq)
 {
     fsp_err_t err = FSP_SUCCESS;
+    bool      stale;
 
-    alarm_gen_publish(ALARM_PATTERN_NONE);
+    /* Same reasoning as the live-retarget path in alarm_apply_start(): the
+     * staleness test and the publication share one tk_dis_dsp() section, so a
+     * newer start published in between cannot be silenced by this stale stop.
+     * Doing so would not break "the newest request wins" - the next reconcile
+     * iteration still starts it - but it would turn a live retarget into a
+     * full teardown and restart, with an audible gap and possibly the
+     * ALARM_STOPPING_WAIT_MS wait on top. */
+    {
+        const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+        stale = (s_request_seq != req_seq);
+
+        if (!stale)
+        {
+            alarm_gen_publish_locked(ALARM_PATTERN_NONE);
+        }
+
+        if (dispatch_off)
+        {
+            (void)tk_ena_dsp();
+        }
+    }
+
+    if (stale)
+    {
+        return FSP_ERR_ABORTED;
+    }
 
     if (s_active)
     {
@@ -606,8 +632,6 @@ static fsp_err_t alarm_apply_stop(void)
 
         s_active = false;
     }
-
-    alarm_discard_completion();
 
     return err;
 }
@@ -672,8 +696,10 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
             return FSP_ERR_ABORTED;
         }
 
-        alarm_discard_completion();
-
+        /* No completion to clear: publishing above changed s_gen_request, so
+         * any completion tagged with the previous request no longer matches
+         * (see s_finished_req). A completion of the pattern just published is
+         * kept, which is exactly what has to end this one-shot. */
         return FSP_SUCCESS;
     }
 
@@ -681,7 +707,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
      * own, then start fresh. alarm_apply_stop() deliberately leaves another
      * caller's stream running, so audio_start() below reports FSP_ERR_IN_USE
      * instead of silently hijacking it. */
-    (void)alarm_apply_stop();
+    (void)alarm_apply_stop(req_seq);
 
     alarm_generator_reset();
     alarm_gen_publish(pattern);
@@ -756,8 +782,6 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
     err = audio_start(alarm_fill_cb, NULL);
     if (FSP_SUCCESS != err)
     {
-        alarm_gen_publish(ALARM_PATTERN_NONE);
-
         /*
          * The generator may have played the pattern out into the still-muted
          * codec while audio_start() was retrying the unmute, leaving a
@@ -765,14 +789,15 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
          * a device that audio_start() has already rolled back, so there is
          * nothing for it to stop.
          *
-         * Dropping it matters because alarm_status is now the module's result
-         * channel: left standing, alarm_reconcile()'s very next iteration
-         * would take the automatic-stop path under the SAME applied sequence
-         * and overwrite s_last_error with the stop's FSP_SUCCESS, so the only
-         * record that this start failed - and that the alarm was never
-         * audible - would be gone.
+         * Publishing silence here is what invalidates it: the completion is
+         * tagged with the request that was in force while the pattern played
+         * (see s_finished_req), and that is no longer the current one. Left
+         * matching, alarm_reconcile()'s very next iteration would take the
+         * automatic-stop path under the SAME applied sequence and overwrite
+         * s_last_error with the stop's FSP_SUCCESS, losing the only record
+         * that this start failed and that the alarm was never audible.
          */
-        alarm_discard_completion();
+        alarm_gen_publish(ALARM_PATTERN_NONE);
 
         return err;
     }
@@ -800,7 +825,8 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
 
         if (s_request_seq == req_seq)
         {
-            alarm_discard_completion();
+            /* Publishing re-tags the generator, so the completion recorded
+             * while the codec was muted stops matching (see s_finished_req). */
             alarm_gen_publish_locked(pattern);
         }
 
@@ -853,7 +879,12 @@ static void alarm_reconcile(void)
              * that from "alarm start beep" issued a second time, which is a
              * NEW request for the same pattern and must replay it.
              */
-            if (!s_finished)
+            /* A completion counts only while it belongs to the request the
+             * generator is currently under; publishing anything else retires
+             * it without a race (see s_finished_req). */
+            const uint32_t finished = s_finished_req;
+
+            if ((0U == finished) || (finished != s_gen_request))
             {
                 s_settle_count++;
                 return;                 /* converged */
@@ -865,7 +896,7 @@ static void alarm_reconcile(void)
         /* Nobody waits on this: the API is asynchronous, so these three are
          * read only by "alarm status" as diagnostics. */
         s_last_error      = (ALARM_PATTERN_NONE == want)
-                                ? alarm_apply_stop()
+                                ? alarm_apply_stop(seq)
                                 : alarm_apply_start(want, seq);
         s_applied_pattern = want;
         s_applied_seq     = seq;
@@ -896,11 +927,8 @@ static void alarm_generator_reset(void)
     s_phase          = 0;
     s_phase_step     = 0;
 
-    /* Clears the event flag as well as s_finished. Clearing only half of the
-     * completion is what the divergence fixed above was made of, so this path
-     * uses the same helper as every other one even though it is only reached
-     * with the stream already stopped. */
-    alarm_discard_completion();
+    /* Nothing has finished under a generator that is being reset. */
+    s_finished_req = 0;
 }
 
 /**
@@ -1134,8 +1162,8 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
             {
                 /* The tail of the one-shot pattern has now been transferred,
                  * so alarm_task() may stop the device. */
-                s_gen      = ALARM_GEN_IDLE;
-                s_finished = true;
+                s_gen          = ALARM_GEN_IDLE;
+                s_finished_req = s_gen_applied;
                 s_finish_count++;
 
                 if (s_alarm_flgid > 0)
@@ -1423,7 +1451,7 @@ void alarm_task(INT stacd, void *exinf)
 
         /*
          * The event is only a hint that something MIGHT have changed; the
-         * durable state is s_desired_pattern / s_request_seq / s_finished,
+         * durable state is s_desired_pattern / s_request_seq / s_finished_req,
          * and alarm_reconcile() reads those. A wake-up that turns out to have
          * nothing to do simply converges immediately, and a request that
          * arrives while we are inside a multi-second audio_start() is picked
