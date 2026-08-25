@@ -690,6 +690,28 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
     }
 
     /*
+     * Whatever ended that wait, a newer request makes this one stale and it
+     * must NOT reach audio_start().
+     *
+     * Breaking out of the loop is not enough - it only stops waiting, and
+     * execution would carry straight on and bring the device up with the
+     * superseded pattern. audio_start() pre-fills both buffers and starts the
+     * stream, so those buffers can be heard before alarm_reconcile() gets its
+     * next iteration and applies the newer request. The state test above also
+     * runs first, so a newer request that arrives just as the device reaches
+     * READY would skip the sequence test inside the loop entirely.
+     *
+     * Returning here leaves the device alone; alarm_reconcile() re-samples and
+     * applies the newer request instead. It records this call as applied under
+     * the stale sequence, which is what lets that next iteration see the newer
+     * one as a change.
+     */
+    if (s_request_seq != req_seq)
+    {
+        return FSP_ERR_ABORTED;
+    }
+
+    /*
      * Snapshot the completion counter: audio_start() starts the SSI stream
      * BEFORE it retries the codec unmute (src/port/audio_port.c:602-638), and
      * those retries can take seconds on a contended IIC1 bus. Everything the
