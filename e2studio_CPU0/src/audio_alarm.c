@@ -369,6 +369,26 @@ static volatile uint16_t     s_amplitude = AUDIO_TEST_AMPLITUDE;
  * context while the stream is stopped (i.e. while no fill can run). Declared
  * volatile because "alarm status" reads them from ntshell_task. */
 
+/**
+ * Set by alarm_task to force the generator to (re)load s_pattern even when it
+ * has not changed value. Cleared by the ISR when it acts on it.
+ *
+ * alarm_fill_cb() normally reloads only on `s_pattern != s_render_pattern`,
+ * which is not enough for a REPEATED request: asking for the pattern that is
+ * already loaded is a no-op for that test, so if the generator has meanwhile
+ * finished (ALARM_GEN_IDLE) or is draining (ALARM_GEN_DRAIN) it would never
+ * start again. That is reachable whenever the stream is still PLAYING while
+ * the one-shot on it has ended - most easily when the audio_start() of the
+ * FIRST request was still retrying the codec unmute over a contended IIC1
+ * bus, since the PCM stream is running throughout those retries.
+ *
+ * Every new request therefore sets this, which also gives "start" its
+ * expected meaning: it restarts the pattern from its first step rather than
+ * joining the one in progress. The phase accumulator is deliberately NOT
+ * reset by alarm_apply_pattern(), so the restart is still click-free.
+ */
+static volatile bool s_gen_restart = false;
+
 static volatile alarm_pattern_t   s_render_pattern = ALARM_PATTERN_NONE;
 static volatile alarm_gen_state_t s_gen            = ALARM_GEN_IDLE;
 static volatile uint32_t          s_step_idx       = 0;
@@ -534,9 +554,19 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
 
     if (alarm_owns_stream() && (AUDIO_STATE_PLAYING == audio_get_state()))
     {
-        /* Live pattern switch - no restart, no click. The phase accumulator is
-         * not reset, which is what keeps the transition click-free. */
-        s_pattern = pattern;
+        /* Live pattern switch - the stream keeps running, so there is no gap
+         * and no click; the phase accumulator is not reset.
+         *
+         * s_gen_restart is raised unconditionally, not just when the pattern
+         * value changes: this function only runs for a NEW request, and a
+         * request naming the pattern that is already loaded must still take
+         * effect. Without it, repeating a one-shot whose generator has already
+         * finished would be swallowed by the value test in alarm_fill_cb()
+         * and never play. Written after s_pattern so that the generator cannot
+         * reload the OLD pattern and clear the flag in between. */
+        s_pattern     = pattern;
+        s_gen_restart = true;
+
         alarm_discard_completion();
 
         return FSP_SUCCESS;
@@ -700,6 +730,7 @@ static void alarm_generator_reset(void)
     s_drain_fills    = 0;
     s_phase          = 0;
     s_phase_step     = 0;
+    s_gen_restart    = false;
 
     /* Clears the event flag as well as s_finished. Clearing only half of the
      * completion is what the divergence fixed above was made of, so this path
@@ -848,8 +879,11 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
      * of a single word - no lock, and at worst the change lands one buffer
      * (AUDIO_BUFFER_MS) later than requested. */
     alarm_pattern_t want = s_pattern;
-    if (want != s_render_pattern)
+    if ((want != s_render_pattern) || s_gen_restart)
     {
+        /* s_gen_restart covers a REPEATED request, where the value test alone
+         * would not fire and a finished generator would stay silent. */
+        s_gen_restart = false;
         alarm_apply_pattern(want);
     }
 
