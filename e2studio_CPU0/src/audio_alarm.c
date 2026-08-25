@@ -333,6 +333,12 @@ static volatile bool s_active = false;
  * and alarm_reconcile() acts on it only while that is still the request in
  * force, so publishing a new one invalidates an old completion without anybody
  * having to clear anything.
+ *
+ * The tag is still retired when the generator moves on to another request -
+ * alarm_fill_cb() does it, being the owner of both this and s_gen_applied.
+ * That is not needed for correctness of the comparison, but it stops a fossil
+ * tag from surviving until the 24-bit sequence in the packed request word
+ * wraps round to it again.
  */
 static volatile uint32_t s_finished_req = 0;
 
@@ -1129,6 +1135,23 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
         /* Consume the request exactly once, whether or not it turns into a
          * reload: it is one indivisible word (see s_gen_request). */
         s_gen_applied = req;
+
+        /*
+         * Retire any completion of the request being replaced.
+         *
+         * Done HERE because this ISR owns both s_gen_applied and
+         * s_finished_req, so the retirement cannot race the generator raising
+         * a new completion - task context could not clear the tag safely, it
+         * would have to read-modify-write against this very code.
+         *
+         * Without it a stale tag lives on indefinitely, and the packed request
+         * word only carries a 24-bit sequence (ALARM_GEN_SEQ_SHIFT), so after
+         * 2^24 publications the value repeats: a brand new request could match
+         * that fossil and be treated as already finished the moment it is
+         * applied. Retiring on every change keeps a tag alive only while the
+         * generator is actually on that request.
+         */
+        s_finished_req = 0;
 
         /*
          * Reload when the pattern differs, and also when the generator is no
