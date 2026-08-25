@@ -54,6 +54,12 @@
  * 本タスクは自前ヘッダがあるのでそちらを取り込む（型不一致を検出できる）。 */
 #include "port/audio_port.h"
 
+/* 警報音生成タスク本体（Issue #47 / src/audio_alarm.c）。
+ * uT-Kernel タスク形式 void alarm_task(INT stacd, void *exinf)。
+ * ワンショットパターン（beep）の再生完了を SSI 送信割り込みから受け取り、
+ * ISR からは呼べない audio_stop() をタスクコンテキストで代行する。 */
+#include "audio_alarm.h"
+
 /*
  * ボード LED 定義（FSP 提供）。
  * FreeRTOS 版 blinky_thread_entry.c と同じく g_bsp_leds を使用する。
@@ -268,11 +274,11 @@ LOCAL T_CTSK ctsk_ai_inference = {
  *
  *  本体は src/port/audio_port.c の audio_task()。
  *  - 優先度: itskpri=16。優先度表:
- *      blink=10 / camera=11 / ntshell=12 / dave2d・swdraw=13 / lvgl=14 /
- *      ai=15 / audio=16
+ *      blink=10 / camera=11・alarm=11 / ntshell=12 / dave2d・swdraw=13 /
+ *      lvgl=14 / ai=15 / audio=16
  *    audio_task は起動時に audio_init() を 1 回実行して以降は
  *    tk_slp_tsk(TMO_FEVR) で眠るだけであり、実際の連続再生は SSI 送信割り込み
- *    （優先度 2 の ISR。ra_gen/hal_data.c:348）が担うため、タスク優先度が
+ *    （優先度 2 の ISR。ra_gen/hal_data.c:222 の txi_ipl）が担うため、タスク優先度が
  *    再生品質に影響しない。よって最下位に置く。
  *  - audio_init() は DA7212 のデータシート規定の待ち（合計約 0.4 秒）と
  *    IIC1 解放待ちでブロックするため、ntshell_task 側で初期化すると
@@ -288,6 +294,38 @@ LOCAL T_CTSK ctsk_audio = {
     .task    = audio_task,
     .itskpri = 16,            /* ai_inference(15) より低い最下位 */
     .stksz   = 4096,
+    .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
+};
+
+/* ---------------------------------------------------------------------------
+ *  警報音タスクの生成情報（Issue #47 / S-005-3）
+ *
+ *  本体は src/audio_alarm.c の alarm_task()。
+ *  - 役割: ワンショットパターン（確認音 beep）の再生完了イベントを待って
+ *    audio_stop() を実行するだけ。波形生成そのものは SSI 送信割り込み
+ *    （優先度 2 の ISR）内で行われるため、本タスクは音質に関与しない。
+ *    audio_stop() は I2C（コーデックのミュート）とイベントフラグ待ちを
+ *    使うので ISR からは呼べず、代行するタスクが必要になる。
+ *  - 優先度: itskpri=11（camera_task と同値）。優先度表は上の ctsk_audio の
+ *    コメントを参照。audio_task と同じ最下位（16）に置かないのは、
+ *    μT-Kernel が優先度順の完全プリエンプティブ方式（同一優先度内はラウンド
+ *    ロビンではなく FIFO）であり、ai_inference(15) や lvgl(14) が長時間
+ *    CPU を握ると 16 の起床が無制限に遅れ、確認音（ワンショット）の自動停止
+ *    が間に合わなくなりうるため。本タスクは 99.9 % イベント待ちで眠っており、
+ *    起床後も I2C レジスタ書き込み 2 回程度で再び眠るので、camera と同値でも
+ *    他タスクの実行時間をほとんど奪わない。
+ *  - スタック: 2048 バイト。alarm_task -> alarm_stop_locked() -> audio_stop()
+ *    -> da7212_mute() の経路には snprintf を使う関数が無い（audio_stop() と
+ *    da7212_apply_mute() はローカルバッファを持たない）ため、audio_task の
+ *    4096 バイトは不要。
+ *  USE_OBJECT_NAME = 0 のため dsname メンバは存在しない（初期化子に含めない）。
+ * ------------------------------------------------------------------------- */
+LOCAL T_CTSK ctsk_alarm = {
+    .exinf   = NULL,
+    .tskatr  = TA_HLNG | TA_RNG3,
+    .task    = alarm_task,
+    .itskpri = 11,            /* camera(11) と同値。理由は上のコメント参照 */
+    .stksz   = 2048,
     .bufptr  = NULL,          /* USE_IMALLOC = 1 によりスタックは自動確保 */
 };
 
@@ -545,6 +583,30 @@ EXPORT INT usermain(void)
     }
 
     tm_putstring((UB *)"[usermain] audio_task created & started.\n");
+
+    /* ---------------------------------------------------------------------
+     * 警報音タスクを生成・起動（Issue #47 / S-005-3）
+     *
+     * audio_task の後に起動する。alarm_task 自身はオーディオデバイスを
+     * 初期化せず、起動直後に alarm_sound_init()（イベントフラグとミューテックス
+     * の生成のみ）を実行してイベント待ちに入るだけなので、audio_init() の
+     * 完了を待つ必要はない。実際に音を出す alarm_sound_start() は
+     * audio_start() 経由でデバイス状態を検査し、未初期化なら
+     * FSP_ERR_NOT_OPEN を返す（src/port/audio_port.c:562-575）。
+     * --------------------------------------------------------------------- */
+    tskid = tk_cre_tsk(&ctsk_alarm);
+    if (tskid <= E_OK) {
+        tm_printf((UB *)"[usermain] tk_cre_tsk(alarm) failed. ercd = %d\n", (INT)tskid);
+        return -1;
+    }
+
+    ercd = tk_sta_tsk(tskid, 0);
+    if (ercd != E_OK) {
+        tm_printf((UB *)"[usermain] tk_sta_tsk(alarm) failed. ercd = %d\n", (INT)ercd);
+        return -1;
+    }
+
+    tm_putstring((UB *)"[usermain] alarm_task created & started.\n");
 
     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */
