@@ -76,6 +76,10 @@
 /** Every bit alarm_task() waits on. */
 #define ALARM_EVT_ANY               (ALARM_EVT_FINISHED | ALARM_EVT_REQUEST)
 
+/** Layout of the packed generator request word (see s_gen_request). */
+#define ALARM_GEN_PATTERN_MASK      (0xFFU)
+#define ALARM_GEN_SEQ_SHIFT         (8U)
+
 /**
  * How long the synchronous API wrappers wait for alarm_task to apply their
  * request before reporting "outcome not known yet".
@@ -299,9 +303,11 @@ static const alarm_pattern_def_t s_pattern_defs[ALARM_PATTERN_COUNT] = {
 
 /* --- Shared between task context and the generator ------------------------ */
 
-/** Pattern requested by task context. The ONLY variable the ISR reads to
- *  learn about a change; a single aligned word, so no tearing on Cortex-M85
- *  and no lock is needed on the ISR side. */
+/** The pattern last asked of the generator. REPORTING ONLY - the generator
+ *  itself is driven by s_gen_request, which carries the same pattern packed
+ *  with a sequence; this mirror exists so that "alarm status" and
+ *  alarm_sound_get_pattern() have something to show. Published in the same
+ *  task-atomic step as s_gen_request, so the two never disagree. */
 static volatile alarm_pattern_t s_pattern = ALARM_PATTERN_NONE;
 
 /** true while this module owns the audio stream (audio_start() succeeded and
@@ -370,24 +376,36 @@ static volatile uint16_t     s_amplitude = AUDIO_TEST_AMPLITUDE;
  * volatile because "alarm status" reads them from ntshell_task. */
 
 /**
- * Set by alarm_task to force the generator to (re)load s_pattern even when it
- * has not changed value. Cleared by the ISR when it acts on it.
+ * The generator request, published as ONE aligned 32-bit word:
  *
- * alarm_fill_cb() normally reloads only on `s_pattern != s_render_pattern`,
- * which is not enough for a REPEATED request: asking for the pattern that is
- * already loaded is a no-op for that test, so if the generator has meanwhile
- * finished (ALARM_GEN_IDLE) or is draining (ALARM_GEN_DRAIN) it would never
- * start again. That is reachable whenever the stream is still PLAYING while
- * the one-shot on it has ended - most easily when the audio_start() of the
- * FIRST request was still retrying the codec unmute over a contended IIC1
- * bus, since the PCM stream is running throughout those retries.
+ *     (sequence << ALARM_GEN_SEQ_SHIFT) | pattern
  *
- * Every new request therefore sets this, which also gives "start" its
- * expected meaning: it restarts the pattern from its first step rather than
- * joining the one in progress. The phase accumulator is deliberately NOT
- * reset by alarm_apply_pattern(), so the restart is still click-free.
+ * Why a single word rather than "write the pattern, then raise a restart
+ * flag": the SSI ISR can preempt task context between any two stores. With a
+ * separate pattern and flag it could consume the pattern change on one fill
+ * and the flag on the next, reloading the SAME request twice - which cuts the
+ * first step of the new pattern short after one AUDIO_BUFFER_MS and restarts
+ * it, distorting a one-shot and the cadence of a looping pattern. Packing
+ * both into one store makes a request indivisible: the ISR either sees the
+ * whole thing or none of it, and consumes it exactly once.
+ *
+ * The sequence is what makes a REPEATED request distinct. Asking again for
+ * the pattern that is already loaded must still take effect - otherwise a
+ * one-shot whose generator has finished (ALARM_GEN_IDLE) or is draining
+ * (ALARM_GEN_DRAIN) would never start again, which is reachable whenever the
+ * stream is still PLAYING while the one-shot on it has ended.
+ *
+ * Written by task context only, and always with dispatching disabled, so the
+ * fast stop path in alarm_post_request() and alarm_task cannot interleave
+ * their sequence increments.
  */
-static volatile bool s_gen_restart = false;
+static volatile uint32_t s_gen_request = 0;
+
+/** The request alarm_fill_cb() last consumed. ISR only. */
+static volatile uint32_t s_gen_applied = 0;
+
+/** Sequence source for s_gen_request. Task context under tk_dis_dsp() only. */
+static uint32_t s_gen_seq = 0;
 
 static volatile alarm_pattern_t   s_render_pattern = ALARM_PATTERN_NONE;
 static volatile alarm_gen_state_t s_gen            = ALARM_GEN_IDLE;
@@ -414,6 +432,8 @@ static ID s_alarm_flgid = 0;
  *********************************************************************************************************************/
 static bool      alarm_owns_stream(void);
 static void      alarm_discard_completion(void);
+static void      alarm_gen_publish_locked(alarm_pattern_t pattern);
+static void      alarm_gen_publish(alarm_pattern_t pattern);
 static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
 static void      alarm_reconcile(void);
 static fsp_err_t alarm_wait_settled(uint32_t seq);
@@ -471,17 +491,51 @@ static void alarm_discard_completion(void)
 }
 
 /**
+ * Publish a generator request. Dispatching must ALREADY be disabled.
+ *
+ * s_pattern is kept in step purely so that "alarm status" and
+ * alarm_sound_get_pattern() can report what was last asked of the generator;
+ * the ISR drives itself from s_gen_request alone.
+ */
+static void alarm_gen_publish_locked(alarm_pattern_t pattern)
+{
+    s_gen_seq++;
+
+    s_gen_request = (s_gen_seq << ALARM_GEN_SEQ_SHIFT) |
+                    ((uint32_t)pattern & ALARM_GEN_PATTERN_MASK);
+
+    s_pattern = pattern;
+}
+
+/**
+ * Publish a generator request from a context that does not already hold the
+ * dispatch lock.
+ */
+static void alarm_gen_publish(alarm_pattern_t pattern)
+{
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+    alarm_gen_publish_locked(pattern);
+
+    if (dispatch_off)
+    {
+        (void)tk_ena_dsp();
+    }
+}
+
+/**
  * Declare what should be playing and wake alarm_task.
  *
  * The pattern and the change counter are published in one task-atomic step so
  * that alarm_task can never sample a counter that does not belong to the
- * pattern beside it. tk_dis_dsp() is the right scope: the only writers are
- * TASKS, and the ISR only ever reads s_pattern.
+ * pattern beside it. tk_dis_dsp() is the right scope: the only writers of
+ * these variables are TASKS.
  *
- * A stop additionally silences the generator right here, because going quiet
- * is the part with a deadline (Issue #47: within 100 ms) and it must not wait
- * for alarm_task to be scheduled or for the I2C mute inside audio_stop().
- * alarm_task writes s_pattern again when it reconciles; it is idempotent.
+ * A stop additionally publishes a generator request right here, because going
+ * quiet is the part with a deadline (Issue #47: within 100 ms) and it must not
+ * wait for alarm_task to be scheduled or for the I2C mute inside audio_stop().
+ * alarm_task publishes the same silence again when it reconciles; a request
+ * that changes nothing is consumed without a reload.
  *
  * @param[in]  pattern  desired pattern, ALARM_PATTERN_NONE to stop.
  * @param[out] p_seq    the change counter published for this request, so the
@@ -496,7 +550,10 @@ static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 
     if (ALARM_PATTERN_NONE == pattern)
     {
-        s_pattern = ALARM_PATTERN_NONE;
+        /* Silence the generator here, without waiting for alarm_task to be
+         * scheduled: this is the part of a stop that has a deadline. Already
+         * inside this function's tk_dis_dsp(). */
+        alarm_gen_publish_locked(ALARM_PATTERN_NONE);
     }
 
     if (NULL != p_seq)
@@ -522,7 +579,7 @@ static fsp_err_t alarm_apply_stop(void)
 {
     fsp_err_t err = FSP_SUCCESS;
 
-    s_pattern = ALARM_PATTERN_NONE;
+    alarm_gen_publish(ALARM_PATTERN_NONE);
 
     if (s_active)
     {
@@ -554,18 +611,15 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
 
     if (alarm_owns_stream() && (AUDIO_STATE_PLAYING == audio_get_state()))
     {
-        /* Live pattern switch - the stream keeps running, so there is no gap
-         * and no click; the phase accumulator is not reset.
+        /* Live pattern switch - the stream keeps running, so there is no gap.
          *
-         * s_gen_restart is raised unconditionally, not just when the pattern
-         * value changes: this function only runs for a NEW request, and a
-         * request naming the pattern that is already loaded must still take
-         * effect. Without it, repeating a one-shot whose generator has already
-         * finished would be swallowed by the value test in alarm_fill_cb()
-         * and never play. Written after s_pattern so that the generator cannot
-         * reload the OLD pattern and clear the flag in between. */
-        s_pattern     = pattern;
-        s_gen_restart = true;
+         * The request carries a fresh sequence, so it reaches the generator
+         * even when it names the pattern that is already loaded; that is what
+         * lets a finished or draining one-shot be started again. Deciding
+         * whether the generator actually has to reload is left to
+         * alarm_fill_cb(), which owns s_gen / s_render_pattern and can read
+         * them without racing anybody. */
+        alarm_gen_publish(pattern);
 
         alarm_discard_completion();
 
@@ -579,7 +633,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
     (void)alarm_apply_stop();
 
     alarm_generator_reset();
-    s_pattern = pattern;
+    alarm_gen_publish(pattern);
 
     /* audio_start() validates the device state for us: FSP_ERR_NOT_OPEN when
      * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
@@ -588,7 +642,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
     err = audio_start(alarm_fill_cb, NULL);
     if (FSP_SUCCESS != err)
     {
-        s_pattern = ALARM_PATTERN_NONE;
+        alarm_gen_publish(ALARM_PATTERN_NONE);
         return err;
     }
 
@@ -730,7 +784,6 @@ static void alarm_generator_reset(void)
     s_drain_fills    = 0;
     s_phase          = 0;
     s_phase_step     = 0;
-    s_gen_restart    = false;
 
     /* Clears the event flag as well as s_finished. Clearing only half of the
      * completion is what the divergence fixed above was made of, so this path
@@ -878,13 +931,33 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
     /* Pick up a pattern change requested by task context. One volatile read
      * of a single word - no lock, and at worst the change lands one buffer
      * (AUDIO_BUFFER_MS) later than requested. */
-    alarm_pattern_t want = s_pattern;
-    if ((want != s_render_pattern) || s_gen_restart)
+    const uint32_t req = s_gen_request;
+    if (req != s_gen_applied)
     {
-        /* s_gen_restart covers a REPEATED request, where the value test alone
-         * would not fire and a finished generator would stay silent. */
-        s_gen_restart = false;
-        alarm_apply_pattern(want);
+        const alarm_pattern_t want =
+            (alarm_pattern_t)(req & ALARM_GEN_PATTERN_MASK);
+
+        /* Consume the request exactly once, whether or not it turns into a
+         * reload: it is one indivisible word (see s_gen_request). */
+        s_gen_applied = req;
+
+        /*
+         * Reload when the pattern differs, and also when the generator is no
+         * longer RUNNING - the latter is what restarts a one-shot that has
+         * already finished or is draining.
+         *
+         * Deliberately NOT when the same pattern is already running:
+         * alarm_load_step() would reset s_step_left to s_step_total, so
+         * alarm_env_gain() would drop from the current gain straight to zero
+         * at the buffer boundary. Keeping s_phase continuous does not help
+         * against that amplitude step - it is exactly the click the envelope
+         * exists to remove, and a repeated request for a pattern that is
+         * already sounding has nothing to change anyway.
+         */
+        if ((want != s_render_pattern) || (ALARM_GEN_RUN != s_gen))
+        {
+            alarm_apply_pattern(want);
+        }
     }
 
     if (ALARM_GEN_RUN != s_gen)
