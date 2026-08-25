@@ -92,9 +92,15 @@ Issueに「設計の入力」（`.github/ISSUE_TEMPLATE/implementation.md`）が
   ISR が書く経路があるなら排他方式を選び直す。
 - **ISR と共有する要求は1ワードにパックし、アラインされた32bitストアで publish する。**
   例: `s_gen_request = (seq << ALARM_GEN_SEQ_SHIFT) | pattern`
-  （`audio_alarm.c` の `alarm_gen_publish_locked()` / `alarm_fill_cb()`）。
-  ストアが分割されないので、ISR は要求を丸ごと見るか全く見ないかのどちらかになり、
-  消費は必ず1回になる。
+  （`audio_alarm.c` の `alarm_gen_publish_locked()`）。
+  ストアが分割されないので、ISR は要求を丸ごと見るか全く見ないかのどちらかになる。
+- **パックで防げるのは値の分割（tearing）だけ。「1回だけ消費する」は別に作る。**
+  ISR は割り込みのたびに同じワードを読むので、パックしただけでは冪等でない処理が
+  毎回繰り返される。消費側が**自分だけが書く適用済みタグ**を持ち、
+  `req != applied` のときだけ処理して `applied = req` を書くこと。
+  シーケンス番号をワードに含めるのは、同じ内容の再要求を「変化なし」と
+  取り違えないため。例: `audio_alarm.c:1155-1166`
+  （`s_gen_applied` を書くのは `alarm_fill_cb()` だけ）。
 - **要求の順序付けを目的とする mutex の保持区間に、ブロックしうるデバイスAPIを
   含めることを禁じる。** 保持区間に含めると、mutexの**取得順**と要求の**発行順**が
   乖離し、排他では順序を復元できない（PR #205 はこれを6回の作り直しで確認した）。
