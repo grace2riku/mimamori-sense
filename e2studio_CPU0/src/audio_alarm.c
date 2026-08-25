@@ -655,6 +655,23 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
     if (FSP_SUCCESS != err)
     {
         alarm_gen_publish(ALARM_PATTERN_NONE);
+
+        /*
+         * The generator may have played the pattern out into the still-muted
+         * codec while audio_start() was retrying the unmute, leaving a
+         * completion raised. It refers to a start that has just FAILED and to
+         * a device that audio_start() has already rolled back, so there is
+         * nothing for it to stop.
+         *
+         * Dropping it matters because alarm_status is now the module's result
+         * channel: left standing, alarm_reconcile()'s very next iteration
+         * would take the automatic-stop path under the SAME applied sequence
+         * and overwrite s_last_error with the stop's FSP_SUCCESS, so the only
+         * record that this start failed - and that the alarm was never
+         * audible - would be gone.
+         */
+        alarm_discard_completion();
+
         return err;
     }
 
