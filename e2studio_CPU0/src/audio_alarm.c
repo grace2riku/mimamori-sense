@@ -80,22 +80,6 @@
 #define ALARM_GEN_PATTERN_MASK      (0xFFU)
 #define ALARM_GEN_SEQ_SHIFT         (8U)
 
-/**
- * How long the synchronous API wrappers wait for alarm_task to apply their
- * request before reporting "outcome not known yet".
- *
- * REPORTING ONLY - the request itself is never dropped. Sized above the worst
- * case of one reconcile pass: audio_start() can spend AUDIO_UNMUTE_ATTEMPTS
- * (3) x I2C_BUS0_LOCK_TIMEOUT_MS (1000 ms) retrying the codec unmute over a
- * contended IIC1 bus (src/port/audio_port.c:626-637, src/port/i2c_bus0.c:114),
- * and a preceding audio_stop() can add its own mute plus
- * AUDIO_STOP_TIMEOUT_MS (70 ms).
- */
-#define ALARM_SETTLE_TIMEOUT_MS     (5000U)
-
-/** Poll interval of that wait. */
-#define ALARM_SETTLE_POLL_MS        (5U)
-
 /** Retry delay used by alarm_task() if tk_wai_flg() ever fails. */
 #define ALARM_TASK_ERR_DELAY_MS     (100)
 
@@ -436,7 +420,6 @@ static void      alarm_gen_publish_locked(alarm_pattern_t pattern);
 static void      alarm_gen_publish(alarm_pattern_t pattern);
 static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
 static void      alarm_reconcile(void);
-static fsp_err_t alarm_wait_settled(uint32_t seq, alarm_result_t *p_result);
 static fsp_err_t alarm_apply_stop(void);
 static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq);
 static void      alarm_generator_reset(void);
@@ -552,8 +535,9 @@ static void alarm_gen_publish(alarm_pattern_t pattern)
  * that changes nothing is consumed without a reload.
  *
  * @param[in]  pattern  desired pattern, ALARM_PATTERN_NONE to stop.
- * @param[out] p_seq    the change counter published for this request, so the
- *                      caller can wait for it. May be NULL.
+ * @param[out] p_seq    the change counter published for this request. May be
+ *                      NULL; kept because "alarm status" and future
+ *                      diagnostics may want to name a specific request.
  */
 static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 {
@@ -759,112 +743,15 @@ static void alarm_reconcile(void)
             want = ALARM_PATTERN_NONE;
         }
 
-        const fsp_err_t err = (ALARM_PATTERN_NONE == want)
-                                  ? alarm_apply_stop()
-                                  : alarm_apply_start(want, seq);
-
-        /* Publish the result together with the sequence it belongs to, so a
-         * waiter that sees its own sequence cannot read the error of a
-         * different request that was applied in between. */
-        {
-            const bool dispatch_off = (E_OK == tk_dis_dsp());
-
-            s_last_error      = err;
-            s_applied_pattern = want;
-            s_applied_seq     = seq;
-
-            if (dispatch_off)
-            {
-                (void)tk_ena_dsp();
-            }
-        }
-
+        /* Nobody waits on this: the API is asynchronous, so these three are
+         * read only by "alarm status" as diagnostics. */
+        s_last_error      = (ALARM_PATTERN_NONE == want)
+                                ? alarm_apply_stop()
+                                : alarm_apply_start(want, seq);
+        s_applied_pattern = want;
+        s_applied_seq     = seq;
         s_settle_count++;
     }
-}
-
-/**
- * Wait until alarm_task has processed request @p seq, so that a synchronous
- * caller can be told what happened.
- *
- * REPORTING ONLY. The device converges on the requested state whether or not
- * this wait succeeds, so a timeout here is not a failure of the request - it
- * only means the outcome is not known yet. Polling is deliberate: it keeps
- * this reporting path out of the event flag that alarm_task waits on, where a
- * second waiter could otherwise swallow a wake-up.
- *
- * Caveat, deliberately not engineered away: s_last_error holds the result of
- * the LAST reconcile pass, and a one-shot that plays out is stopped under the
- * same s_applied_seq as the start that launched it. A caller that is still
- * polling when that happens would read the stop's result instead of its own.
- * The window needs the alarm to end within the few milliseconds between two
- * polls of a request that has only just been applied; distinguishing the two
- * would need a per-request result slot, which is not worth it for a message.
- *
- * @retval FSP_SUCCESS      request applied, and it succeeded.
- * @retval FSP_ERR_ABORTED  a newer request was applied instead.
- * @retval FSP_ERR_TIMEOUT  still queued; the outcome is not known yet.
- * @return                  whatever error alarm_task recorded otherwise.
- */
-static fsp_err_t alarm_wait_settled(uint32_t seq, alarm_result_t *p_result)
-{
-    for (uint32_t waited = 0; waited < ALARM_SETTLE_TIMEOUT_MS;
-         waited += ALARM_SETTLE_POLL_MS)
-    {
-        uint32_t  applied;
-        fsp_err_t err;
-
-        /* Read the pair the way alarm_reconcile() publishes it. */
-        {
-            const bool dispatch_off = (E_OK == tk_dis_dsp());
-
-            applied = s_applied_seq;
-            err     = s_last_error;
-
-            if (dispatch_off)
-            {
-                (void)tk_ena_dsp();
-            }
-        }
-
-        if (applied == seq)
-        {
-            if (NULL != p_result)
-            {
-                *p_result = ALARM_RESULT_APPLIED;
-            }
-
-            return err;
-        }
-
-        /* Signed difference so the comparison survives the uint32 wrap. */
-        if (((int32_t)(applied - seq)) > 0)
-        {
-            if (NULL != p_result)
-            {
-                *p_result = ALARM_RESULT_SUPERSEDED;
-            }
-
-            return FSP_ERR_ABORTED;
-        }
-
-        tk_dly_tsk(ALARM_SETTLE_POLL_MS);
-    }
-
-    /*
-     * The origin of the timeout is decided HERE, by the comparison this loop
-     * just made, and handed straight back to the caller. Re-deriving it later
-     * from a module-wide predicate cannot work: alarm_task may publish this
-     * request as applied an instant after the loop gives up, and a concurrent
-     * newer request would make any global "is something pending" test describe
-     * that request rather than this one.
-     */
-    if (NULL != p_result)
-    {
-        *p_result = ALARM_RESULT_PENDING;
-    }
-
-    return FSP_ERR_TIMEOUT;
 }
 
 /**********************************************************************************************************************
@@ -1231,18 +1118,9 @@ fsp_err_t alarm_sound_init(void)
 /**
  * Start (or re-target) alarm playback.
  */
-fsp_err_t alarm_sound_start(alarm_pattern_t pattern, alarm_result_t *p_result)
+fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
 {
-    uint32_t  seq = 0;
     fsp_err_t err;
-
-    /* Every early return below rejects the request outright: nothing is
-     * queued, so the outcome is known and final. The wait overwrites this
-     * when the request does get posted. */
-    if (NULL != p_result)
-    {
-        *p_result = ALARM_RESULT_APPLIED;
-    }
 
     if ((ALARM_PATTERN_NONE == pattern) || (pattern >= ALARM_PATTERN_COUNT))
     {
@@ -1255,56 +1133,37 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern, alarm_result_t *p_result)
         return err;
     }
 
-    alarm_post_request(pattern, &seq);
+    alarm_post_request(pattern, NULL);
 
-    return alarm_wait_settled(seq, p_result);
+    return FSP_SUCCESS;
 }
 
 /**
- * Stop alarm playback.
+ * Declare that nothing should be playing.
  */
-fsp_err_t alarm_sound_stop(alarm_result_t *p_result)
+fsp_err_t alarm_sound_stop(void)
 {
-    uint32_t  seq = 0;
-    fsp_err_t err;
+    fsp_err_t err = alarm_sound_init();
 
-    /* Every early return below rejects the request outright: nothing is
-     * queued, so the outcome is known and final. The wait overwrites this
-     * when the request does get posted. */
-    if (NULL != p_result)
-    {
-        *p_result = ALARM_RESULT_APPLIED;
-    }
-
-    err = alarm_sound_init();
     if (FSP_SUCCESS != err)
     {
         return err;
     }
 
-    /* alarm_post_request() silences the generator before returning, so the
+    /* alarm_post_request() silences the generator before it returns, so the
      * output is quiet within 3 x AUDIO_BUFFER_MS whatever alarm_task and the
-     * codec mute are busy with. The wait below only collects the outcome. */
-    alarm_post_request(ALARM_PATTERN_NONE, &seq);
+     * codec mute are busy with afterwards. */
+    alarm_post_request(ALARM_PATTERN_NONE, NULL);
 
-    return alarm_wait_settled(seq, p_result);
+    return FSP_SUCCESS;
 }
 
 /**
  * Change the pattern of a running alarm.
  */
-fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern, alarm_result_t *p_result)
+fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
 {
-    uint32_t  seq = 0;
     fsp_err_t err;
-
-    /* Every early return below rejects the request outright: nothing is
-     * queued, so the outcome is known and final. The wait overwrites this
-     * when the request does get posted. */
-    if (NULL != p_result)
-    {
-        *p_result = ALARM_RESULT_APPLIED;
-    }
 
     if ((ALARM_PATTERN_NONE == pattern) || (pattern >= ALARM_PATTERN_COUNT))
     {
@@ -1325,9 +1184,9 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern, alarm_result_t *p_res
         return err;
     }
 
-    alarm_post_request(pattern, &seq);
+    alarm_post_request(pattern, NULL);
 
-    return alarm_wait_settled(seq, p_result);
+    return FSP_SUCCESS;
 }
 
 bool alarm_sound_is_active(void)
@@ -1608,61 +1467,25 @@ int usrcmd_alarm(int argc, char **argv)
             return CMD_ERR_INVALID_ARG;
         }
 
-        alarm_result_t result = ALARM_RESULT_APPLIED;
-
-        err = is_start ? alarm_sound_start(pattern, &result)
-                       : alarm_sound_set_pattern(pattern, &result);
+        err = is_start ? alarm_sound_start(pattern)
+                       : alarm_sound_set_pattern(pattern);
         if (FSP_SUCCESS != err)
         {
-            /* FSP_ERR_ABORTED covers two outcomes - a newer stop won, or a
-             * newer start won and is still playing - so report what is
-             * actually true now instead of guessing the cause. */
-            const char *abort_note =
-                alarm_sound_is_active()
-                    ? " - superseded by a newer request, which is now playing"
-                    : " - cancelled by a newer 'alarm stop'";
-
-            /*
-             * FSP_ERR_TIMEOUT reaches us from two different places and they
-             * need opposite advice:
-             *
-             *   ALARM_RESULT_PENDING - alarm_wait_settled() gave up polling.
-             *     The request is still queued and alarm_task WILL apply it.
-             *   ALARM_RESULT_APPLIED - alarm_task already applied it and the
-             *     operation itself timed out - audio_start() returns the
-             *     unmute error verbatim, and da7212_mute() yields
-             *     FSP_ERR_TIMEOUT when the shared IIC1 bus lock expires
-             *     (src/port/audio_port.c:640-643, src/port/i2c_bus0.c:114).
-             *     Nothing is queued any more and nothing will be retried.
-             *
-             * The classification comes from the wait itself, so it describes
-             * THIS request. Re-deriving it afterwards from module-wide state
-             * cannot: alarm_task may publish the request as applied an instant
-             * after the wait gives up, and a concurrent newer request would
-             * make any such test describe that request instead.
-             */
-            const char *timeout_note =
-                (ALARM_RESULT_PENDING == result)
-                    ? " - still queued, see 'alarm status'"
-                    : " - device operation timed out (codec I2C), see 'audio status'";
-
-            snprintf(buf, sizeof(buf), "alarm %s failed (err=0x%lX)%s\r\n",
+            snprintf(buf, sizeof(buf), "alarm %s rejected (err=0x%lX)%s\r\n",
                      argv[1],
                      (unsigned long)err,
                      (FSP_ERR_NOT_OPEN == err)
-                         ? " - run 'audio init' / 'alarm start' first"
-                         : ((FSP_ERR_IN_USE == err)
-                                ? " - device busy, try 'audio stop'"
-                                : ((FSP_ERR_ABORTED == err)
-                                       ? abort_note
-                                       : ((FSP_ERR_TIMEOUT == err)
-                                              ? timeout_note
-                                              : ""))));
+                         ? " - not playing; use 'alarm start'"
+                         : "");
             print_to_console(buf);
             return CMD_ERR_EXECUTE;
         }
 
-        snprintf(buf, sizeof(buf), "alarm %s: '%s' (%s).\r\n",
+        /* Accepted, not necessarily sounding yet: alarm_task brings the
+         * device up asynchronously and that can take seconds when the codec
+         * unmute has to fight for the IIC1 bus. "alarm status" is where the
+         * outcome shows up. */
+        snprintf(buf, sizeof(buf), "alarm %s: '%s' (%s) requested.\r\n",
                  argv[1],
                  alarm_pattern_name(pattern),
                  (ALARM_PATTERN_BEEP == pattern) ? "one shot" : "looping");
@@ -1672,46 +1495,15 @@ int usrcmd_alarm(int argc, char **argv)
 
     if (0 == ntlibc_strcmp(argv[1], "stop"))
     {
-        err = alarm_sound_stop(NULL);
+        err = alarm_sound_stop();
 
-        /*
-         * Two of these are not command failures and must not be printed as
-         * "FAILED":
-         *
-         *   FSP_ERR_ABORTED - a start issued after this stop superseded it,
-         *                     so an alarm is deliberately still playing.
-         *   FSP_ERR_TIMEOUT - the generator was silenced before anything could
-         *                     block (alarm_post_request), so the output IS
-         *                     quiet; what did not complete in time is
-         *                     audio_stop()'s wait for I2S_EVENT_IDLE
-         *                     (AUDIO_STOP_TIMEOUT_MS = 70 ms,
-         *                     src/port/audio_port.c:65). The device finishes
-         *                     stopping on its own when the late idle arrives -
-         *                     observed on hardware, where it was back at
-         *                     AUDIO_STATE_READY by the next command. The delay
-         *                     is the SSI interrupt starvation tracked in
-         *                     Issue #206, not a fault of the stop.
-         */
+        /* The generator is silenced inside the call, so this really does
+         * report silence; only the device teardown is left to alarm_task. */
         snprintf(buf, sizeof(buf), "alarm stop: %s (err=0x%lX)\r\n",
-                 (FSP_SUCCESS == err)
-                     ? "OK"
-                     : ((FSP_ERR_ABORTED == err)
-                            ? "superseded by a newer 'alarm start'"
-                            : ((FSP_ERR_TIMEOUT == err)
-                                   ? "silenced; device teardown still finishing"
-                                   : "FAILED")),
+                 (FSP_SUCCESS == err) ? "silenced" : "FAILED",
                  (unsigned long)err);
         print_to_console(buf);
-        /* Both of the above are normal outcomes, so they must not reach
-         * usrcmd_ntopt_callback()'s generic failure reporting
-         * (src/usrcmd.c:218-220), which would contradict the message printed
-         * just above. The alarm is silent in either case, which is what the
-         * command was asked to achieve. */
-        return ((FSP_SUCCESS == err) ||
-                (FSP_ERR_ABORTED == err) ||
-                (FSP_ERR_TIMEOUT == err))
-                   ? CMD_OK
-                   : CMD_ERR_EXECUTE;
+        return (FSP_SUCCESS == err) ? CMD_OK : CMD_ERR_EXECUTE;
     }
 
     if (0 == ntlibc_strcmp(argv[1], "wave"))
