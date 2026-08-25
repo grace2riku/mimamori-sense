@@ -64,19 +64,43 @@ Issueに「設計の入力」（`.github/ISSUE_TEMPLATE/implementation.md`）が
 ### 並行性の既定形
 
 **ブロックしうるデバイス操作は、それを所有する単一タスクに集約する。**
-他タスク／ISR は「あるべき状態」を1ワードに宣言してイベントを立てるだけとし、
+他タスク／ISR は「あるべき状態」を宣言してイベントを立てるだけとし、
 所有タスクが現在状態との差分を reconcile する。
 
 ```
-呼び出し元 : s_desired_xxx = X; s_request_seq++;   /* タスクから見て不可分な1ステップ */
-所有タスク : デバイスが desired に一致するまで start()/stop() を駆動する
+呼び出し元 : tk_dis_dsp();
+               s_desired_xxx = X;      /* 状態と変更カウンタを */
+               s_request_seq++;        /* 同一区間で publish する */
+             tk_ena_dsp();
+             tk_set_flg(...);          /* 起床通知は区間の外 */
+
+所有タスク : tk_dis_dsp();
+               want = s_desired_xxx;   /* 同じ対を同一区間で sample する */
+               seq  = s_request_seq;
+             tk_ena_dsp();
+             デバイスが want に一致するまで start()/stop() を駆動する
 ```
 
+- **複数ワードの publish と sample は、必ず同一のクリティカルセクションに入れる。**
+  単純ストアを2つ並べても不可分にはならない（間にタスク切替や割り込みが入る）。
+  `s_request_seq++` は read-modify-write なので、保護しなければ同時更新で失われる。
+  区間を分けると、所有タスクが「新しい desired ＋ 古い seq」の組を採取して
+  要求を取りこぼす。実装例: `audio_alarm.c` の `alarm_post_request()` /
+  `alarm_reconcile()`（publish 側・sample 側の両方を `tk_dis_dsp()` で囲っている）。
+- **`tk_dis_dsp()` が排他するのはタスクだけで、ISR は止まらない。**
+  したがってこの形は**書き手がタスクだけ**であることが前提。設計メモにそれを明記し、
+  ISR が書く経路があるなら排他方式を選び直す。
+- **ISR と共有する要求は1ワードにパックし、アラインされた32bitストアで publish する。**
+  例: `s_gen_request = (seq << ALARM_GEN_SEQ_SHIFT) | pattern`
+  （`audio_alarm.c` の `alarm_gen_publish_locked()` / `alarm_fill_cb()`）。
+  ストアが分割されないので、ISR は要求を丸ごと見るか全く見ないかのどちらかになり、
+  消費は必ず1回になる。
 - **デバイスAPIを mutex 保持のまま呼ぶことを禁じる。**
   ブロックしうるAPIを保持区間に含めると、mutexの**取得順**と要求の**発行順**が乖離し、
   排他では順序を復元できない（PR #205 はこれを6回の作り直しで確認した）。
-- この形なら「最新の要求が勝つ」は1ワードへの最後の書き込みでしかなく、
-  mutex もロックタイムアウトも順序付けも不要になる。
+- この形で不要になるのは**順序付け**（チケット・世代カウンタ・放棄ウォーターマーク）と
+  **ロックタイムアウト**であって、クリティカルセクションそのものではない。
+  「最新の要求が勝つ」は最後の publish がそのまま答えになる、という意味。
 - 実装例: `e2studio_CPU0/src/audio_alarm.c`（設計理由は同ファイル冒頭と `s_desired_pattern` のコメント）
 - 逸脱する場合は、設計メモに理由と代替案の破棄理由を書き、事前に承認を得る。
 
