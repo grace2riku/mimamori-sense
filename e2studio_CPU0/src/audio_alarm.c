@@ -80,6 +80,11 @@
 #define ALARM_GEN_PATTERN_MASK      (0xFFU)
 #define ALARM_GEN_SEQ_SHIFT         (8U)
 
+/** Reserved word meaning "no request". alarm_gen_publish_locked() never
+ *  produces it, so it is safe as the "nothing consumed / nothing finished"
+ *  marker for s_gen_applied and s_finished_req. */
+#define ALARM_GEN_REQ_NONE          (0U)
+
 /**
  * How long alarm_task waits for OUR OWN previous stop to reach
  * I2S_EVENT_IDLE before starting the device again, and how often it looks.
@@ -340,7 +345,7 @@ static volatile bool s_active = false;
  * tag from surviving until the 24-bit sequence in the packed request word
  * wraps round to it again.
  */
-static volatile uint32_t s_finished_req = 0;
+static volatile uint32_t s_finished_req = ALARM_GEN_REQ_NONE;
 
 /**
  * Requested state, and the change counter that goes with it.
@@ -424,7 +429,7 @@ static volatile uint16_t     s_amplitude = AUDIO_TEST_AMPLITUDE;
 static volatile uint32_t s_gen_request = 0;
 
 /** The request alarm_fill_cb() last consumed. ISR only. */
-static volatile uint32_t s_gen_applied = 0;
+static volatile uint32_t s_gen_applied = ALARM_GEN_REQ_NONE;
 
 /** Sequence source for s_gen_request. Task context under tk_dis_dsp() only. */
 static uint32_t s_gen_seq = 0;
@@ -516,12 +521,18 @@ static bool alarm_owns_stream(void)
  */
 static void alarm_gen_publish_locked(alarm_pattern_t pattern)
 {
-    s_gen_seq++;
+    uint32_t request;
 
-    s_gen_request = (s_gen_seq << ALARM_GEN_SEQ_SHIFT) |
-                    ((uint32_t)pattern & ALARM_GEN_PATTERN_MASK);
+    do
+    {
+        s_gen_seq++;
 
-    s_pattern = pattern;
+        request = (s_gen_seq << ALARM_GEN_SEQ_SHIFT) |
+                  ((uint32_t)pattern & ALARM_GEN_PATTERN_MASK);
+    } while (ALARM_GEN_REQ_NONE == request);
+
+    s_gen_request = request;
+    s_pattern     = pattern;
 }
 
 /**
@@ -890,7 +901,7 @@ static void alarm_reconcile(void)
              * it without a race (see s_finished_req). */
             const uint32_t finished = s_finished_req;
 
-            if ((0U == finished) || (finished != s_gen_request))
+            if ((ALARM_GEN_REQ_NONE == finished) || (finished != s_gen_request))
             {
                 s_settle_count++;
                 return;                 /* converged */
@@ -933,8 +944,26 @@ static void alarm_generator_reset(void)
     s_phase          = 0;
     s_phase_step     = 0;
 
-    /* Nothing has finished under a generator that is being reset. */
-    s_finished_req = 0;
+    /*
+     * Nothing has been consumed or finished under a generator that is being
+     * reset.
+     *
+     * s_gen_applied has to be invalidated too, not just s_finished_req.
+     * Leaving the last consumed word behind is not harmless: the packed
+     * request only carries a 24-bit sequence (ALARM_GEN_SEQ_SHIFT), so after
+     * 2^24 publications a start of the SAME pattern can rebuild exactly that
+     * word. alarm_fill_cb() would then find `req == s_gen_applied`, treat the
+     * request as already consumed and never load the pattern - while
+     * audio_start() has succeeded and s_active is true. The generator would
+     * sit in ALARM_GEN_IDLE emitting silence, with no completion to ever wake
+     * alarm_task: a real start suppressed indefinitely, not merely a spurious
+     * stop.
+     *
+     * Safe to write from here: alarm_generator_reset() runs in task context
+     * with the stream already stopped, so no fill can be in flight.
+     */
+    s_gen_applied  = ALARM_GEN_REQ_NONE;
+    s_finished_req = ALARM_GEN_REQ_NONE;
 }
 
 /**
@@ -1151,7 +1180,7 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
          * applied. Retiring on every change keeps a tag alive only while the
          * generator is actually on that request.
          */
-        s_finished_req = 0;
+        s_finished_req = ALARM_GEN_REQ_NONE;
 
         /*
          * Reload when the pattern differs, and also when the generator is no
