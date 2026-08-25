@@ -1557,7 +1557,9 @@ int usrcmd_alarm(int argc, char **argv)
                                 ? " - device busy, try 'audio stop'"
                                 : ((FSP_ERR_ABORTED == err)
                                        ? abort_note
-                                       : "")));
+                                       : ((FSP_ERR_TIMEOUT == err)
+                                              ? " - queued; outcome not known yet, see 'alarm status'"
+                                              : ""))));
             print_to_console(buf);
             return CMD_ERR_EXECUTE;
         }
@@ -1574,21 +1576,42 @@ int usrcmd_alarm(int argc, char **argv)
     {
         err = alarm_sound_stop();
 
-        /* FSP_ERR_ABORTED is not a failure: a start issued after this stop
-         * superseded it, so an alarm is deliberately still playing. */
+        /*
+         * Two of these are not command failures and must not be printed as
+         * "FAILED":
+         *
+         *   FSP_ERR_ABORTED - a start issued after this stop superseded it,
+         *                     so an alarm is deliberately still playing.
+         *   FSP_ERR_TIMEOUT - the generator was silenced before anything could
+         *                     block (alarm_post_request), so the output IS
+         *                     quiet; what did not complete in time is
+         *                     audio_stop()'s wait for I2S_EVENT_IDLE
+         *                     (AUDIO_STOP_TIMEOUT_MS = 70 ms,
+         *                     src/port/audio_port.c:65). The device finishes
+         *                     stopping on its own when the late idle arrives -
+         *                     observed on hardware, where it was back at
+         *                     AUDIO_STATE_READY by the next command. The delay
+         *                     is the SSI interrupt starvation tracked in
+         *                     Issue #206, not a fault of the stop.
+         */
         snprintf(buf, sizeof(buf), "alarm stop: %s (err=0x%lX)\r\n",
                  (FSP_SUCCESS == err)
                      ? "OK"
                      : ((FSP_ERR_ABORTED == err)
                             ? "superseded by a newer 'alarm start'"
-                            : "FAILED"),
+                            : ((FSP_ERR_TIMEOUT == err)
+                                   ? "silenced; device teardown still finishing"
+                                   : "FAILED")),
                  (unsigned long)err);
         print_to_console(buf);
-        /* A superseded stop is a normal outcome, so it must not reach
+        /* Both of the above are normal outcomes, so they must not reach
          * usrcmd_ntopt_callback()'s generic failure reporting
-         * (src/usrcmd.c:218-220), which would contradict the message
-         * printed just above. */
-        return ((FSP_SUCCESS == err) || (FSP_ERR_ABORTED == err))
+         * (src/usrcmd.c:218-220), which would contradict the message printed
+         * just above. The alarm is silent in either case, which is what the
+         * command was asked to achieve. */
+        return ((FSP_SUCCESS == err) ||
+                (FSP_ERR_ABORTED == err) ||
+                (FSP_ERR_TIMEOUT == err))
                    ? CMD_OK
                    : CMD_ERR_EXECUTE;
     }
