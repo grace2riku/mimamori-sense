@@ -636,8 +636,41 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
          * lets a finished or draining one-shot be started again. Deciding
          * whether the generator actually has to reload is left to
          * alarm_fill_cb(), which owns s_gen / s_render_pattern and can read
-         * them without racing anybody. */
-        alarm_gen_publish(pattern);
+         * them without racing anybody.
+         *
+         * The staleness test and the publication share one tk_dis_dsp()
+         * section. Testing first and publishing afterwards would leave a
+         * window in which a higher-priority task runs alarm_sound_stop():
+         * that call publishes silence and RETURNS, having promised the caller
+         * quiet within 3 x AUDIO_BUFFER_MS - and then this republication would
+         * put the superseded pattern straight back into a stream that is still
+         * running, audibly, until the reconcile loop reaches the stop. Sharing
+         * the section closes it, because alarm_post_request() takes the same
+         * lock to publish. */
+        bool stale;
+
+        {
+            const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+            stale = (s_request_seq != req_seq);
+
+            if (!stale)
+            {
+                alarm_gen_publish_locked(pattern);
+            }
+
+            if (dispatch_off)
+            {
+                (void)tk_ena_dsp();
+            }
+        }
+
+        if (stale)
+        {
+            /* Leave the stream exactly as the newer request left it;
+             * alarm_reconcile() applies that request next. */
+            return FSP_ERR_ABORTED;
+        }
 
         alarm_discard_completion();
 
