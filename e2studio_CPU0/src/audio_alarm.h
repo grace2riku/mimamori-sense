@@ -95,6 +95,29 @@ typedef enum e_alarm_pattern
     ALARM_PATTERN_COUNT         /**< number of entries (not a pattern) */
 } alarm_pattern_t;
 
+/**
+ * What became of a request, as reported by alarm_sound_start() /
+ * alarm_sound_stop() / alarm_sound_set_pattern() through their optional
+ * out-parameter.
+ *
+ * The returned fsp_err_t alone cannot say this: an FSP_ERR_TIMEOUT may be the
+ * device operation timing out (applied) or the wait giving up (pending), and
+ * the two need opposite handling. The value is decided inside the wait, at the
+ * instant it makes its comparison, so it always describes THIS request and not
+ * whatever a concurrent caller happens to be doing.
+ */
+typedef enum e_alarm_result
+{
+    ALARM_RESULT_APPLIED = 0,   /**< alarm_task carried this request out; the
+                                 *   fsp_err_t is that operation's result */
+    ALARM_RESULT_PENDING,       /**< not carried out within the wait. NOT
+                                 *   dropped - alarm_task will still apply it,
+                                 *   so the fsp_err_t says nothing about the
+                                 *   eventual outcome */
+    ALARM_RESULT_SUPERSEDED,    /**< a newer request was applied instead, so
+                                 *   this one never took effect */
+} alarm_result_t;
+
 /** Waveform used for every tone step. */
 typedef enum e_alarm_wave
 {
@@ -136,8 +159,10 @@ fsp_err_t alarm_sound_init(void);
  *
  * Task context only.
  *
- * @param[in] pattern       Pattern to play. ALARM_PATTERN_NONE is rejected;
+ * @param[in]  pattern    Pattern to play. ALARM_PATTERN_NONE is rejected;
  *                          use alarm_sound_stop().
+ * @param[out] p_result    What became of the request - needed to read an
+ *                         FSP_ERR_TIMEOUT correctly. May be NULL.
  *
  * @retval FSP_SUCCESS              Playing.
  * @retval FSP_ERR_INVALID_ARGUMENT @p pattern out of range or NONE.
@@ -151,21 +176,20 @@ fsp_err_t alarm_sound_init(void);
  *                                  alarm_sound_is_active() /
  *                                  alarm_sound_get_pattern() to see what is
  *                                  playing now - do not assume silence.
- * @retval FSP_ERR_TIMEOUT          Two different outcomes share this code, and
- *                                  alarm_sound_request_pending() tells them
- *                                  apart:
- *                                  pending  - the request has not been applied
- *                                             yet and its outcome is unknown.
- *                                             It has NOT been dropped;
- *                                             alarm_task() will still apply it.
- *                                  !pending - the request WAS applied and the
- *                                             device operation timed out (the
- *                                             codec unmute over a contended
- *                                             IIC1 bus). Nothing is queued and
- *                                             nothing will be retried.
+ * @retval FSP_ERR_TIMEOUT          Two different outcomes share this code and
+ *                                  @p p_result tells them apart:
+ *                                  ALARM_RESULT_APPLIED - the request WAS
+ *                                      applied and the device operation timed
+ *                                      out (the codec unmute over a contended
+ *                                      IIC1 bus). Nothing is queued and
+ *                                      nothing will be retried.
+ *                                  ALARM_RESULT_PENDING - the request has not
+ *                                      been applied yet and its outcome is
+ *                                      unknown. It has NOT been dropped;
+ *                                      alarm_task() will still apply it.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable.
  */
-fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
+fsp_err_t alarm_sound_start(alarm_pattern_t pattern, alarm_result_t *p_result);
 
 /**
  * Stop alarm playback.
@@ -179,6 +203,8 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  * module's own state is cleared; the other stream is left running.
  * Task context only.
  *
+ * @param[out] p_result What became of the request. May be NULL.
+ *
  * @retval FSP_SUCCESS      Stopped (or was not playing).
  * @retval FSP_ERR_TIMEOUT  audio_stop() did not observe I2S_EVENT_IDLE, or the
  *                          teardown has not been reported yet. The output is
@@ -188,7 +214,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
  *                          alarm_sound_is_active() / alarm_sound_get_pattern().
  * @retval FSP_ERR_INTERNAL Synchronisation objects unavailable.
  */
-fsp_err_t alarm_sound_stop(void);
+fsp_err_t alarm_sound_stop(alarm_result_t *p_result);
 
 /**
  * Change the pattern of a running alarm.
@@ -197,7 +223,8 @@ fsp_err_t alarm_sound_stop(void);
  * not currently playing. The phase accumulator is NOT reset, which is what
  * keeps the transition click-free.
  *
- * @param[in] pattern       New pattern. ALARM_PATTERN_NONE is rejected.
+ * @param[in]  pattern    New pattern. ALARM_PATTERN_NONE is rejected.
+ * @param[out] p_result    What became of the request. May be NULL.
  *
  * @retval FSP_SUCCESS              Pattern changed.
  * @retval FSP_ERR_INVALID_ARGUMENT @p pattern out of range or NONE.
@@ -208,22 +235,11 @@ fsp_err_t alarm_sound_stop(void);
  *                                  alarm_sound_start().
  * @retval FSP_ERR_ABORTED          A newer request was applied instead - see
  *                                  alarm_sound_start().
- * @retval FSP_ERR_TIMEOUT          Either still queued, or applied with the
- *                                  device operation timing out - see
- *                                  alarm_sound_start() and
- *                                  alarm_sound_request_pending().
+ * @retval FSP_ERR_TIMEOUT          Either still queued or applied with the
+ *                                  device operation timing out - @p p_result
+ *                                  says which, as for alarm_sound_start().
  */
-fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern);
-
-/**
- * @return true while a request has been declared but alarm_task() has not
- *         applied it yet.
- *
- * Distinguishes the two meanings of FSP_ERR_TIMEOUT from alarm_sound_start()
- * and alarm_sound_set_pattern(): still waiting to be applied, or applied with
- * the device operation itself timing out.
- */
-bool alarm_sound_request_pending(void);
+fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern, alarm_result_t *p_result);
 
 /** @return true while this module owns the audio stream, i.e. the producer
  *          audio_port currently uses is this module's. Goes false on its own
