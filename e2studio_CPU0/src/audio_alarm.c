@@ -438,9 +438,9 @@ static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
 static void      alarm_reconcile(void);
 static fsp_err_t alarm_wait_settled(uint32_t seq);
 static fsp_err_t alarm_apply_stop(void);
-static fsp_err_t alarm_apply_start(alarm_pattern_t pattern);
+static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq);
 static void      alarm_generator_reset(void);
-static void      alarm_load_step(uint32_t idx);
+static void      alarm_load_step(uint32_t idx, uint32_t start_elapsed);
 static void      alarm_next_step(void);
 static void      alarm_apply_pattern(alarm_pattern_t pattern);
 static int32_t   alarm_wave_sample(uint32_t phase, alarm_wave_t wave);
@@ -618,8 +618,13 @@ static fsp_err_t alarm_apply_stop(void)
  *
  * Retargets the running stream when we already own it, and brings the device
  * up otherwise. This is the only place audio_start() is called from.
+ *
+ * @param[in] pattern   pattern to play.
+ * @param[in] req_seq   s_request_seq value this call is applying, used to tell
+ *                      whether a newer request has arrived while audio_start()
+ *                      was blocked.
  */
-static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
+static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
 {
     fsp_err_t err;
 
@@ -679,9 +684,27 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
          * drop it and re-arm the generator, so the caller actually gets the
          * sound it asked for. audio_start() only returns FSP_SUCCESS once the
          * unmute has succeeded, so the replay IS audible.
+         *
+         * ONLY while this is still the current request. audio_start() can sit
+         * in its unmute retries for seconds, and a stop posted during that
+         * window has already published silence; replaying here would put an
+         * audible buffer of the old pattern out seconds after the caller asked
+         * for quiet, breaking the 30 ms silence guarantee. The test and the
+         * publish share one tk_dis_dsp() so a request cannot slip in between
+         * them - alarm_post_request() takes the same lock.
          */
-        alarm_discard_completion();
-        alarm_gen_publish(pattern);
+        const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+        if (s_request_seq == req_seq)
+        {
+            alarm_discard_completion();
+            alarm_gen_publish_locked(pattern);
+        }
+
+        if (dispatch_off)
+        {
+            (void)tk_ena_dsp();
+        }
     }
 
     return FSP_SUCCESS;
@@ -742,7 +765,7 @@ static void alarm_reconcile(void)
         }
         else
         {
-            s_last_error = alarm_apply_start(want);
+            s_last_error = alarm_apply_start(want, seq);
         }
 
         s_applied_pattern = want;
@@ -835,14 +858,26 @@ static void alarm_generator_reset(void)
  * across a frequency change removes the step discontinuity that would
  * otherwise click.
  */
-static void alarm_load_step(uint32_t idx)
+static void alarm_load_step(uint32_t idx, uint32_t start_elapsed)
 {
     const alarm_pattern_def_t *p_def = &s_pattern_defs[s_render_pattern];
     const alarm_step_t        *p_step = &p_def->p_steps[idx];
 
+    uint32_t elapsed = start_elapsed;
+
+    if (elapsed > p_step->frames)
+    {
+        elapsed = p_step->frames;
+    }
+
     s_step_idx   = idx;
-    s_step_left  = p_step->frames;
     s_step_total = p_step->frames;
+
+    /* alarm_env_gain() derives the envelope from (total - left, left), so
+     * seeding s_step_left below s_step_total starts the step part-way up its
+     * fade-in. That is how a mid-burst pattern switch keeps its amplitude
+     * continuous - see alarm_apply_pattern(). */
+    s_step_left  = p_step->frames - elapsed;
     s_phase_step = p_step->phase_step;
 
     s_step_changes++;
@@ -870,7 +905,10 @@ static void alarm_next_step(void)
         next = 0U;
     }
 
-    alarm_load_step(next);
+    /* A new step inside the SAME pattern always starts from silence: the
+     * previous step has just faded out, so its own fade-in is what belongs
+     * here. */
+    alarm_load_step(next, 0U);
 }
 
 /**
@@ -889,7 +927,42 @@ static void alarm_apply_pattern(alarm_pattern_t pattern)
         return;
     }
 
-    alarm_load_step(0U);
+    /*
+     * Carry the envelope across a mid-burst switch.
+     *
+     * Starting the new step at elapsed 0 would make alarm_env_gain() return 0
+     * for the first frame, i.e. drop from whatever gain the outgoing burst had
+     * straight to silence - a full-amplitude step, and exactly the click the
+     * envelope exists to remove. Keeping s_phase continuous does not help,
+     * because the discontinuity is in the gain, not the phase.
+     *
+     * alarm_env_gain() is min(elapsed, remaining) x ALARM_ENV_STEP, capped at
+     * unity, so the gain the outgoing burst is at right now corresponds to an
+     * elapsed of min(elapsed, remaining, ALARM_FADE_FRAMES). Seeding the new
+     * step with that value makes the first frame of the new step carry exactly
+     * the gain the last frame of the old one had: no step, no division, and
+     * the frequency change that follows is a slope change rather than a jump.
+     *
+     * Only when a TONE is actually sounding. A gap emits zeros regardless of
+     * the envelope (alarm_fill_cb() skips generation when s_phase_step is 0),
+     * so carrying its notional gain would jump from silence to full instead.
+     */
+    uint32_t start_elapsed = 0U;
+
+    if ((ALARM_GEN_RUN == s_gen) && (0U != s_phase_step))
+    {
+        const uint32_t elapsed   = s_step_total - s_step_left;
+        const uint32_t remaining = s_step_left;
+
+        start_elapsed = (elapsed < remaining) ? elapsed : remaining;
+
+        if (start_elapsed > ALARM_FADE_FRAMES)
+        {
+            start_elapsed = ALARM_FADE_FRAMES;
+        }
+    }
+
+    alarm_load_step(0U, start_elapsed);
     s_gen = ALARM_GEN_RUN;
 }
 
@@ -982,13 +1055,11 @@ static void alarm_fill_cb(int16_t *p_frames, uint32_t frame_count, void *p_conte
          * longer RUNNING - the latter is what restarts a one-shot that has
          * already finished or is draining.
          *
-         * Deliberately NOT when the same pattern is already running:
-         * alarm_load_step() would reset s_step_left to s_step_total, so
-         * alarm_env_gain() would drop from the current gain straight to zero
-         * at the buffer boundary. Keeping s_phase continuous does not help
-         * against that amplitude step - it is exactly the click the envelope
-         * exists to remove, and a repeated request for a pattern that is
-         * already sounding has nothing to change anyway.
+         * Deliberately NOT when the same pattern is already running: such a
+         * request has nothing to change, and restarting it would throw away
+         * the position of a looping pattern for no reason. (A switch to a
+         * DIFFERENT pattern does reload, and alarm_apply_pattern() carries the
+         * envelope across so that it does not click.)
          */
         if ((want != s_render_pattern) || (ALARM_GEN_RUN != s_gen))
         {
