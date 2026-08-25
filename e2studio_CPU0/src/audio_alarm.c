@@ -1265,6 +1265,11 @@ bool alarm_sound_is_active(void)
     return alarm_owns_stream();
 }
 
+bool alarm_sound_request_pending(void)
+{
+    return (s_request_seq != s_applied_seq);
+}
+
 alarm_pattern_t alarm_sound_get_pattern(void)
 {
     /* Converge to NONE whenever nothing of ours is sounding, so that the
@@ -1548,6 +1553,30 @@ int usrcmd_alarm(int argc, char **argv)
                     ? " - superseded by a newer request, which is now playing"
                     : " - cancelled by a newer 'alarm stop'";
 
+            /*
+             * FSP_ERR_TIMEOUT reaches us from two different places and they
+             * need opposite advice:
+             *
+             *   - alarm_wait_settled() gave up polling. The request is still
+             *     queued and alarm_task WILL apply it.
+             *   - alarm_task already applied the request and the device
+             *     operation itself timed out - audio_start() returns the
+             *     unmute error verbatim, and da7212_mute() yields
+             *     FSP_ERR_TIMEOUT when the shared IIC1 bus lock expires
+             *     (src/port/audio_port.c:640-643, src/port/i2c_bus0.c:114).
+             *     Nothing is queued any more and nothing will be retried.
+             *
+             * alarm_sound_request_pending() separates them. It is sampled
+             * after the call returned, so in the first case alarm_task could
+             * in principle apply the request between the two - the advice
+             * would then name the device rather than the queue, which is
+             * where the operator should look by that point anyway.
+             */
+            const char *timeout_note =
+                alarm_sound_request_pending()
+                    ? " - still queued, see 'alarm status'"
+                    : " - device operation timed out (codec I2C), see 'audio status'";
+
             snprintf(buf, sizeof(buf), "alarm %s failed (err=0x%lX)%s\r\n",
                      argv[1],
                      (unsigned long)err,
@@ -1558,7 +1587,7 @@ int usrcmd_alarm(int argc, char **argv)
                                 : ((FSP_ERR_ABORTED == err)
                                        ? abort_note
                                        : ((FSP_ERR_TIMEOUT == err)
-                                              ? " - queued; outcome not known yet, see 'alarm status'"
+                                              ? timeout_note
                                               : ""))));
             print_to_console(buf);
             return CMD_ERR_EXECUTE;
