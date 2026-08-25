@@ -80,6 +80,21 @@
 #define ALARM_GEN_PATTERN_MASK      (0xFFU)
 #define ALARM_GEN_SEQ_SHIFT         (8U)
 
+/**
+ * How long alarm_task waits for OUR OWN previous stop to reach
+ * I2S_EVENT_IDLE before starting the device again, and how often it looks.
+ *
+ * audio_stop() deliberately leaves the device in AUDIO_STATE_STOPPING when its
+ * own wait expires (src/port/audio_port.c:691-706), and audio_start() rejects
+ * that state with FSP_ERR_IN_USE (src/port/audio_port.c:562-575). Observed on
+ * hardware: the SSI interrupt starvation of Issue #206 delayed the idle well
+ * past AUDIO_STOP_TIMEOUT_MS (70 ms), so "alarm stop" reported a timeout and
+ * left STOPPING behind. Sized above the ~572 ms per-underrun recovery measured
+ * for that issue.
+ */
+#define ALARM_STOPPING_WAIT_MS      (1000U)
+#define ALARM_STOPPING_POLL_MS      (10U)
+
 /** Retry delay used by alarm_task() if tk_wai_flg() ever fails. */
 #define ALARM_TASK_ERR_DELAY_MS     (100)
 
@@ -642,6 +657,38 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
      * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
      * already PLAYING (e.g. the "audio start" test tone) or still STOPPING
      * (src/port/audio_port.c:562-575). */
+    /*
+     * Let our own previous stop finish first.
+     *
+     * A stop whose I2S_EVENT_IDLE has not arrived yet leaves the device in
+     * AUDIO_STATE_STOPPING, and audio_start() turns that into FSP_ERR_IN_USE.
+     * Nothing would retry: the late idle only flips the device to READY, it
+     * does not wake alarm_task, so the newest alarm would stay silent until
+     * somebody issued another request by hand. That is not hypothetical - a
+     * timed-out stop was observed on hardware (Issue #206).
+     *
+     * Blocking here is harmless: the API is asynchronous, so no caller is
+     * waiting on this task. The loop gives up early when a newer request has
+     * arrived - alarm_reconcile() applies that one instead of this stale
+     * pattern - and when the device is stuck it simply falls through and lets
+     * audio_start() report the failure honestly.
+     */
+    for (uint32_t waited = 0; waited < ALARM_STOPPING_WAIT_MS;
+         waited += ALARM_STOPPING_POLL_MS)
+    {
+        if (AUDIO_STATE_STOPPING != audio_get_state())
+        {
+            break;
+        }
+
+        if (s_request_seq != req_seq)
+        {
+            break;
+        }
+
+        tk_dly_tsk(ALARM_STOPPING_POLL_MS);
+    }
+
     /*
      * Snapshot the completion counter: audio_start() starts the SSI stream
      * BEFORE it retries the codec unmute (src/port/audio_port.c:602-638), and
