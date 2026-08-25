@@ -467,10 +467,24 @@ static void      alarm_cmd_usage(void);
  * At that point the device really is AUDIO_STATE_PLAYING, but it is playing
  * the built-in test tone. Comparing the installed producer against our own
  * callback is what distinguishes the two cases.
+ *
+ * The device state has to be part of the test as well, for the case where
+ * nobody installs a replacement:
+ *
+ *   alarm start emergency   -> producer = alarm_fill_cb, s_active = true
+ *   audio stop              -> device READY, producer STILL alarm_fill_cb
+ *
+ * Here the producer really is ours and s_active is still set, so callback
+ * equality alone would report an alarm that is not sounding:
+ * alarm_sound_is_active() would say true, alarm_sound_set_pattern() would
+ * restart playback instead of returning the documented FSP_ERR_NOT_OPEN, and
+ * alarm_sound_get_pattern() would keep naming a pattern while silent.
  */
 static bool alarm_owns_stream(void)
 {
-    return (s_active && (alarm_fill_cb == audio_get_fill_cb()));
+    return (s_active &&
+            (alarm_fill_cb == audio_get_fill_cb()) &&
+            (AUDIO_STATE_PLAYING == audio_get_state()));
 }
 
 /**
@@ -609,7 +623,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
 {
     fsp_err_t err;
 
-    if (alarm_owns_stream() && (AUDIO_STATE_PLAYING == audio_get_state()))
+    if (alarm_owns_stream())
     {
         /* Live pattern switch - the stream keeps running, so there is no gap.
          *
@@ -639,6 +653,15 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
      * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
      * already PLAYING (e.g. the "audio start" test tone) or still STOPPING
      * (src/port/audio_port.c:562-575). */
+    /*
+     * Snapshot the completion counter: audio_start() starts the SSI stream
+     * BEFORE it retries the codec unmute (src/port/audio_port.c:602-638), and
+     * those retries can take seconds on a contended IIC1 bus. Everything the
+     * generator produces in that window is rendered into a MUTED codec, so a
+     * short one-shot can play out entirely without ever being heard.
+     */
+    const uint32_t finish_before = s_finish_count;
+
     err = audio_start(alarm_fill_cb, NULL);
     if (FSP_SUCCESS != err)
     {
@@ -647,6 +670,19 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern)
     }
 
     s_active = true;
+
+    if (s_finish_count != finish_before)
+    {
+        /*
+         * The pattern finished while the codec was still muted, i.e. nothing
+         * was audible. Honour the request rather than that stale completion:
+         * drop it and re-arm the generator, so the caller actually gets the
+         * sound it asked for. audio_start() only returns FSP_SUCCESS once the
+         * unmute has succeeded, so the replay IS audible.
+         */
+        alarm_discard_completion();
+        alarm_gen_publish(pattern);
+    }
 
     return FSP_SUCCESS;
 }
@@ -1160,7 +1196,11 @@ bool alarm_sound_is_active(void)
 
 alarm_pattern_t alarm_sound_get_pattern(void)
 {
-    return s_pattern;
+    /* Converge to NONE whenever nothing of ours is sounding, so that the
+     * documented contract holds even after somebody else stopped the device
+     * behind our back. s_pattern on its own would keep naming the pattern
+     * that was last asked of the generator. */
+    return alarm_owns_stream() ? s_pattern : ALARM_PATTERN_NONE;
 }
 
 fsp_err_t alarm_sound_set_wave(alarm_wave_t wave)
@@ -1304,8 +1344,13 @@ static void alarm_cmd_status(void)
     print_to_console("Alarm tone generator (Issue #47 / S-005-3)\r\n");
 
     snprintf(buf, sizeof(buf), "  Playback     : %s, pattern '%s', generator %s\r\n",
-             alarm_owns_stream() ? "ACTIVE"
-                                 : (s_active ? "LOST (device taken over)" : "stopped"),
+             alarm_owns_stream()
+                 ? "ACTIVE"
+                 : (!s_active
+                        ? "stopped"
+                        : ((alarm_fill_cb == audio_get_fill_cb())
+                               ? "idle (device stopped elsewhere)"
+                               : "LOST (device taken over)")),
              alarm_pattern_name(s_pattern),
              gen_str);
     print_to_console(buf);
