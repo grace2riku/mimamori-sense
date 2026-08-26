@@ -26,6 +26,7 @@
             [19] = rm_ethosu_isr, /* NPU IRQ (NPU IRQ) */
             [20] = ssi_txi_isr, /* SSI0 TXI (Transmit data empty) */
             [21] = ssi_int_isr, /* SSI0 INT (Error interrupt) */
+            [22] = rtc_carry_isr, /* RTC CARRY (Carry interrupt) */
         };
         #if BSP_FEATURE_ICU_HAS_IELSR
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_NUM_ENTRIES] =
@@ -52,6 +53,7 @@
             [19] = BSP_PRV_VECT_ENUM(EVENT_NPU_IRQ,GROUP3), /* NPU IRQ (NPU IRQ) */
             [20] = BSP_PRV_VECT_ENUM(EVENT_SSI0_TXI,GROUP4), /* SSI0 TXI (Transmit data empty) */
             [21] = BSP_PRV_VECT_ENUM(EVENT_SSI0_INT,GROUP5), /* SSI0 INT (Error interrupt) */
+            [22] = BSP_PRV_VECT_ENUM(EVENT_RTC_CARRY,GROUP6), /* RTC CARRY (Carry interrupt) */
         };
         #endif
         #endif

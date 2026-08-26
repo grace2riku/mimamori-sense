@@ -159,7 +159,7 @@
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 0) /* WDT1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 1) /* WDT0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 2) /* IWDT */ | \
-            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 3) /* RTC */ | \
+            (((1 > 0) ? 0U : 1U) << 3) /* RTC */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 8) /* ULPT1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 9) /* ULPT0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 15) /* GPT COMMON */ | \

@@ -302,6 +302,7 @@
         </peripheral>
         <peripheral name="SSIE0.CPU0" group="SSIE" security="s"/>
         <peripheral name="GPT2.CPU0" group="GPT" security="s"/>
+        <peripheral name="RTC.CPU0" security="s"/>
         <peripheral name="ICU.CPU0">
             <slot name="IRQ0.CPU0" secure="true"/>
             <slot name="IRQ1.CPU0" secure="true"/>
@@ -325,6 +326,7 @@
             <slot name="IRQ19.CPU0" secure="true"/>
             <slot name="IRQ20.CPU0" secure="true"/>
             <slot name="IRQ21.CPU0" secure="true"/>
+            <slot name="IRQ22.CPU0" secure="true"/>
         </peripheral>
     </partition>
     <zones>
@@ -533,6 +535,7 @@
             <assign peripheral="ICU_EXT_IRQ.ICU_EXT_IRQ19"/>
             <assign group="SSIE" peripheral="SSIE0"/>
             <assign group="GPT" peripheral="GPT2"/>
+            <assign peripheral="RTC"/>
             <assign peripheral="ICU.IRQ0"/>
             <assign peripheral="ICU.IRQ1"/>
             <assign peripheral="ICU.IRQ2"/>
@@ -555,6 +558,7 @@
             <assign peripheral="ICU.IRQ19"/>
             <assign peripheral="ICU.IRQ20"/>
             <assign peripheral="ICU.IRQ21"/>
+            <assign peripheral="ICU.IRQ22"/>
         </zone>
     </zones>
 </azone>
