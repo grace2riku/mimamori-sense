@@ -257,17 +257,59 @@ priority4 が 2 箇所のみ。
 
 ### 1-4: ドライバ設定（`r_rtc_cfg.h`）
 
-`r_rtc` の `<config>` が生成する設定は 2 つだけ。**いずれも既定のまま**でよい。
+`r_rtc` の `<config>` が生成する設定は 2 つ。
 
-| マクロ | 既定 | プロパティ id |
-|---|---|---|
-| `RTC_CFG_PARAM_CHECKING_ENABLE` | `(BSP_CFG_PARAM_CHECKING_ENABLE)` | `config.driver.rtc.param_checking_enable` |
-| `RTC_CFG_OPEN_SET_CLOCK_SOURCE` | `(1)` = Enabled | `config.driver.rtc.open_set_source_clock` |
+| 項目（GUI 表示） | 設定値 | マクロ / 既定 | プロパティ id |
+|---|---|---|---|
+| Parameter Checking | `Default (BSP)`（既定のまま） | `RTC_CFG_PARAM_CHECKING_ENABLE` = `(BSP_CFG_PARAM_CHECKING_ENABLE)` | `config.driver.rtc.param_checking_enable` |
+| **Set Source Clock in Open** | **`Disabled`** ⚠️**必ず変更** | `RTC_CFG_OPEN_SET_CLOCK_SOURCE` / **既定は Enabled `(1)`** | `config.driver.rtc.open_set_source_clock` |
 
-> `RTC_CFG_OPEN_SET_CLOCK_SOURCE` を Enabled のままにすると、`R_RTC_Open()` の中で
-> クロック源の設定と RTC ソフトウェアリセットが行われる。Disabled にすると
-> `R_RTC_ClockSourceSet()` をアプリから別途呼ぶ必要がある。
-> **Enabled のままとし、`R_RTC_Open()` に集約する**（呼び出し順の間違いを作らないため）。
+#### ⚠️ `Set Source Clock in Open` を Disabled にしないと、電池バックアップした時刻が毎回消える
+
+**これが本手順書で 2 番目に重要な変更点。** Clock Source（手順 1-2）と並んで、
+取りこぼすと要求そのものが成立しなくなる。
+
+Enabled のままだと `R_RTC_Open()` が `r_rtc_set_clock_source()` を呼び、その中で:
+
+1. `r_rtc_start_bit_update(0U)` で **START ビットをクリアして計時を止める**（`r_rtc.c:1075`）
+2. `R_RTC->RCR2 = 0` のあと `r_rtc_software_reset()` で **RTC をソフトウェアリセットする**
+
+そして **`R_RTC_Open()` は START を 1 に戻さない。**
+`r_rtc.c` 全体で `r_rtc_start_bit_update(1U)` を呼ぶのは
+**`R_RTC_CalendarTimeSet()` の 1 箇所だけ**（`:404`）である
+（他の呼び出しは `R_RTC_Close()` の `:282`、`R_RTC_CalendarTimeSet()` 冒頭の `:382`、
+`r_rtc_set_clock_source()` の `:1075` で、いずれも `0U`）。
+
+**帰結**: VBATT のコイン電池で RTC が動き続けていても、**起動のたびに
+`R_RTC_Open()` が計時を止めてリセットしてしまう**。以後 `time_ctrl_set()` で
+時刻を入れ直すまで計時が再開しない。つまり
+**電源断どころかリセットをまたいだ時刻保持も成立しなくなる。**
+
+FSP のモジュール定義にある本プロパティの説明文がそのまま根拠になっている:
+
+> If enabled RTC source clock is initialized in R_RTC_Open. If disabled,
+> `R_RTC_ClockSourceSet` must be called to set the RTC source clock.
+> **Disable if user wants to control the setting of RTC source clock after warm start.**
+
+#### Disabled にした場合の #212 側の責務
+
+`R_RTC_Open()` はクロック源を触らなくなるので、**未初期化のとき（コールドスタート）だけ**
+アプリから `R_RTC_ClockSourceSet()` を呼ぶ。
+
+```
+time_ctrl_init():
+    R_RTC_Open(&g_rtc_ctrl, &g_rtc_cfg);
+    if (RTC が未プロビジョニング) {      /* 判定方法は #212 の設計メモで決める */
+        R_RTC_ClockSourceSet(&g_rtc_ctrl);   /* 内部で START=0 + ソフトウェアリセット */
+        /* この時点では計時が止まっている。R_RTC_CalendarTimeSet() を呼ぶまで進まない */
+    }
+    /* 既にプロビジョニング済みなら何もしない ＝ 電池バックアップ中の計時を壊さない */
+```
+
+- `R_RTC_ClockSourceSet()` は `r_rtc_set_clock_source()` をそのまま呼ぶ公開 API
+  （`r_rtc.c` の同関数）。つまり **呼べば必ず計時が止まる。** 無条件に呼んではいけない
+- 「未プロビジョニング」の判定方法（`R_RTC->RCR2_b.START` を見る等）は #212 の設計メモで決める。
+  申し送り (6) を参照
 
 ---
 
@@ -440,7 +482,34 @@ BSP は起動時にサブクロックを起動するが、**安定化待ちは�
 - `tm_mon` は 0 起点、`tm_year` は 1900 起点（C 標準 `struct tm` 互換）。
   FSP が `+1` / `-RTC_C_TIME_OFFSET` して BCD に変換する
 
-### (6) FLASH 増分は本 Issue ではほぼゼロ ― ドライバはまだリンクされない
+### (6) `R_RTC_Open()` はクロック源を触らない ― プロビジョニング判定が必要
+
+手順 1-4 で `Set Source Clock in Open` を **Disabled** にしたため、`R_RTC_Open()` は
+`r_rtc_set_clock_source()` を呼ばなくなる。クロック源の設定はアプリの責務になる。
+
+**`R_RTC_ClockSourceSet()` は呼べば必ず計時を止める**（内部で `r_rtc_start_bit_update(0U)` と
+`r_rtc_software_reset()` を実行し、START を戻さない）。したがって**無条件に呼んではいけない。**
+
+```
+time_ctrl_init():
+    R_RTC_Open(&g_rtc_ctrl, &g_rtc_cfg);
+    if (RTC が未プロビジョニング) {
+        R_RTC_ClockSourceSet(&g_rtc_ctrl);
+    }
+```
+
+**設計メモで決めること:**
+
+1. **「未プロビジョニング」の判定方法。** 候補は `R_RTC->RCR2_b.START` が 0 か、
+   `R_RTC->RCR4`（RCKSEL）が期待値と違うか、あるいは読み出した年が明らかに不正か。
+   FSP に判定 API は無いのでレジスタを直接読むことになる。**判定を誤ると、
+   電池でバックアップされている時刻を毎回消すか、逆に未初期化のまま使うかのどちらかになる**
+2. `R_RTC_ClockSourceSet()` の直後は **START = 0 のまま**で計時が進まない。
+   `R_RTC_CalendarTimeSet()`（`r_rtc.c:404` で START = 1 にする）を呼ぶまで動かないことを前提に、
+   「時刻未設定」状態の扱いと合わせて設計する
+3. `R_RTC_ClockSourceSet()` も申し送り (1) と同じ無限待ちを含む（`r_rtc_set_clock_source()` そのもの）
+
+### (7) FLASH 増分は本 Issue ではほぼゼロ ― ドライバはまだリンクされない
 
 本 Issue の時点では **`R_RTC_Open()` を呼ぶコードが無い**ため、LTO と `--gc-sections` により
 `r_rtc.c` の中身はイメージから除去される。実際にリンクされているのはベクタテーブルから
@@ -465,18 +534,20 @@ ELF のシンボルテーブルに存在しない（`llvm-nm` で確認済み）
 - [ ] **Clock Source が `Sub-Clock` になっている**（既定の LOCO のままでない）
 - [ ] Alarm / Period が Disabled、**Carry が Priority 12**、Callback が NULL
 - [ ] Error Adjustment が無補正（Mode = Disabled、Period = NONE、Type = NONE、Value = 0）
+- [ ] **`Set Source Clock in Open` が `Disabled` になっている**（既定の Enabled のままでない）
+- [ ] `ra_cfg/fsp_cfg/r_rtc_cfg.h` の `RTC_CFG_OPEN_SET_CLOCK_SOURCE` が `(0)` になっている
 - [ ] `e2studio_CPU0/ra/fsp/src/r_rtc/r_rtc.c` が生成されている
 - [ ] `e2studio_CPU0/ra_gen/hal_data.h` に `g_rtc_ctrl` / `g_rtc_cfg` が現れる
 - [ ] `e2studio_CPU0/ra_gen/hal_data.c` の `g_rtc_cfg` で `clock_source` が `RTC_CLOCK_SOURCE_SUBCLK` になっている
 - [ ] Pins タブ・Clocks タブ・`e2studio_CPU1/configuration.xml` に差分が出ていない
 - [ ] **CPU1 側でも Generate Project Content を実行し、`e2studio_CPU0/.secure_azone` と
       `e2studio_CPU1/.secure_azone` の `<partition>` 部が一致している**
-- [ ] CPU0 のビルドが通り、FLASH 使用量を記録した（増分がほぼゼロになる理由は「#212 への申し送り (6)」を併記）
-- [ ] 上記「#212 への申し送り」(1)〜(6) を Issue #212 の「設計の入力」に転記した
+- [ ] CPU0 のビルドが通り、FLASH 使用量を記録した（増分がほぼゼロになる理由は「#212 への申し送り (7)」を併記）
+- [ ] 上記「#212 への申し送り」(1)〜(7) を Issue #212 の「設計の入力」に転記した
 
 ### 実機での動作確認は #212 で行う
 
-**本 Issue には実機確認の受け入れ条件を置かない。** 理由は「#212 への申し送り (6)」のとおりで、
+**本 Issue には実機確認の受け入れ条件を置かない。** 理由は「#212 への申し送り (7)」のとおりで、
 `R_RTC_Open()` を呼ぶコードが無い本 Issue の状態では、LTO と `--gc-sections` により
 RTC ドライバがイメージから除去され、**RTC は実行時に初期化されない**。
 確認のためだけに暫定コードを書いても #212 で捨てることになる。
