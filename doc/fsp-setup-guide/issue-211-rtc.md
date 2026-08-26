@@ -134,7 +134,7 @@ FSP モジュール定義側も一致する:
 |---|---|
 | `"${interface.mcu.rtc}" === "1"`（Requires RTC Peripheral） | ✅ ファミリ BSP が提供（上記） |
 | Unique name required for each instance | ✅ 既存の RTC インスタンスなし |
-| A callback function is required when interrupts are enabled | ✅ 割り込みを全て Disabled にするため `p_callback = NULL` で成立（手順 1-3） |
+| A callback function is required when interrupts are enabled | ✅ 条件式は `alarm_ipl` と `periodic_ipl` のみを見る。この2つを Disabled にすれば `p_callback = NULL` で成立する（Carry は有効にするが判定に含まれない。手順 1-3） |
 | Error Adjustment Value ≦ 63（`max_value` が 63 の場合） | ✅ 値 0 を設定する。RA8P1 の `max_value` は 63（`configuration.xml:108`、`Renesas##BSP##ra8p1##fsp####6.3.0.xml:288`） |
 
 ### リソース競合の確認
@@ -143,7 +143,7 @@ FSP モジュール定義側も一致する:
 |---|---|---|
 | RTC ペリフェラル | なし | プロジェクト内に RTC 使用箇所なし |
 | P214 / P215（サブクロック） | なし | 既に `XCOUT` / `XCIN` として割当済み。**追加のピン設定をしない** |
-| 割り込みベクタ | なし | 本 Issue では RTC 割り込みを一切使わない |
+| 割り込みベクタ | なし | Carry 割り込み（`rtc_carry_isr`）を 1 本使う。既存ベクタとの競合は無く、`VECTOR_DATA_IRQ_COUNT` が 22 → 23 になるだけ。Alarm / Period は使わない（手順 1-3） |
 
 ### 前提Issue
 
@@ -208,14 +208,38 @@ FSP モジュール定義側も一致する:
 Alarm / Period の `optional` と型が違うため **GUI に Disabled の選択肢が無い**。
 これは仕様どおりで、**Carry 割り込みは `R_RTC_CalendarTimeGet()` の動作に必須**である:
 
-- `R_RTC_CalendarTimeGet()` はパラメータチェックで carry IRQ の割当を要求する。
-  未割当なら時刻を読まずに `FSP_ERR_IRQ_BSP_DISABLED` を返す
-  （`ra/fsp/src/r_rtc/r_rtc.c` の `R_RTC_CalendarTimeGet()` 冒頭
-  `FSP_ERROR_RETURN(p_instance_ctrl->p_cfg->carry_irq >= 0, FSP_ERR_IRQ_BSP_DISABLED)`）
+- `R_RTC_CalendarTimeGet()` には carry IRQ の割当を要求するチェックがある
+  （`ra/fsp/src/r_rtc/r_rtc.c` の同関数冒頭
+  `FSP_ERROR_RETURN(p_instance_ctrl->p_cfg->carry_irq >= 0, FSP_ERR_IRQ_BSP_DISABLED)`）。
+  **ただし本プロジェクトではこのチェックは無効化されている**（下記）。
+  したがって「未割当ならエラーが返る」ことを当てにできない
 - カレンダーは複数レジスタにまたがるため、読み出し中に桁上がりが起きると不正な値になる。
   FSP はこれを `do { ... } while (p_instance_ctrl->carry_isr_triggered)` で読み直して回避しており、
   そのフラグを立てるのが `rtc_carry_isr()`（`r_rtc.c` の同 ISR、`p_ctrl->carry_isr_triggered = true`）
 - 呼び出し時に carry IRQ が無効なら、FSP が一時的に有効化して読み終わったら元に戻す
+
+##### ⚠️ 本プロジェクトでは FSP のパラメータチェックが全て無効化されている
+
+`r_rtc_cfg.h` は `RTC_CFG_PARAM_CHECKING_ENABLE (BSP_CFG_PARAM_CHECKING_ENABLE)` を定義し、
+本プロジェクトの `BSP_CFG_PARAM_CHECKING_ENABLE` は **`(0)`**（`ra_cfg/fsp_cfg/bsp/bsp_cfg.h:33`。
+`BSP_CFG_ASSERT` も `(0)`、同 `:34`）。したがって `r_rtc.c` 内の
+`#if RTC_CFG_PARAM_CHECKING_ENABLE` ブロックは**すべてコンパイル時に消える**。
+
+**帰結: 上記の `FSP_ERR_IRQ_BSP_DISABLED` チェックは存在しない。**
+仮に carry を未割当（`FSP_INVALID_VECTOR` = −1）にすると:
+
+1. `NVIC_GetEnableIRQ(-1)` は CMSIS 側が負値をガードして 0 を返す
+   （`ra/arm/CMSIS_6/CMSIS/Core/Include/core_cm85.h:3948-3958`）
+2. その結果「無効だから有効化しよう」の分岐に入り、`r_rtc_irq_set(true, R_RTC_RCR1_CIE_Msk)` と
+   `R_BSP_IrqEnable(-1)` が実行される。後者は `R_BSP_IrqClearPending(-1)` を呼ぶ
+   （`ra/fsp/src/bsp/mcu/all/bsp_irq.h:166-173`）
+3. 加えて、読み出し中の桁上がりが検出されないまま不正な時刻が返る
+
+→ **Carry を有効にすることは必須。** GUI に Disabled が無いのは正しい設計。
+
+> これは本手順書「#212 への申し送り (2)」と同じ
+> **「分岐がコンパイル時（`#if`）か実行時（`if`）か」**（CLAUDE.md 成果物の検証ルール 1）の罠である。
+> 本手順書の初版はこの節でまさに同じ誤りを犯していた（PR #215 のレビューで検出・修正）。
 
 **優先度 12 を選ぶ理由**: 本プロジェクトの既定値。`configuration.xml` 内の
 `board.icu.common.irq.priority12` は 16 箇所で使われており、他は priority2 が 3 箇所、
@@ -384,7 +408,39 @@ BSP は起動時にサブクロックを起動するが、**安定化待ちは�
 - 呼び出し時に carry IRQ が無効だと FSP が一時的に有効化して元に戻す。
   他所で carry IRQ を触ると干渉するため、**アプリ側から carry IRQ を操作しないこと**
 
-### (4) FLASH 増分は本 Issue ではほぼゼロ ― ドライバはまだリンクされない
+### (4) FSP のパラメータチェックは全て無効 ― `time_ctrl` が自前で防御する
+
+`BSP_CFG_PARAM_CHECKING_ENABLE = (0)`（`ra_cfg/fsp_cfg/bsp/bsp_cfg.h:33`、`BSP_CFG_ASSERT` も `(0)`）
+のため、`r_rtc.c` の `#if RTC_CFG_PARAM_CHECKING_ENABLE` ブロックは全てコンパイル時に消える。
+**FSP が守ってくれる前提で設計してはいけない。**
+
+消えるチェックと、`time_ctrl` 側で持つべき責務:
+
+| 消えるチェック | 帰結 | `time_ctrl` の責務 |
+|---|---|---|
+| `r_rtc_time_and_date_validate(p_time)`（`R_RTC_CalendarTimeSet()` 内） | **2月30日・25時などがそのまま BCD レジスタに書かれる。エラーにならない** | `time_ctrl_set()` が**自前で妥当性検証**する（月ごとの日数・うるう年・時分秒の範囲） |
+| `FSP_ERROR_RETURN(RTC_OPEN == p_instance_ctrl->open, FSP_ERR_NOT_OPEN)` | `R_RTC_Open()` 前に Get/Set を呼んでも検出されない | `time_ctrl` が**自前で初期化済みフラグ**を持ち、未初期化なら API を呼ばずにエラーを返す |
+| `FSP_ERROR_RETURN(p_cfg->carry_irq >= 0, FSP_ERR_IRQ_BSP_DISABLED)` | 手順 1-3 の「Carry は Disabled にできない」の節を参照 | 設定側で担保済み（carry_ipl = 12） |
+| `FSP_ASSERT(NULL != p_instance_ctrl)` / `FSP_ASSERT(p_time)` | NULL 逆参照が検出されない | `time_ctrl` の公開 API で引数を検証する |
+
+### (5) `R_RTC_CalendarTimeSet()` も無限待ちを持ち、曜日は自分で計算する必要がある
+
+`R_RTC_CalendarTimeSet()`（`r_rtc.c`）の性質:
+
+- **無限待ち**: `r_rtc_start_bit_update(0U)` と `r_rtc_start_bit_update(1U)` を前後で呼ぶ。
+  それぞれが `FSP_HARDWARE_REGISTER_WAIT(R_RTC->RCR2_b.START, value)`（`r_rtc.c:1043`）を含む
+- さらに **`clock_source == RTC_CLOCK_SOURCE_SUBCLK` のとき（＝本プロジェクトの設定）**
+  `r_rtc_error_adjustment_set()` が呼ばれ、その中にも
+  `FSP_HARDWARE_REGISTER_WAIT(R_RTC->RADJ, ...)` / `(R_RTC->RCR2_b.AADJE, mode)` /
+  `(R_RTC->RCR2_b.AADJP, period)` がある（`r_rtc.c:1589,1593,1607,1625` 付近）。
+  → **(1)(2) と同じく、サブクロックが止まっていれば戻らない**
+- **`tm_wday` は FSP が導出しない。** `R_RTC->RWKCNT = rtc_dec_to_bcd(p_time->tm_wday)` と
+  そのまま書き込まれる。**`time_ctrl_set()` が年月日から曜日を計算して渡すこと**
+  （矛盾した曜日を渡すと、そのまま矛盾した値が RTC に入る）
+- `tm_mon` は 0 起点、`tm_year` は 1900 起点（C 標準 `struct tm` 互換）。
+  FSP が `+1` / `-RTC_C_TIME_OFFSET` して BCD に変換する
+
+### (6) FLASH 増分は本 Issue ではほぼゼロ ― ドライバはまだリンクされない
 
 本 Issue の時点では **`R_RTC_Open()` を呼ぶコードが無い**ため、LTO と `--gc-sections` により
 `r_rtc.c` の中身はイメージから除去される。実際にリンクされているのはベクタテーブルから
@@ -415,12 +471,12 @@ ELF のシンボルテーブルに存在しない（`llvm-nm` で確認済み）
 - [ ] Pins タブ・Clocks タブ・`e2studio_CPU1/configuration.xml` に差分が出ていない
 - [ ] **CPU1 側でも Generate Project Content を実行し、`e2studio_CPU0/.secure_azone` と
       `e2studio_CPU1/.secure_azone` の `<partition>` 部が一致している**
-- [ ] CPU0 のビルドが通り、FLASH 使用量を記録した（増分がほぼゼロになる理由は「#212 への申し送り (4)」を併記）
-- [ ] 上記「#212 への申し送り」(1)〜(4) を Issue #212 の「設計の入力」に転記した
+- [ ] CPU0 のビルドが通り、FLASH 使用量を記録した（増分がほぼゼロになる理由は「#212 への申し送り (6)」を併記）
+- [ ] 上記「#212 への申し送り」(1)〜(6) を Issue #212 の「設計の入力」に転記した
 
 ### 実機での動作確認は #212 で行う
 
-**本 Issue には実機確認の受け入れ条件を置かない。** 理由は「#212 への申し送り (4)」のとおりで、
+**本 Issue には実機確認の受け入れ条件を置かない。** 理由は「#212 への申し送り (6)」のとおりで、
 `R_RTC_Open()` を呼ぶコードが無い本 Issue の状態では、LTO と `--gc-sections` により
 RTC ドライバがイメージから除去され、**RTC は実行時に初期化されない**。
 確認のためだけに暫定コードを書いても #212 で捨てることになる。
