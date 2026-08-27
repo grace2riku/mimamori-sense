@@ -81,14 +81,15 @@ extern "C" {
  * @note `TIME_CTRL_ERR_HW` のうち「RTC API がエラーを返した」経路は、
  *       `BSP_CFG_PARAM_CHECKING_ENABLE = (0)` の本ビルドでは到達しない
  *       （`R_RTC_*` は常に `FSP_SUCCESS` を返す。詳細は `time_ctrl.c` 冒頭）。
- *       実際に返りうるのは「読み出し値が日時として不正」の経路のみ。
+ *       実際に返りうるのは「読み出した RTC の値が壊れている」経路のみ
+ *       （生レジスタの BCD 検査と、デコード後の日時としての妥当性検査の 2 つ）。
  */
 typedef enum {
     TIME_CTRL_OK = 0,              /**< 成功 */
     TIME_CTRL_ERR_NOT_INIT,        /**< `time_ctrl_init()` が未実行、または失敗している */
     TIME_CTRL_ERR_NOT_SET,         /**< 時刻が未設定（RTC が計時していない）。`time_ctrl_set()` が必要 */
     TIME_CTRL_ERR_INVALID_ARG,     /**< 引数が NULL、または日時として不正 */
-    TIME_CTRL_ERR_HW,              /**< RTC アクセスに失敗、または読み出し値が日時として不正 */
+    TIME_CTRL_ERR_HW,              /**< RTC アクセスに失敗、または読み出した RTC の値が壊れている */
     TIME_CTRL_ERR_BUSY             /**< RTC ロックを取得できなかった（他タスクが保持中／RTC がハング中） */
 } time_ctrl_err_t;
 
@@ -167,7 +168,8 @@ time_ctrl_err_t time_ctrl_init(void);
  * @retval TIME_CTRL_ERR_INVALID_ARG `p_time` が NULL
  * @retval TIME_CTRL_ERR_NOT_INIT    `time_ctrl_init()` が未実行／失敗
  * @retval TIME_CTRL_ERR_NOT_SET     時刻が未設定（RTC が計時していない）
- * @retval TIME_CTRL_ERR_HW          読み出し値が日時として不正。
+ * @retval TIME_CTRL_ERR_HW          読み出した RTC の値が壊れている。生レジスタのニブルが
+ *                                   BCD として不正、またはデコード後が日時として成立しない
  *                                   （RTC アクセス失敗の経路は本ビルドでは到達しない）
  * @retval TIME_CTRL_ERR_BUSY        RTC ロックを取得できなかった（他タスクが保持中／RTC がハング中）
  */

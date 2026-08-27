@@ -57,8 +57,15 @@
  *
  * よって本ファイルの `FSP_SUCCESS != err` 分岐は、FSP 設定が将来変わった場合に備えた
  * **防御的コードであり、現状は到達しない**。実際に `TIME_CTRL_ERR_HW` を返しうるのは、
- * 読み出した BCD レジスタ値が日時として不正だった場合（`FSP_ERR_INVALID_DATA` を
- * `s_last_err` に記録する経路）だけである。
+ * 読み出した RTC の値が壊れていた場合（`FSP_ERR_INVALID_DATA` を `s_last_err` に
+ * 記録する 2 経路）だけである:
+ *
+ * 1. `rtc_raw_bcd_is_valid()` — 生レジスタのニブルが 0-9 に収まっていない
+ * 2. `time_is_valid()` — BCD としては妥当だが日時として成立しない（2 月 30 日など）
+ *
+ * 1 が必要なのは、FSP の `rtc_bcd_to_dec()` がニブルを検査しないため、
+ * `RSECCNT = 0x1A` のような壊れ方が「20 秒」として 2 の範囲検査を通り抜けるからである
+ * （`r_rtc.c:1725-1729`。PR #216 レビュー指摘 P2）。
  */
 
 /**********************************************************************************************************************
@@ -83,6 +90,10 @@
 
 /** 1970-01-01 を 0 とする通日から曜日を求めるための補正（1970-01-01 は木曜 = 4） */
 #define TIME_CTRL_EPOCH_WDAY        (4)
+
+/** RHRCNT の時フィールドマスク。FSP の RTC_RHRCNT_HOUR_MASK（`r_rtc.c:62`）と同値。
+ * FSP がデコード時に掛けるマスクと検査対象を一致させるために使う。 */
+#define TIME_CTRL_RHRCNT_HOUR_MASK  (0x3FU)
 
 /** RTC ロックの取得タイムアウト [ms]
  * @details 正常時の最長保持は `time_ctrl_init()` の約 0.5 ms なので、通常は待たずに取れる。
@@ -114,6 +125,8 @@ static bool     time_lock(void);
 static void     time_unlock(void);
 static bool     rtc_is_provisioned(void);
 static bool     rtc_is_running(void);
+static bool     rtc_raw_bcd_is_valid(void);
+static bool     bcd_byte_is_valid(uint8_t value, uint8_t max_high);
 static bool     time_is_valid(const time_ctrl_time_t *p_time);
 static uint8_t  days_in_month(uint16_t year, uint8_t mon);
 static bool     is_leap_year(uint16_t year);
@@ -179,6 +192,14 @@ time_ctrl_err_t time_ctrl_init(void)
             s_last_err = err;
             if (FSP_SUCCESS != err) {
                 time_available = false;
+            } else if (!rtc_raw_bcd_is_valid()) {
+                /* 生レジスタが BCD として壊れている。デコード後の値は範囲内に
+                 * 見えることがあるので、ここで弾かないと誤った時刻を
+                 * tk_set_utc() に流し込むことになる。 */
+                s_last_err     = FSP_ERR_INVALID_DATA;
+                time_available = false;
+            } else {
+                /* 妥当。区間の外で tk_set_utc() へ同期する */
             }
         }
     }
@@ -236,6 +257,13 @@ time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time)
         if (running) {
             err        = R_RTC_CalendarTimeGet(&g_rtc_ctrl, &raw);
             s_last_err = err;
+
+            if ((FSP_SUCCESS == err) && !rtc_raw_bcd_is_valid()) {
+                /* 生レジスタが BCD として壊れている。デコード後の範囲検査
+                 * （time_is_valid()）では捕まらない壊れ方があるため、ここで弾く。 */
+                err        = FSP_ERR_INVALID_DATA;
+                s_last_err = err;
+            }
         }
     }
     time_unlock();
@@ -258,8 +286,9 @@ time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time)
     p_time->wday = (uint8_t)raw.tm_wday;
 
     if (!time_is_valid(p_time)) {
-        /* BCD レジスタに不正値が入っていた（BCD でないビットパターン等）。
-         * 「未設定」ではなく異常として扱う。 */
+        /* 生値は BCD として妥当だが、日時として成立しない（2 月 30 日・19 月など
+         * 桁の組み合わせの不正）。「未設定」ではなく異常として扱う。
+         * BCD として壊れているケースは rtc_raw_bcd_is_valid() が上で弾いている。 */
         s_last_err = FSP_ERR_INVALID_DATA;
         return TIME_CTRL_ERR_HW;
     }
@@ -533,6 +562,80 @@ static bool rtc_is_provisioned(void)
 static bool rtc_is_running(void)
 {
     return (1U == R_RTC->RCR2_b.START);
+}
+
+/**
+ * RTC カウンタの生値が BCD として妥当かを判定する（PR #216 レビュー指摘 P2）
+ * @details
+ * FSP の `rtc_bcd_to_dec()` は `(上位ニブル) * 10 + (下位ニブル)` を計算するだけで、
+ * ニブルが 0-9 に収まっているかを検査しない（`r_rtc.c:1725-1729`）。
+ * このため下位ニブルが 0xA-0xF の壊れた値が、範囲内の 10 進値として通ってしまう:
+ *
+ * | 生値 | `rtc_bcd_to_dec()` | `time_is_valid()` |
+ * |---|---|---|
+ * | `RSECCNT = 0x1A` | 1×10 + 10 = **20** | 20 ≤ 59 なので**通る** |
+ * | `RSECCNT = 0x20` | 2×10 + 0 = 20 | 通る（正当な値） |
+ *
+ * デコード後の 20 からは両者を区別できないので、生レジスタを直接見る必要がある。
+ * `time_is_valid()`（デコード後の意味的な妥当性）とは相補的な検査であり、両方を行う。
+ *
+ * 検査対象は **FSP が実際にデコードに使うバイトそのもの**とする
+ * （`r_rtc.c:449-459`。`RHRCNT` だけは FSP が `RTC_RHRCNT_HOUR_MASK`(0x3F) を掛けるので
+ * こちらも同じマスクを掛ける）。ビットフィールドアクセサを使うと予約ビットが落ちてしまい、
+ * FSP が見ている値と検査対象がずれる。例えば `RWKCNT = 0x08` は
+ * `DAYW`(bit2:0) では 0 に見えるが、FSP は 8 としてデコードする。
+ *
+ * @note 本関数の読みは `R_RTC_CalendarTimeGet()` の読みとは別の瞬間になるが、
+ *       健全な RTC はどの瞬間でも各カウンタが妥当な BCD なので誤検出しない。
+ *       桁上がりによるフィールド間の不整合は `R_RTC_CalendarTimeGet()` 側の
+ *       carry 再読み込みループが担当する（`r_rtc.c:445-460`）。
+ *
+ * @return true なら全カウンタが BCD として妥当
+ */
+static bool rtc_raw_bcd_is_valid(void)
+{
+    /* 秒 0-59: 上位 0-5 / 下位 0-9。予約ビット bit7 が立てば上位は 8 以上になり弾かれる */
+    if (!bcd_byte_is_valid(R_RTC->RSECCNT, 5U)) {
+        return false;
+    }
+    /* 分 0-59 */
+    if (!bcd_byte_is_valid(R_RTC->RMINCNT, 5U)) {
+        return false;
+    }
+    /* 時 0-23（24 時間モード）。FSP と同じく 0x3F でマスクしてから見る */
+    if (!bcd_byte_is_valid((uint8_t)(R_RTC->RHRCNT & TIME_CTRL_RHRCNT_HOUR_MASK), 2U)) {
+        return false;
+    }
+    /* 曜日 0-6。BCD ではなく 3bit のバイナリなので、バイト全体を直接比較する */
+    if (R_RTC->RWKCNT > 6U) {
+        return false;
+    }
+    /* 日 1-31: 上位 0-3 / 下位 0-9 */
+    if (!bcd_byte_is_valid(R_RTC->RDAYCNT, 3U)) {
+        return false;
+    }
+    /* 月 1-12: 上位 0-1 / 下位 0-9 */
+    if (!bcd_byte_is_valid(R_RTC->RMONCNT, 1U)) {
+        return false;
+    }
+    /* 年 00-99: 上位 0-9 / 下位 0-9 */
+    if (!bcd_byte_is_valid((uint8_t)R_RTC->RYRCNT, 9U)) {
+        return false;
+    }
+
+    /* 「39 日」「19 月」のような桁の組み合わせの不正は time_is_valid() が弾く */
+    return true;
+}
+
+/**
+ * BCD 1 バイトが妥当かを判定する
+ * @param value    検査するレジスタ生値
+ * @param max_high 上位ニブルの許容上限（下位ニブルの上限は常に 9）
+ * @return true なら妥当な BCD
+ */
+static bool bcd_byte_is_valid(uint8_t value, uint8_t max_high)
+{
+    return (((value >> 4) <= max_high) && ((value & 0x0FU) <= 9U));
 }
 
 /**
