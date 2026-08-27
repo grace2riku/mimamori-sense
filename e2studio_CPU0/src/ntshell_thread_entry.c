@@ -32,6 +32,7 @@
 #include "fsp_version.h"
 #include "led_ctrl.h"
 #include "port/dave2d_port.h"
+#include "time_ctrl.h"
 
 #include <tk/tkernel.h>
 
@@ -188,6 +189,31 @@ void ntshell_task(INT stacd, void *exinf)
         print_to_console(" Dave2D GPU  : Enabled\r\n");
     } else {
         print_to_console(" Dave2D GPU  : NOT available\r\n");
+    }
+
+    /* 時刻管理モジュールの初期化（S-012-2 / Issue #212）
+     *
+     * ここに置く理由（設計メモ doc/design/issue-212.md §6）:
+     *  (1) time_ctrl_init() は未プロビジョニング時に R_RTC_ClockSourceSet() を呼ぶが、
+     *      その中の FSP_HARDWARE_REGISTER_WAIT にはタイムアウトが無く
+     *      （ra/fsp/src/bsp/mcu/all/bsp_common.h:122）、サブクロックが発振していなければ
+     *      戻らない。かつサブクロック安定化待ちは本プロジェクトでは
+     *      コンパイル時に消えている（bsp_clocks.c:3229-3230 の条件が、
+     *      BSP_CFG_CLOCK_SOURCE = PLL1P と BSP_PRV_HOCO_USE_FLL = 0 で両方偽）。
+     *      ブート経路の最後方に置いて水晶の立ち上がり時間を最大限稼ぐ。
+     *  (2) ここで止まった場合の観測像は「バナーと Dave2D 行までは出たあと、
+     *      下の in-progress ログで止まりプロンプトが出ない。一方 blink LED は
+     *      点滅し続け、camera / lvgl / audio タスクは動く」となり、切り分けできる。
+     *      バナーが出たあとなので、コンソール自体の障害とも区別できる。
+     *      usermain() に置くと以降のタスク生成が全て止まり切り分けできない。
+     *  (3) time_ctrl の呼び出し元は ntshell_task だけなので、
+     *      初期化と利用の順序が同一タスク内で保証される。
+     */
+    print_to_console(" Time (RTC)  : init...\r\n");
+    if (TIME_CTRL_OK == time_ctrl_init()) {
+        print_to_console(" Time (RTC)  : ready\r\n");
+    } else {
+        print_to_console(" Time (RTC)  : NOT available (see 'time status')\r\n");
     }
 
     /* NT-Shellの初期化 */
