@@ -180,6 +180,11 @@ static int time_cmd_status(void)
     snprintf(buf, sizeof(buf), " Last FSP err  : %d\r\n", (int)st.last_err);
     print_to_console(buf);
 
+    if (st.lock_busy) {
+        /* 正常時は必ずロックが取れる。出た場合は保持タスクが RTC 内でハングしている。 */
+        print_to_console(" RTC lock      : BUSY (snapshot taken without the lock)\r\n");
+    }
+
     snprintf(buf, sizeof(buf), " RCR1/2/4      : 0x%02X / 0x%02X / 0x%02X"
                                "  (START=%u HR24=%u RCKSEL=%u)\r\n",
              (unsigned int)st.rcr1, (unsigned int)st.rcr2, (unsigned int)st.rcr4,
@@ -252,6 +257,11 @@ static void time_cmd_print_err(time_ctrl_err_t err)
             break;
         case TIME_CTRL_ERR_HW:
             cmd_print_error("RTC access failed. Run 'time status' for details.");
+            break;
+        case TIME_CTRL_ERR_BUSY:
+            /* 他タスクが RTC を保持したまま戻ってこない状態。サブクロック喪失が疑わしい。
+             * 'time status' はロック無しでも状態を採取するので実行できる。 */
+            cmd_print_error("RTC is busy (lock timeout). Run 'time status' for details.");
             break;
         default:
             break;

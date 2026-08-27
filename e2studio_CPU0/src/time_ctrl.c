@@ -6,20 +6,41 @@
  *
  * ## 排他方針（設計メモ §5）
  *
- * RTC アクセス区間を `tk_dis_dsp()` / `tk_ena_dsp()` で囲む。保護対象は
+ * RTC アクセス区間を `TA_INHERIT` 属性の**資源所有ミューテックス**で囲む。保護対象は
  * 「RTC レジスタ列 ＋ `g_rtc_ctrl`（`carry_isr_triggered` と carry IRQ の一時有効化・復元）」
- * という**資源**であり、要求の順序付けではない。
+ * という**資源**であり、要求の順序付けではない。したがって CLAUDE.md が
+ * 「保持したまま呼ぶのが正しい」と定める資源所有ロックに該当し、
+ * `i2c_bus0_lock()` / `i2c_bus0_unlock()`（`src/port/i2c_bus0.c:78-137`）と同じ類型・同じ属性とする。
  *
  * - 書き手・読み手とも**タスクのみ**（`ntshell_task`、#213 以降は `lvgl_task` が読み手に加わる）。
- *   ISR から `time_ctrl_*` を呼ぶ経路は作らない
- * - `tk_dis_dsp()` はタスクディスパッチのみを止め、割り込みは止めない。よって
- *   `R_RTC_CalendarTimeGet()` が依存する carry ISR（`r_rtc.c:1687`）は区間中も走り、
- *   桁上がり検出は壊れない
- * - 区間内で待ち状態に入る API は呼ばない（`R_RTC_*` と `R_BSP_SoftwareDelay()` は
- *   いずれもビジー待ち）。最長区間は `time_ctrl_init()` の約 0.5 ms
+ *   ISR から `time_ctrl_*` を呼ぶ経路は作らない（ミューテックスは ISR から取れない）
+ * - ミューテックスはディスパッチを止めないため、`R_RTC_CalendarTimeGet()` が依存する
+ *   carry ISR（`r_rtc.c:1687`）はもちろん、他タスクも区間中に走り続ける
+ * - ロック取得は `TIME_CTRL_LOCK_TIMEOUT_MS` でタイムアウトさせ、
+ *   保持タスクがハングしても待ち側は `TIME_CTRL_ERR_BUSY` で復帰できるようにする
  *
- * `tk_set_utc()` は区間の**外**で呼ぶ。同期元の値はローカル変数なので競合せず、
- * 書き手が `ntshell_task` 単独である以上、区間外でも順序は保たれる。
+ * ### なぜ `tk_dis_dsp()` ではないか（PR #216 レビュー指摘 P1）
+ *
+ * FSP の RTC API は `FSP_HARDWARE_REGISTER_WAIT`（タイムアウト無し、`bsp_common.h:122`）で
+ * カウントソース同期の完了を待つ。サブクロックが発振していなければ**戻らない**:
+ *
+ * | API | 無制限待ちの箇所 |
+ * |---|---|
+ * | `R_RTC_ClockSourceSet()` | `r_rtc.c:1043,1057,1091,1100,1109`（START/RESET/CNTMD/RCR1/HR24） |
+ * | `R_RTC_CalendarTimeSet()` | `r_rtc.c:1043`（START ×2）、`:1589,1593,1607,1625`（誤差調整） |
+ * | `R_RTC_CalendarTimeGet()` | `r_rtc.c:1169,1176`（RCR1 の CIE 更新） |
+ *
+ * これを `tk_dis_dsp()` で囲むと、ハング時にディスパッチが戻らず
+ * **CPU0 の全タスク（camera / lvgl / audio / blink）が巻き添えで停止する**。
+ * ミューテックスなら被害は呼び出しタスク 1 本に閉じ込められ、他タスクは
+ * タイムアウトで `TIME_CTRL_ERR_BUSY` を受け取って動作を継続できる。
+ * なお、どちらにしてもサブクロック喪失時に RTC が使えないことは変わらない
+ * （FSP にタイムアウトが無い以上、モジュール側では回避できない）。
+ *
+ * `tk_dis_dsp()` を使うのはミューテックス生成の二重生成防止のみで、
+ * その区間に RTC アクセスは含めない（`time_lock_init()`）。
+ *
+ * `tk_set_utc()` はロックの**外**で呼ぶ。同期元の値はローカル変数なので競合しない。
  *
  * ## FSP のパラメータチェックは無効（設計メモ §2）
  *
@@ -63,6 +84,11 @@
 /** 1970-01-01 を 0 とする通日から曜日を求めるための補正（1970-01-01 は木曜 = 4） */
 #define TIME_CTRL_EPOCH_WDAY        (4)
 
+/** RTC ロックの取得タイムアウト [ms]
+ * @details 正常時の最長保持は `time_ctrl_init()` の約 0.5 ms なので、通常は待たずに取れる。
+ * サブクロック喪失で保持タスクがハングした場合に、待ち側を確実に解放するための値。 */
+#define TIME_CTRL_LOCK_TIMEOUT_MS   (1000)
+
 /**********************************************************************************************************************
  Private (static) variables
  *********************************************************************************************************************/
@@ -76,10 +102,16 @@ static bool      s_did_provision = false;
 /** 直近の RTC API の戻り値（`time status` 表示用） */
 static fsp_err_t s_last_err      = FSP_SUCCESS;
 
+/** RTC 資源所有ミューテックス。0 以下なら未生成 */
+static ID        s_mtxid         = 0;
+
 /**********************************************************************************************************************
  Private (static) functions prototypes
  *********************************************************************************************************************/
 
+static bool     time_lock_init(void);
+static bool     time_lock(void);
+static void     time_unlock(void);
 static bool     rtc_is_provisioned(void);
 static bool     rtc_is_running(void);
 static bool     time_is_valid(const time_ctrl_time_t *p_time);
@@ -111,7 +143,13 @@ time_ctrl_err_t time_ctrl_init(void)
 
     memset(&raw, 0, sizeof(raw));
 
-    tk_dis_dsp();
+    if (!time_lock_init()) {
+        s_last_err = FSP_ERR_INTERNAL;
+        return TIME_CTRL_ERR_HW;
+    }
+    if (!time_lock()) {
+        return TIME_CTRL_ERR_BUSY;
+    }
     {
         /* RTC_CFG_OPEN_SET_CLOCK_SOURCE = (0)（ra_cfg/fsp_cfg/r_rtc_cfg.h:9）のため、
          * R_RTC_Open() は r_rtc_set_clock_source() を呼ばない（r_rtc.c:240-245）。
@@ -144,7 +182,7 @@ time_ctrl_err_t time_ctrl_init(void)
             }
         }
     }
-    tk_ena_dsp();
+    time_unlock();
 
     if (!s_initialized) {
         return TIME_CTRL_ERR_HW;
@@ -177,7 +215,6 @@ time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time)
 {
     fsp_err_t  err = FSP_SUCCESS;
     rtc_time_t raw;
-    bool       initialized;
     bool       running;
 
     if (NULL == p_time) {
@@ -186,21 +223,23 @@ time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time)
 
     memset(&raw, 0, sizeof(raw));
 
-    tk_dis_dsp();
+    /* ロックを取る前に見る。未初期化ならミューテックスも存在しない。 */
+    if (!s_initialized) {
+        return TIME_CTRL_ERR_NOT_INIT;
+    }
+    if (!time_lock()) {
+        return TIME_CTRL_ERR_BUSY;
+    }
     {
-        initialized = s_initialized;
-        running     = initialized && rtc_is_running();
+        running = rtc_is_running();
 
         if (running) {
             err        = R_RTC_CalendarTimeGet(&g_rtc_ctrl, &raw);
             s_last_err = err;
         }
     }
-    tk_ena_dsp();
+    time_unlock();
 
-    if (!initialized) {
-        return TIME_CTRL_ERR_NOT_INIT;
-    }
     if (!running) {
         /* RCR2.START == 0。R_RTC_CalendarTimeSet() 以外に START を 1 にする経路は無い
          * （r_rtc.c:404）ので、これは「時刻が一度も設定されていない」を意味する。 */
@@ -236,7 +275,6 @@ time_ctrl_err_t time_ctrl_set(const time_ctrl_time_t *p_time)
     fsp_err_t        err;
     rtc_time_t       raw;
     time_ctrl_time_t applied;
-    bool             initialized;
 
     if (NULL == p_time) {
         return TIME_CTRL_ERR_INVALID_ARG;
@@ -260,21 +298,19 @@ time_ctrl_err_t time_ctrl_set(const time_ctrl_time_t *p_time)
     raw.tm_mon  = (int)applied.mon - 1;                                     /* tm_mon は 0 起点 */
     raw.tm_year = (int)applied.year - TIME_CTRL_TM_YEAR_BASE;               /* tm_year は 1900 起点 */
 
-    tk_dis_dsp();
-    {
-        initialized = s_initialized;
-        if (initialized) {
-            err        = R_RTC_CalendarTimeSet(&g_rtc_ctrl, &raw);
-            s_last_err = err;
-        } else {
-            err = FSP_ERR_NOT_INITIALIZED;
-        }
-    }
-    tk_ena_dsp();
-
-    if (!initialized) {
+    /* ロックを取る前に見る。未初期化ならミューテックスも存在しない。 */
+    if (!s_initialized) {
         return TIME_CTRL_ERR_NOT_INIT;
     }
+    if (!time_lock()) {
+        return TIME_CTRL_ERR_BUSY;
+    }
+    {
+        err        = R_RTC_CalendarTimeSet(&g_rtc_ctrl, &raw);
+        s_last_err = err;
+    }
+    time_unlock();
+
     if (FSP_SUCCESS != err) {
         return TIME_CTRL_ERR_HW;
     }
@@ -345,12 +381,18 @@ time_ctrl_err_t time_ctrl_parse(const char *p_date, const char *p_time_str, time
  */
 void time_ctrl_get_status(time_ctrl_status_t *p_status)
 {
+    bool locked;
+
     if (NULL == p_status) {
         return;
     }
 
-    tk_dis_dsp();
+    /* 診断用なので、ロックが取れなくても採取して返す（ヘッダの @details 参照）。
+     * ここでのレジスタ読みは 1 バイト単位でカウントソース同期の待ちを伴わないため、
+     * ロック無しでもハングしない。 */
+    locked = time_lock();
     {
+        p_status->lock_busy     = !locked;
         p_status->initialized   = s_initialized;
         p_status->did_provision = s_did_provision;
         p_status->last_err      = (int32_t)s_last_err;
@@ -374,7 +416,9 @@ void time_ctrl_get_status(time_ctrl_status_t *p_status)
         p_status->bcd_mon  = R_RTC->RMONCNT;
         p_status->bcd_year = (uint8_t)R_RTC->RYRCNT;
     }
-    tk_ena_dsp();
+    if (locked) {
+        time_unlock();
+    }
 }
 
 /**
@@ -394,6 +438,69 @@ const char *time_ctrl_wday_str(uint8_t wday)
 /**********************************************************************************************************************
  Private (static) functions
  *********************************************************************************************************************/
+
+/**
+ * RTC 資源所有ミューテックスを生成する（冪等）
+ * @details
+ * 生成そのものは `tk_dis_dsp()` で囲って二重生成を防ぐ。この区間に RTC アクセスは
+ * 含めない（`tk_cre_mtx()` はビジー待ちのみでブロックしない）ため、
+ * ファイル冒頭で述べたディスパッチ禁止の問題は生じない。
+ * 生成手順・属性は `i2c_bus0_sync_init()`（`src/port/i2c_bus0.c:78-100`）に合わせる。
+ *
+ * @return true なら利用可能なミューテックスがある
+ */
+static bool time_lock_init(void)
+{
+    if (s_mtxid > 0) {
+        return true;
+    }
+
+    if (E_OK != tk_dis_dsp()) {
+        return false;
+    }
+
+    if (s_mtxid <= 0) {                 /* ディスパッチ禁止下で再確認する */
+        T_CMTX cmtx = {
+            .exinf  = NULL,
+            .mtxatr = TA_INHERIT,       /* 優先度継承。i2c_bus0 / lv_os_mtkernel と同じ */
+        };
+
+        ID mtxid = tk_cre_mtx(&cmtx);
+        if (mtxid > E_OK) {
+            s_mtxid = mtxid;
+        }
+    }
+
+    (void)tk_ena_dsp();
+
+    return (s_mtxid > 0);
+}
+
+/**
+ * RTC 資源をロックする
+ * @details タイムアウト付きで待つ。保持タスクがサブクロック喪失でハングしても、
+ * 待ち側は `TIME_CTRL_LOCK_TIMEOUT_MS` 後に復帰して自タスクの処理を続けられる。
+ *
+ * @return true ならロックを取得した（`time_unlock()` が必要）
+ */
+static bool time_lock(void)
+{
+    if (s_mtxid <= 0) {
+        return false;
+    }
+
+    return (E_OK == tk_loc_mtx(s_mtxid, (TMO)TIME_CTRL_LOCK_TIMEOUT_MS));
+}
+
+/**
+ * RTC 資源のロックを解放する
+ */
+static void time_unlock(void)
+{
+    if (s_mtxid > 0) {
+        (void)tk_unl_mtx(s_mtxid);
+    }
+}
 
 /**
  * RTC がプロビジョニング済みかを判定する

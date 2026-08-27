@@ -11,9 +11,11 @@
 | ブロック許容時間 | `ntshell_task`: 数十 ms 可。`lvgl_task`(#213): 33.3 ms/frame を圧迫しない → 下表のとおり全 API が 1 ms 未満なので、#213 でも `time_ctrl_get()` を直接呼んでよい | — |
 | 依存先 API 最悪所要時間 | 下表。**`R_RTC_ClockSourceSet()` のみサブクロック停止時に無限ループ**（`FSP_HARDWARE_REGISTER_WAIT` にタイムアウト無し: `bsp_common.h:122`） | 下表 |
 | 失敗の返し方 | `time_ctrl_err_t` で区別する。`NOT_INIT`（未初期化）/ `NOT_SET`（時刻未設定＝計時停止中、ユーザに `time set` を促す）/ `INVALID_ARG`（引数不正）/ `HW`（FSP がエラーを返した）。**「未設定」と「HW 異常」は呼び出し元の次の行動が違う**ので別値 | — |
-| 実行コンテキスト制約 | ISR から呼ばない。`R_RTC_CalendarTimeGet()` は carry ISR が走れないと桁上がりを検出できないため **割り込み禁止区間から呼ばない**（`r_rtc.c:421-470` の `do{}while(carry_isr_triggered)`）。`tk_dis_dsp()` は割り込みを止めないので可 | `r_rtc.c:421-470` |
+| 実行コンテキスト制約 | ISR から呼ばない。`R_RTC_CalendarTimeGet()` は carry ISR が走れないと桁上がりを検出できないため **割り込み禁止区間から呼ばない**（`r_rtc.c:421-470` の `do{}while(carry_isr_triggered)`）。本モジュールは資源所有ミューテックスで直列化するため、割り込みもディスパッチも止めない（§5） | `r_rtc.c:421-470` |
 
 ### 依存先 API の最悪所要時間（1 カウントソース周期 = 1/32768 s ≒ 30.5 µs）
+
+> **前提**: 以下はいずれも**サブクロックが正常に発振している場合**の値。発振が失われると `FSP_HARDWARE_REGISTER_WAIT`（タイムアウト無し）で**戻らなくなる**。該当箇所の一覧と、それを踏まえた排他方式の決定は §5 を参照。
 
 | API | 内訳 | 最悪 |
 |---|---|---|
@@ -71,33 +73,67 @@ RAM フラグではなく RCR2 を見るので、**リセットをまたいで�
 
 | 変数 | 書き手 | 読み手 | 保護 |
 |---|---|---|---|
-| `s_initialized` (bool) | `ntshell_task`（`time_ctrl_init()` 1 回のみ） | `ntshell_task`、将来 `lvgl_task` | `tk_dis_dsp()` 区間内で読む |
+| `s_initialized` (bool) | `ntshell_task`（`time_ctrl_init()` 1 回のみ） | `ntshell_task`、将来 `lvgl_task` | ロック取得**前**に読んで早期 return し、以後はミューテックス区間内で扱う |
 | `s_last_err` (fsp_err_t, `time status` 表示用) | `ntshell_task` | 同上 | 同上 |
-| RTC レジスタ／`g_rtc_ctrl.carry_isr_triggered` | FSP（`R_RTC_*` 内）／carry ISR | FSP | `tk_dis_dsp()` 区間で `R_RTC_*` 呼び出しを直列化 |
+| RTC レジスタ／`g_rtc_ctrl.carry_isr_triggered` | FSP（`R_RTC_*` 内）／carry ISR | FSP | 資源所有ミューテックスで `R_RTC_*` 呼び出しを直列化（§5） |
 
 `time_ctrl` は ISR と共有する自前の状態を持たない。carry ISR が触るのは FSP 内部の
 `carry_isr_triggered` だけで、`time_ctrl` の変数には触れない（`r_rtc.c:1687`）。
 
 ## 5. 排他方針
 
-**`tk_dis_dsp()` / `tk_ena_dsp()` で RTC アクセス区間を囲む。**
+> **改訂（PR #216 レビュー指摘 P1 / 2026-08-27）**: 当初は `tk_dis_dsp()` で囲む方針だったが、
+> **サブクロック喪失時に RTC API が戻らない**ことと `tk_dis_dsp()` を組み合わせると
+> CPU0 の全タスクが巻き添えで停止するため、資源所有ミューテックスに変更した。
+> 経緯は末尾「当初案（`tk_dis_dsp()`）を破棄した理由」を参照。
+
+**`TA_INHERIT` 属性の資源所有ミューテックスで RTC アクセス区間を囲む。**
 
 - 保護対象は「RTC レジスタ列 ＋ `g_rtc_ctrl`（`carry_isr_triggered`, carry IRQ の一時有効化・復元）」
-  という**資源**。並行 `R_RTC_CalendarTimeGet()` が互いの carry IRQ 復元を踏むと不整合な時刻を返す
-- 書き手・読み手とも**タスクのみ**なので `tk_dis_dsp()`（タスクディスパッチのみ禁止）で十分。
-  carry ISR は走り続けるので `R_RTC_CalendarTimeGet()` の桁上がり検出は壊れない
-- 区間長は最大 0.45 ms（`ClockSourceSet` を含む `time_ctrl_init()`）、定常時は 0.16 ms 以下。
-  30 fps（33.3 ms）に対して 0.5% 未満で KPI-01 に影響しない
-- 区間内で待ち状態に入る API は呼ばない（`R_RTC_*` と `R_BSP_SoftwareDelay()` はいずれもビジー待ち）
+  という**資源**。並行 `R_RTC_CalendarTimeGet()` が互いの carry IRQ 復元を踏むと不整合な時刻を返す。
+  要求の順序付けが目的ではないので、CLAUDE.md が「保持したまま呼ぶのが正しい」と定める
+  **資源所有ロック**に該当する（`i2c_bus0_lock()` と同じ類型）
+- 書き手・読み手とも**タスクのみ**（`ntshell_task`、#213 以降は `lvgl_task` が読み手に加わる）。
+  ミューテックスは ISR から取れないので、この制約は機構によって強制される
+- ミューテックスはディスパッチを止めない。よって carry ISR も他タスクも区間中に走り続ける
+- ロック取得は 1000 ms でタイムアウトさせ、保持タスクがハングしても
+  待ち側は `TIME_CTRL_ERR_BUSY` で復帰して自タスクの処理を続けられるようにする
+- 生成手順・属性は `i2c_bus0_sync_init()`（`src/port/i2c_bus0.c:78-100`）に合わせる。
+  二重生成の防止にのみ `tk_dis_dsp()` を使い、**その区間に RTC アクセスは入れない**
+- `time_ctrl_get_status()`（`time status` 用）だけは、ロックが取れなくても
+  ロック無しで採取して `lock_busy = true` を返す。RTC がハングしている状況こそ
+  状態を見たいため。ここでのレジスタ読みは 1 バイト単位でカウントソース同期の待ちを伴わない
 
-**捨てた代替案:**
+### 当初案（`tk_dis_dsp()`）を破棄した理由
 
-- **単一所有タスクへの集約（`time_task` 新設）**: CLAUDE.md の既定形は「**ブロックしうる**デバイス操作」が
-  対象。本件は最悪 0.45 ms のビジー待ちでブロックしない。タスク 1 本とイベントフラグを足す
-  コストに見合わず、「要求されていない汎用性」に当たるため却下
-- **ミューテックス（`tk_cre_mtx`）**: 保護区間がサブミリ秒なので、生成順序（どのタスクより前に作るか）・
-  タイムアウト・優先度逆転の設計面が増えるだけで得るものが無い。`i2c_bus0` が mutex なのは
-  1 転送が ms オーダでブロックするため（`i2c_bus0.h:53-55`）で、本件とは条件が違う
+FSP の RTC API は `FSP_HARDWARE_REGISTER_WAIT`（タイムアウト無し、`bsp_common.h:122`）で
+カウントソース同期の完了を待つ。§1 の所要時間表は**サブクロックが発振している前提**の値であり、
+発振が失われると以下はいずれも**戻らない**:
+
+| API | 無制限待ちの箇所 |
+|---|---|
+| `R_RTC_ClockSourceSet()` | `r_rtc.c:1043,1057,1091,1100,1109`（START/RESET/CNTMD/RCR1/HR24） |
+| `R_RTC_CalendarTimeSet()` | `r_rtc.c:1043`（START ×2）、`:1589,1593,1607,1625`（誤差調整） |
+| `R_RTC_CalendarTimeGet()` | `r_rtc.c:1169,1176`（RCR1 の CIE 更新） |
+
+当初案は「戻らない」ケースを `R_RTC_ClockSourceSet()` についてのみ認識しており、
+**被害範囲**を評価していなかった。`tk_dis_dsp()` 区間内でハングするとディスパッチが戻らず、
+`camera_task` / `lvgl_task` / `audio_task` / `alarm_task` / `blink_task` まで停止する。
+ミューテックスなら被害は呼び出しタスク 1 本に閉じ込められる。
+
+なお、どちらの方式でもサブクロック喪失時に RTC が使えないこと自体は変わらない
+（FSP にタイムアウトが無い以上、`ra/` を編集せずには回避できない）。
+変わるのは**被害の封じ込め**である。
+
+### そのほかに捨てた代替案
+
+- **単一所有タスクへの集約（`time_task` 新設）**: CLAUDE.md の既定形は「ブロックしうるデバイス操作を
+  所有タスクに集約する」だが、本件で必要なのは**資源の直列化**であってデバイス状態の reconcile ではない
+  （宣言すべき「あるべき状態」が無く、`time_ctrl_get()` は本質的に同期的な問い合わせ）。
+  タスク 1 本とイベントフラグ・要求バッファを足すコストに見合わず、
+  「要求されていない汎用性」に当たるため却下。
+  ハング封じ込めの観点でも、所有タスクがハングすれば要求元は結局待たされるので、
+  ミューテックスのタイムアウトと比べて優位性が無い
 - **RAM キャッシュ＋周期ハンドラで更新**: 読み出しが 0.1 ms と十分速く、キャッシュの鮮度管理が
   純増になるため却下。`tk_set_utc()` 同期があるので、将来キャッシュが要る利用者は `tk_get_utc()` を使える
 
@@ -133,7 +169,7 @@ RAM フラグではなく RCR2 を見るので、**リセットをまたいで�
 
 分単位の画面表示に **RTC 周期割り込みは要らない**。`lv_timer_create(cb, 1000, NULL)` で 1 秒ごとに
 `time_ctrl_get()` を呼び、**時分が変わったときだけ** `lv_label_set_text()` する形を想定する。
-`time_ctrl_get()` は最悪 0.1 ms（§1）なので 1 Hz なら CPU 0.01%・`tk_dis_dsp()` 区間も 33.3 ms 予算の
+`time_ctrl_get()` は最悪 0.1 ms（§1）なので 1 Hz なら CPU 0.01%・ロック保持区間も 33.3 ms 予算の
 0.3% で、KPI-01 に影響しない。LVGL 側は既に `lv_timer_handler()` ループが回っている
 （`lvgl_thread_entry.c:267-274`）ので追加機構は不要。
 **60 秒周期でポーリングしてはいけない**: `lv_timer` の位相は RTC の分境界と無関係なので、表示が
@@ -147,7 +183,8 @@ RTC 周期割り込み（`RTC_PERIODIC_IRQ_SELECT_1_MINUTE`, `r_rtc_api.h:132`�
 
 ```c
 typedef enum { TIME_CTRL_OK = 0, TIME_CTRL_ERR_NOT_INIT, TIME_CTRL_ERR_NOT_SET,
-               TIME_CTRL_ERR_INVALID_ARG, TIME_CTRL_ERR_HW } time_ctrl_err_t;
+               TIME_CTRL_ERR_INVALID_ARG, TIME_CTRL_ERR_HW,
+               TIME_CTRL_ERR_BUSY } time_ctrl_err_t;   /* BUSY = RTC ロック取得失敗 */
 
 typedef struct { uint16_t year; uint8_t mon; uint8_t mday;   /* 西暦 / 1-12 / 1-31 */
                  uint8_t hour; uint8_t min; uint8_t sec; uint8_t wday; } time_ctrl_time_t;

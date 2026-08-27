@@ -23,15 +23,23 @@
  *
  * - **ISR から呼んではならない。** 内部で RTC の carry 割り込みに依存する
  *   `R_RTC_CalendarTimeGet()` を呼ぶため（`ra/fsp/src/r_rtc/r_rtc.c:421-470`）。
- * - **割り込み禁止区間から呼んではならない。** carry ISR が走れないと桁上がりを検出できない。
- *   `tk_dis_dsp()`（タスクディスパッチ禁止のみ）は割り込みを止めないため問題ない。
- * - 書き手・読み手ともタスクのみ。本モジュール内部で `tk_dis_dsp()` / `tk_ena_dsp()` により
+ *   加えて内部でミューテックスをロックするので、そもそも ISR からは呼べない。
+ * - **割り込み禁止区間・ディスパッチ禁止区間から呼んではならない。**
+ *   carry ISR が走れないと桁上がりを検出できず、ミューテックス待ちにも入れない。
+ * - 書き手・読み手ともタスクのみ。本モジュール内部の資源所有ミューテックスで
  *   RTC アクセスを直列化するので、呼び出し側での排他は不要。
  *
- * ## 所要時間
+ * ## 所要時間とブロック
  *
- * `time_ctrl_get()` ≒ 0.1 ms / `time_ctrl_set()` ≒ 0.2 ms / `time_ctrl_init()` ≒ 0.5 ms（最悪）。
- * いずれもビジー待ちのみでタスクは待ち状態に入らない。
+ * サブクロックが正常に発振していれば
+ * `time_ctrl_get()` ≒ 0.1 ms / `time_ctrl_set()` ≒ 0.2 ms / `time_ctrl_init()` ≒ 0.5 ms。
+ *
+ * @warning サブクロックが発振していない場合、FSP の `FSP_HARDWARE_REGISTER_WAIT`
+ * （タイムアウト無し、`bsp_common.h:122`）により **RTC API から戻らなくなる**。
+ * 本モジュールはこれをミューテックスで囲うことで、被害を呼び出しタスク 1 本に閉じ込める
+ * （他タスクは `TIME_CTRL_ERR_BUSY` を受け取って動作を継続できる）。
+ * したがって呼び出し元は `TIME_CTRL_ERR_BUSY` を「一時的な失敗」として扱い、
+ * 自タスクの処理を止めないこと。
  */
 
 #ifndef TIME_CTRL_H
@@ -80,7 +88,8 @@ typedef enum {
     TIME_CTRL_ERR_NOT_INIT,        /**< `time_ctrl_init()` が未実行、または失敗している */
     TIME_CTRL_ERR_NOT_SET,         /**< 時刻が未設定（RTC が計時していない）。`time_ctrl_set()` が必要 */
     TIME_CTRL_ERR_INVALID_ARG,     /**< 引数が NULL、または日時として不正 */
-    TIME_CTRL_ERR_HW               /**< RTC アクセスに失敗、または読み出し値が日時として不正 */
+    TIME_CTRL_ERR_HW,              /**< RTC アクセスに失敗、または読み出し値が日時として不正 */
+    TIME_CTRL_ERR_BUSY             /**< RTC ロックを取得できなかった（他タスクが保持中／RTC がハング中） */
 } time_ctrl_err_t;
 
 /**
@@ -108,6 +117,7 @@ typedef struct {
     bool     running;           /**< RCR2.START==1（計時中＝時刻設定済み） */
     bool     did_provision;     /**< `time_ctrl_init()` が `R_RTC_ClockSourceSet()` を実行した */
     bool     subclock_stopped;  /**< SOSCCR.SOSTP==1（サブクロック発振停止） */
+    bool     lock_busy;         /**< RTC ロックを取得できずロック無しで採取した（他タスクが保持中） */
     uint8_t  rcr1;              /**< RTC 生値: RCR1 */
     uint8_t  rcr2;              /**< RTC 生値: RCR2 */
     uint8_t  rcr4;              /**< RTC 生値: RCR4 */
@@ -142,8 +152,9 @@ typedef struct {
  * @note `ntshell_task` から 1 回だけ呼ぶこと。2 回目以降は `TIME_CTRL_OK` を返して何もしない。
  *
  * @retval TIME_CTRL_OK        初期化に成功した（時刻が未設定でも OK を返す）
- * @retval TIME_CTRL_ERR_HW    `R_RTC_Open()` が失敗した。
- *                             **本ビルドでは到達しない**（`R_RTC_Open()` は常に `FSP_SUCCESS`）
+ * @retval TIME_CTRL_ERR_HW    `R_RTC_Open()` またはミューテックス生成が失敗した。
+ *                             （`R_RTC_Open()` の失敗経路は本ビルドでは到達しない）
+ * @retval TIME_CTRL_ERR_BUSY  RTC ロックを取得できなかった
  */
 time_ctrl_err_t time_ctrl_init(void);
 
@@ -158,6 +169,7 @@ time_ctrl_err_t time_ctrl_init(void);
  * @retval TIME_CTRL_ERR_NOT_SET     時刻が未設定（RTC が計時していない）
  * @retval TIME_CTRL_ERR_HW          読み出し値が日時として不正。
  *                                   （RTC アクセス失敗の経路は本ビルドでは到達しない）
+ * @retval TIME_CTRL_ERR_BUSY        RTC ロックを取得できなかった（他タスクが保持中／RTC がハング中）
  */
 time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time);
 
@@ -176,6 +188,7 @@ time_ctrl_err_t time_ctrl_get(time_ctrl_time_t *p_time);
  * @retval TIME_CTRL_ERR_INVALID_ARG `p_time` が NULL、または日時として不正（RTC は変化しない）
  * @retval TIME_CTRL_ERR_NOT_INIT    `time_ctrl_init()` が未実行／失敗（RTC は変化しない）
  * @retval TIME_CTRL_ERR_HW          RTC アクセスに失敗した。**本ビルドでは到達しない**
+ * @retval TIME_CTRL_ERR_BUSY        RTC ロックを取得できなかった（RTC は変化しない）
  */
 time_ctrl_err_t time_ctrl_set(const time_ctrl_time_t *p_time);
 
@@ -194,6 +207,11 @@ time_ctrl_err_t time_ctrl_parse(const char *p_date, const char *p_time_str, time
 
 /**
  * 内部状態と RTC 生値のスナップショットを取得する（`time status` 用）
+ *
+ * @details 本関数は**診断用なので必ず値を返す**。RTC ロックを取得できなかった場合でも
+ *          ロック無しでレジスタを読み、`lock_busy = true` を立てて返す。
+ *          RTC がハングしている状況こそ状態を見たいため、ここではロック失敗を
+ *          エラーにしない（レジスタ読みは 1 バイト単位で待ちを伴わない）。
  *
  * @param[out] p_status スナップショット格納先。NULL の場合は何もしない
  */
