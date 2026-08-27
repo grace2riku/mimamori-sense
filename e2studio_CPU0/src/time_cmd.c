@@ -162,14 +162,29 @@ static int time_cmd_status(void)
     snprintf(buf, sizeof(buf), " Initialized   : %s\r\n", st.initialized ? "yes" : "no");
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), " Provisioned   : %s%s\r\n",
-             st.provisioned ? "yes" : "no",
-             st.did_provision ? " (clock source set at this boot)" : "");
+    /* 「このブートでクロック源を設定したか」(did_provision) と
+     * 「RTC が構成済みと判定されたか」(provisioned = START==1 && HR24==1) は別の事実。
+     * 初回ブートで時刻を設定するまでは START==0 なので前者 true / 後者 false になり、
+     * 1 行にまとめると "no (clock source set at this boot)" と矛盾して見える。
+     * よって別々の行に分け、それぞれが単独で読めるようにする。 */
+    if (st.initialized) {
+        snprintf(buf, sizeof(buf), " Clock source  : %s\r\n",
+                 st.did_provision ? "SET AT THIS BOOT (timekeeping was reset)"
+                                  : "kept (already configured before this boot)");
+    } else {
+        /* R_RTC_Open() 失敗時。did_provision は false だが「維持した」わけではない。 */
+        snprintf(buf, sizeof(buf), " Clock source  : (unknown - init failed)\r\n");
+    }
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), " Time set      : %s%s\r\n",
-             st.running ? "yes (counting)" : "no",
-             st.running ? "" : "  -> run 'time set YYYY-MM-DD hh:mm:ss'");
+    snprintf(buf, sizeof(buf), " Provisioned   : %s\r\n",
+             st.provisioned ? "yes (next boot keeps timekeeping)"
+                            : "no  (next boot will set the clock source)");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), " Time set      : %s\r\n",
+             st.running ? "yes (counting)"
+                        : "no  -> run 'time set YYYY-MM-DD hh:mm:ss'");
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), " Sub-clock     : %s (SOSCCR.SOSTP=%u)\r\n",
