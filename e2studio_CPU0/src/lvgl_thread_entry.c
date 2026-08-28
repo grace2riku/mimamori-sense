@@ -23,7 +23,10 @@
  *      a. Status bar (40px) with status label, datetime, settings button
  *      b. Camera image area (1024x560) with RGB565 SDRAM buffer
  *      c. Color bar test pattern drawn as initial content
- *   6. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
+ *   6. camera_display_init() / fall_detection_screen_init() / ui_datetime_init()
+ *      - Register the periodic lv_timers (F-001-8, F-003-10, S-012-3).
+ *        See Steps 7 / 7b / 7c in the task body below.
+ *   7. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
  *
  * Dave2D-LVGL Integration (S-004-3):
  *   When LV_USE_DRAW_DAVE2D=1 (set in FSP lv_conf.h), lv_init() automatically:
@@ -65,6 +68,7 @@
  *   - Dave2D init: e2studio_CPU0/src/port/dave2d_port.c (dave2d_port_init)
  *   - Touch init: e2studio_CPU0/src/port/lv_port_indev.c (lv_port_indev_init)
  *   - Main screen: e2studio_CPU0/src/ui/ui_main_screen.c (ui_main_screen_create)
+ *   - Date/time label update: e2studio_CPU0/src/ui/ui_datetime.c (ui_datetime_init)
  *   - RM_LVGL_PORT: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c
  *   - LVGL Dave2D: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c
  *   - _dave2d_evaluate: e2studio_CPU0/ra/lvgl/lvgl/src/draw/renesas/dave2d/lv_draw_dave2d.c:238-367
@@ -81,6 +85,7 @@
 #include "port/dave2d_port.h"
 #include "port/lv_port_indev.h"
 #include "ui/ui_main_screen.h"
+#include "ui/ui_datetime.h"
 #include "ui/fall_detection_screen.h"
 #include "camera_display.h"
 
@@ -240,6 +245,24 @@ void lvgl_task(INT stacd, void *exinf)
             fall_detection_screen_init(screen);
         }
     }
+
+    /*
+     * Step 7c: Start the status bar date/time label update (S-012-3)
+     *
+     * Registers a 1-second lv_timer that reads the RTC via time_ctrl_get()
+     * and rewrites the status bar date/time label ("YYYY-MM-DD hh:mm") only
+     * when the minute changes. Until the clock is set with the NT-Shell
+     * "time set" command (S-012-2 / Issue #212), the label stays at "--:--".
+     *
+     * Depends on:
+     *   - ui_main_screen_create() (the date/time label must exist)
+     *   - time_ctrl_init(), which runs in ntshell_task. It may not have
+     *     executed yet; time_ctrl_get() then returns TIME_CTRL_ERR_NOT_INIT
+     *     and the callback simply leaves "--:--" on screen.
+     *
+     * Reference: e2studio_CPU0/src/ui/ui_datetime.c
+     */
+    ui_datetime_init();
 
     /*
      * Step 8: LVGL main loop
