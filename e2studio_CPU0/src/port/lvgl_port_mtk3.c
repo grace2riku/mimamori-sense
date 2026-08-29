@@ -36,6 +36,7 @@
 #include "lvgl_port_mtk3.h"
 
 #include "common_data.h"            /* g_lvgl_port_cfg (read-only) / display instance */
+#include "glcdc_port.h"             /* glcdc_port_notify_flush (Issue #218) */
 #include "rm_lvgl_port_cfg.h"       /* RM_LVGL_PORT_CFG_PROVIDE_TICK_CALLBACK + LVGL_DISPLAY_* via common_data.h */
 #include "r_glcdc.h"
 
@@ -248,6 +249,25 @@ static void lvgl_port_mtk3_display_callback(display_callback_args_t *p_args)
  * (retrying while the GLCDC reports FSP_ERR_INVALID_UPDATE_TIMING).
  * This callback contains no OS dependency; it is duplicated here only
  * because the module is bypassed as a whole.
+ *
+ * Issue #218: the retry loop only retries FSP_ERR_INVALID_UPDATE_TIMING and
+ * the original discards every other return value, so a persistent
+ * BufferChange failure would freeze the picture with nothing reported. The
+ * outcome is now handed to glcdc_port_notify_flush(), which also gives the
+ * "display dbuf" command a flush counter that is independent of the Vsync
+ * interrupt. The call is a few volatile stores and never blocks, so it does
+ * not change the timing of the flush path.
+ *
+ * Issue #218 also routes the "display blank" diagnostic through here. The
+ * shell only declares the desired state; this callback reconciles it on the
+ * next frame by passing NULL instead of the rendered buffer. Doing it here
+ * matters: the driver writes AB1, FLMRD, FLM2 and VEN in sequence
+ * (r_glcdc.c:677-685), and a caller running concurrently with this one could
+ * interleave with that and latch a visible layer pointing at address 0. This
+ * callback is the only R_GLCDC_BufferChange() call site that runs at steady
+ * state - lvgl_port_mtk3_open() above calls it once during initialisation,
+ * before the display exists and before "display blank" will accept a request.
+ * See doc/design/issue-218.md section 8.
  */
 static void lvgl_port_mtk3_flush_cb(lv_display_t *p_lv_display, const lv_area_t *p_lv_area,
                                     uint8_t *p_px_map)
@@ -260,11 +280,17 @@ static void lvgl_port_mtk3_flush_cb(lv_display_t *p_lv_display, const lv_area_t 
         SCB_CleanInvalidateDCache_by_Addr(p_px_map,
                                           (LVGL_DISPLAY_BUFFER_STRIDE_BYTES_INPUT * LVGL_DISPLAY_VSIZE_INPUT));
 #endif
+        /* Issue #218: NULL hides the graphics plane ("display blank on"). */
+        uint8_t *p_target = glcdc_port_blank_requested() ? NULL : p_px_map;
+
         do {
             error = R_GLCDC_BufferChange(s_p_cfg->p_display_instance->p_ctrl,
-                                         p_px_map,
+                                         p_target,
                                          s_p_cfg->inherit_frame_layer);
         } while (FSP_ERR_INVALID_UPDATE_TIMING == error);
+
+        /* Issue #218: record the flush and any error the loop did not retry. */
+        glcdc_port_notify_flush(p_target, (int32_t)error);
     }
     else {
         /* Not the last area: nothing to do (same as original) */

@@ -144,7 +144,7 @@ static const cmd_table_t cmdlist[] = {
     NTSHELL_CMD("audio",   "Audio out: audio status|init|start|stop|tone|volume|mute|reg", usrcmd_audio),
     NTSHELL_CMD("camera",  "Camera: camera thread|phy|csi|sensor|status|start|stop|capture|info|fb|display|test", usrcmd_camera),
     NTSHELL_CMD("dave2d",  "Dave2D GPU: dave2d status|integration|test|bench", usrcmd_dave2d),
-    NTSHELL_CMD("display", "GLCDC display: display status|fb|dbuf|test|backlight", usrcmd_display),
+    NTSHELL_CMD("display", "GLCDC display: status|fb|dbuf|reg|fbstat|blank|pins|signals|test|backlight", usrcmd_display),
     NTSHELL_CMD("fall",    "Fall detection: fall status|count|threshold|set|reset|log|display", usrcmd_fall),
     NTSHELL_CMD("help",    "Show available commands",                   usrcmd_help),
     NTSHELL_CMD("info",    "Show system information (info sys|ver)",    usrcmd_info),
