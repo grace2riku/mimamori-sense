@@ -62,6 +62,12 @@ CLAUDE.md「並行性の既定形」が要求する publish/sample のクリテ�
    `BG`: `EN` / `BGC` / `MON`、`OUT`: `VLATCH` / `SET` / `BRIGHT1` / `BRIGHT2` / `CONTRAST` / `CLKPHASE`、
    `SYSCNT`: `INTEN` / `STMON`。`FLM2` が `fb_background[0]`/`[1]` のどちらと一致するか（あるいは
    どちらでもないか）を判定して出力する。
+3.1. **Issue #219 への対応** — `display fb` の注記は `s_last_flush_addr` を
+   **1回だけサンプルして両行に使う**。行の間に `print_to_console()`（ミリ秒オーダー）が
+   入るうえ、この値は 20 fps で fb0/fb1 を行き来するため、行ごとに読むと
+   両方に注記が付く／どちらにも付かない ―― #219 が旧 `s_front_buffer_index` に対して
+   報告しているのと同じ欠陥になる。
+
 4. **`display fbstat`** — `fb_background[0]` と `[1]` の内容を 16 画素 × 8 ラインおきに
    サンプリング（4,800 点/面）し、`0xFFFF`（白）/ `0x0000`（黒）/ その他の画素数と、
    代表4点（ステータスバー左、ステータスバー右端＝時刻表示位置、カメラ中央、レターボックス余白）の

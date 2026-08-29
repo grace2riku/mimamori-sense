@@ -499,16 +499,27 @@ static void glcdc_cmd_fb(void)
      * buffer the GLCDC was really reading. The displayed buffer is a hardware
      * register; "display reg" reads it back. Here we only report which buffer
      * LVGL last handed to R_GLCDC_BufferChange().
+     *
+     * Issue #219: sample it ONCE. The two lines below are separated by a
+     * print_to_console() call that takes milliseconds, and s_last_flush_addr
+     * alternates between the two buffers every ~50 ms at the 20 fps this
+     * project renders. Reading the variable per line would let both lines
+     * claim the flush, or neither - which is the exact defect Issue #219
+     * reports against the old s_front_buffer_index.
      */
-    snprintf(buf, sizeof(buf), "  FB[0]       : 0x%08lX%s\r\n",
-             (unsigned long)fb.fb0_addr,
-             (s_last_flush_addr == fb.fb0_addr) ? " (last flushed by LVGL)" : "");
-    print_to_console(buf);
+    {
+        const uint32_t last_flush = s_last_flush_addr;
 
-    snprintf(buf, sizeof(buf), "  FB[1]       : 0x%08lX%s\r\n",
-             (unsigned long)fb.fb1_addr,
-             (s_last_flush_addr == fb.fb1_addr) ? " (last flushed by LVGL)" : "");
-    print_to_console(buf);
+        snprintf(buf, sizeof(buf), "  FB[0]       : 0x%08lX%s\r\n",
+                 (unsigned long)fb.fb0_addr,
+                 (last_flush == fb.fb0_addr) ? " (last flushed by LVGL)" : "");
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  FB[1]       : 0x%08lX%s\r\n",
+                 (unsigned long)fb.fb1_addr,
+                 (last_flush == fb.fb1_addr) ? " (last flushed by LVGL)" : "");
+        print_to_console(buf);
+    }
 
     print_to_console("  (displayed buffer: see 'display reg' GR0.FLM2)\r\n");
 
