@@ -249,18 +249,26 @@ void lvgl_task(INT stacd, void *exinf)
     /*
      * Step 7c: Start the status bar date/time label update (S-012-3)
      *
-     * Registers a 1-second lv_timer that reads the RTC via time_ctrl_get()
-     * and rewrites the status bar date/time label ("YYYY-MM-DD hh:mm") only
-     * when the minute changes. Until the clock is set with the NT-Shell
-     * "time set" command (S-012-2 / Issue #212), the label stays at "--:--".
+     * Starts the time_cache polling task (1 Hz) and registers a 1-second
+     * lv_timer that rewrites the status bar date/time label
+     * ("YYYY-MM-DD hh:mm") only when the minute changes. Until the clock is
+     * set with the NT-Shell "time set" command (S-012-2 / Issue #212), the
+     * label stays at "--:--".
+     *
+     * The RTC is NOT read from the lv_timer callback. R_RTC_CalendarTimeGet()
+     * waits on RCR1 with an unbounded FSP_HARDWARE_REGISTER_WAIT, so a stopped
+     * subclock would hang the callback while it holds lv_lock() and freeze all
+     * rendering. The blocking read is confined to the time_cache task instead;
+     * the callback only samples a published snapshot. See src/time_cache.h.
      *
      * Depends on:
      *   - ui_main_screen_create() (the date/time label must exist)
      *   - time_ctrl_init(), which runs in ntshell_task. It may not have
-     *     executed yet; time_ctrl_get() then returns TIME_CTRL_ERR_NOT_INIT
-     *     and the callback simply leaves "--:--" on screen.
+     *     executed yet; the cache then stays invalid and the callback simply
+     *     leaves "--:--" on screen.
      *
      * Reference: e2studio_CPU0/src/ui/ui_datetime.c
+     * Reference: e2studio_CPU0/src/time_cache.c
      */
     ui_datetime_init();
 
