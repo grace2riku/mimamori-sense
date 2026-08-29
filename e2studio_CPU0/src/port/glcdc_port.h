@@ -491,7 +491,9 @@ bool glcdc_port_blank_requested(void);
  * before the Vsync wait.
  *
  * A NULL p_framebuffer is how the callback reports that it honoured a
- * "display blank" request, which is what acknowledges it to the shell.
+ * "display blank" request, which is what acknowledges it to the shell. The
+ * acknowledgement is conditional on err == FSP_SUCCESS: a BufferChange that
+ * failed never reached the registers, so it must not be reported as applied.
  *
  * @param p_framebuffer Buffer address passed to R_GLCDC_BufferChange()
  *                      (NULL while the diagnostic blank is applied)

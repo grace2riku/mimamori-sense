@@ -268,7 +268,39 @@ glcdc_port_notify_flush(p_target, (int32_t)error);
   タイムアウト時は「LVGL が flush していない」と明示する（これ自体が有用な情報）。
 - `on` のままだと画面が黒いままになるので、出力に `off` で戻す旨を明記する。
 
-### 8.6 捨てた代替案
+### 8.6 レビュー指摘への対応（PR #220 P2 / 2026-08-29）
+
+> `R_GLCDC_BufferChange()` がリトライ対象外のエラーを返した場合でも、
+> `s_blank_applied` を `p_framebuffer` だけから更新しているため、
+> `display blank` が「適用済み」と誤報する。
+
+**妥当な指摘。修正した。** `glcdc_port_notify_flush()` は
+**`err == FSP_SUCCESS` のときだけ** `s_blank_applied` を更新する。
+
+ただし到達可能性は正確に記録しておく: **現構成では起きない**。
+`GLCDC_CFG_PARAM_CHECKING_ENABLE` は `BSP_CFG_PARAM_CHECKING_ENABLE`
+（`ra_cfg/fsp_cfg/bsp/bsp_cfg.h:33` で **0**）に従うので、
+`R_GLCDC_BufferChange()` が返しうる非成功値は
+`FSP_ERR_INVALID_UPDATE_TIMING` だけであり（`r_glcdc.c:650-660`）、
+これは `flush_cb` のリトライループが消費する。
+指摘が挙げた `FSP_ERR_INVALID_MODE` はパラメータチェック有効時のみ返る。
+それでも直す理由は、**パラメータチェックを有効にするのは、まさにこの診断を使って
+デバッグしている場面だから**。
+
+**ナイーブに直すと別の誤報が出る点にも対処した。** `s_blank_applied` を成功時のみ
+更新するだけだと、失敗時にコマンドはタイムアウトし
+「LVGL has not flushed」と表示してしまう ―― LVGL は flush しており、
+失敗したのは BufferChange なので、これは事実に反する。
+待機前に `s_bufchange_err_count` をサンプルしておき、タイムアウト時に
+2つの原因を区別して報告する:
+
+| 状況 | 出力 | 戻り値 |
+|---|---|---|
+| 適用された | `applied by LVGL after N ms` | `CMD_OK` |
+| BufferChange が失敗した | `NOT applied: R_GLCDC_BufferChange() failed (err)` | `CMD_ERR_EXECUTE` |
+| LVGL が flush していない | `LVGL has not flushed within 500 ms` | `CMD_OK`（宣言は成立） |
+
+### 8.7 捨てた代替案
 
 - **`mw` で `AB1` を直接叩く** — `flush_cb` が 50 ms で `DISPSEL=3` に戻す。加えて 8.3 の
   レジスタ書き込み競合をそのまま踏む。

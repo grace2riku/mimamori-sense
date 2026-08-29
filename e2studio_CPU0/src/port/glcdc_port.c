@@ -1216,6 +1216,9 @@ static int glcdc_cmd_blank(int argc, char **argv)
      */
     {
         uint32_t waited_ms = 0;
+        /* Sampled so a timeout can tell "LVGL never flushed" from "the flush
+         * happened but R_GLCDC_BufferChange() rejected it". */
+        const uint32_t err_before = s_bufchange_err_count;
 
         while ((s_blank_applied != want) && (waited_ms < GLCDC_BLANK_APPLY_TIMEOUT_MS)) {
             tk_dly_tsk(GLCDC_BLANK_POLL_MS);
@@ -1227,6 +1230,14 @@ static int glcdc_cmd_blank(int argc, char **argv)
                      (want != 0u) ? "ON" : "OFF",
                      (unsigned long)waited_ms);
             print_to_console(buf);
+        } else if (s_bufchange_err_count != err_before) {
+            snprintf(buf, sizeof(buf),
+                     "  Blank %s NOT applied: R_GLCDC_BufferChange() failed (%ld).\r\n",
+                     (want != 0u) ? "ON" : "OFF",
+                     (long)s_bufchange_last_err);
+            print_to_console(buf);
+            print_to_console("  LVGL flushed, but the GLCDC registers were not updated.\r\n");
+            return CMD_ERR_EXECUTE;
         } else {
             snprintf(buf, sizeof(buf),
                      "  Blank %s requested, but LVGL has not flushed within %u ms.\r\n",
@@ -2208,16 +2219,29 @@ void glcdc_port_notify_flush(const void *p_framebuffer, int32_t err)
     s_last_flush_addr = (uint32_t)(uintptr_t)p_framebuffer;
     s_flush_count++;
 
-    /*
-     * Issue #218: a NULL buffer means the flush callback honoured the
-     * diagnostic blank request. Acknowledging it here (rather than in the
-     * callback) keeps the whole reconcile visible in one place.
-     */
-    s_blank_applied = (NULL == p_framebuffer) ? 1u : 0u;
-
     if (err != (int32_t)FSP_SUCCESS) {
         s_bufchange_last_err = err;
         s_bufchange_err_count++;
+    } else {
+        /*
+         * Issue #218: a NULL buffer means the flush callback honoured the
+         * diagnostic blank request. Acknowledging it here (rather than in the
+         * callback) keeps the whole reconcile visible in one place.
+         *
+         * Only a successful R_GLCDC_BufferChange() reached the registers, so
+         * only that may acknowledge the request - otherwise "display blank"
+         * would report a state the hardware never entered, during the very
+         * investigation the command exists for (PR #220 review, P2).
+         *
+         * As configured this cannot currently happen: with
+         * GLCDC_CFG_PARAM_CHECKING_ENABLE = 0 (it follows
+         * BSP_CFG_PARAM_CHECKING_ENABLE, ra_cfg/fsp_cfg/bsp/bsp_cfg.h:33) the
+         * only error R_GLCDC_BufferChange() can return is
+         * FSP_ERR_INVALID_UPDATE_TIMING (r_glcdc.c:650-660), which the flush
+         * callback retries. The guard is here because turning parameter
+         * checking on is exactly what someone debugging this would do.
+         */
+        s_blank_applied = (NULL == p_framebuffer) ? 1u : 0u;
     }
 }
 
