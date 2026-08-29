@@ -1421,18 +1421,34 @@ static const struct {
  * display. DISP_BLEN low does not: it is the state both after "display
  * backlight off" and before the first flush, so it is reported as information
  * rather than as a fault.
+ *
+ * PR #224 review: a low level also means different things before and after
+ * glcdc_port_init() has run, so each pin carries two notes. usermain.c starts
+ * ntshell_task (priority 12) before it even creates lvgl_task (priority 14),
+ * which is what calls glcdc_port_init(), so "display pins" can genuinely run
+ * while both pins are still at their pin_data.c reset level.
+ *
+ * The early note re-attributes the cause; it does not clear "low_is_fault".
+ * A DISP_RESET still low because lvgl_task never reached glcdc_port_init()
+ * (failed to start, hung, crashed) is exactly why the panel would be blank,
+ * and that is worth reporting - naming the reason is more useful than
+ * suppressing the verdict, which would recreate the Issue #222 blind spot in
+ * a new place.
  */
 static const struct {
     uint16_t    pin;
     const char *name;
     const char *role;
     bool        low_is_fault;
-    const char *low_note;
+    const char *low_note;       /* PODR=0 once glcdc_port_init() has run */
+    const char *low_note_early;  /* PODR=0 before it has run */
 } g_glcdc_gpio_pins[GLCDC_GPIO_PIN_COUNT] = {
     { (uint16_t)GLCDC_PIN_RESET,     "DISP_RESET", "panel + touch reset", true,
-      "<<< RESET ASSERTED (panel and touch held in reset)" },
+      "<<< RESET ASSERTED (panel and touch held in reset)",
+      "<<< RESET NOT RELEASED (display init has not run yet)" },
     { (uint16_t)GLCDC_PIN_BACKLIGHT, "DISP_BLEN",  "backlight enable",    false,
-      "-- backlight off (normal after 'display backlight off')" },
+      "-- backlight off (normal after 'display backlight off')",
+      "-- backlight off (raised after the first LVGL flush)" },
 };
 
 static void glcdc_cmd_pins(void)
@@ -1490,18 +1506,35 @@ static void glcdc_cmd_pins(void)
  *          a static push-pull output it must equal PODR, so any disagreement
  *          means something off-chip is fighting the driver.
  *
+ *          A low level is judged against s_glcdc_status, because both pins
+ *          power up low and are only raised during display bring-up. See the
+ *          note on g_glcdc_gpio_pins for why that re-words the verdict instead
+ *          of suppressing it.
+ *
  * Execution context: ntshell_task, via glcdc_cmd_pins(). Reads only - PmnPFS
  * reads need no PWPR unlock (see R_BSP_PinRead(), bsp_io.h:347-351), and
  * nothing here writes a pin register, so this cannot disturb a running panel.
- * Does not block.
+ * Does not block. s_glcdc_status is written only by lvgl_task and read here
+ * the same way the other "display" sub-commands already read it (:747, :1210,
+ * :1635, :1757); a stale read can only mis-word one line of diagnostics.
  */
 static void glcdc_pins_report_gpio(void)
 {
     char buf[GLCDC_PRINT_BUF_SIZE];
     uint32_t fault_count = 0;
 
+    /* Both pins power up low (ra_gen/pin_data.c) and are raised during display
+     * bring-up, so a low level only means "wrong" once that has run. Sampled
+     * once here rather than per pin so both lines describe the same instant. */
+    const bool early = (GLCDC_STATUS_NOT_INITIALIZED == s_glcdc_status);
+
     print_to_console("[LCD GPIO Control Pins (PmnPFS) Readback]\r\n");
     print_to_console("  Not GLCDC pins. Expect PSEL=0x00, PMR=0, PDR=1, PODR=PIDR.\r\n");
+
+    snprintf(buf, sizeof(buf), "  Display init: %s\r\n",
+             early ? "NOT RUN YET - a low level here is the power-on state" :
+             ((GLCDC_STATUS_ERROR == s_glcdc_status) ? "FAILED" : "done"));
+    print_to_console(buf);
 
     for (uint32_t i = 0; i < GLCDC_GPIO_PIN_COUNT; i++) {
         const uint32_t pin  = g_glcdc_gpio_pins[i].pin;
@@ -1527,9 +1560,10 @@ static void glcdc_pins_report_gpio(void)
         } else if (!podr && pidr) {
             verdict = "<<< DRIVEN LOW BUT PAD IS HIGH (driven off-chip)";
         } else if (!podr) {
-            /* Software really is holding the line low. Whether that breaks the
-             * display depends on which line it is. */
-            verdict = g_glcdc_gpio_pins[i].low_note;
+            /* Software really is holding the line low. What that means depends
+             * on which line it is and on whether display bring-up has run. */
+            verdict = early ? g_glcdc_gpio_pins[i].low_note_early
+                            : g_glcdc_gpio_pins[i].low_note;
             fault   = g_glcdc_gpio_pins[i].low_is_fault;
         } else {
             fault = false;
