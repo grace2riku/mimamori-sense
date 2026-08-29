@@ -190,3 +190,24 @@ P514 も同様に `-- backlight off (raised after the first LVGL flush)` を初�
 `.flash.endof` は **`0x020C8800` のまま（`main` から +1,024 B）**。セクション終端がアラインされる
 ため、今回の +256 B は同じ粒度に吸収された。細かい差分が要るときは `text` を併記する
 （`text` はセクション間の埋めを含まないので絶対値は `.flash.endof` とずれる）。
+
+### 実機確認（2026-08-29、レビュー対応後）
+
+```
+[LCD GPIO Control Pins (PmnPFS) Readback]
+  Not GLCDC pins. Expect PSEL=0x00, PMR=0, PDR=1, PODR=PIDR.
+  Display init: done
+  DISP_RESET P606 0x00000407 PODR=1 PIDR=1 PDR=1 PMR=0 PSEL=0x00
+    panel + touch reset
+  DISP_BLEN  P514 0x00000407 PODR=1 PIDR=1 PDR=1 PMR=0 PSEL=0x00
+    backlight enable
+  2 / 2 GPIO control pins healthy.
+```
+
+§7 との差分は `Display init: done` の 1 行のみで、判定結果・サマリは変わらない（意図どおり）。
+30 本セクションも `30 / 30` のまま。
+
+初期化前の経路（`RESET NOT RELEASED` / `raised after the first LVGL flush`）は、窓が
+数十 ms しかないため通常操作では再現できず、**実機未確認**。到達可能性はコードで確認済み
+（`usermain.c` のタスク起動順と優先度、`glcdc_port.c:1911` の解放位置）。
+将来 `lvgl_task` が起動に失敗した場合に自然に踏むことになる。
