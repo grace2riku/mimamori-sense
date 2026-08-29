@@ -83,7 +83,6 @@
 #include <stdbool.h>
 #include "rm_lvgl_port.h"
 #include "common_data.h"
-#include "diag_config.h"
 
 /**********************************************************************************************************************
  Macro definitions
@@ -218,22 +217,31 @@ typedef struct {
 } glcdc_fb_info_t;
 
 /**
- * Double-buffering status information structure (S-002-3)
+ * Double-buffering status information structure (S-002-3, revised by Issue #218)
  *
  * Tracks the state of the Vsync-synchronized double-buffering mechanism.
- * The buffer swap is managed cooperatively by RM_LVGL_PORT and this port layer:
- *   - RM_LVGL_PORT handles the actual R_GLCDC_BufferChange() and semaphore wait
- *   - This port layer tracks swap count, timing, and buffer indices
+ * The buffer swap is managed cooperatively by the display port and this layer:
+ *   - lvgl_port_mtk3_flush_cb() performs the actual R_GLCDC_BufferChange()
+ *     and reports the result through glcdc_port_notify_flush()
+ *   - This port layer counts flushes, tracks the last requested buffer
+ *     address, and counts BufferChange failures
  *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
+ * Issue #218: the previous version derived swap_count and front_buffer_index
+ * from the Vsync interrupt alone. Both were incremented/toggled on EVERY
+ * Vsync regardless of whether LVGL had flushed anything, so "Swap Count" was
+ * an alias of "Vsync Count" and "front buffer" was a free-running toggle
+ * rather than the buffer the GLCDC actually reads. Neither could show that
+ * LVGL had stopped flushing. They are replaced by the flush_* fields below,
+ * which are written by the LVGL task from the flush callback.
+ *
+ * Reference: e2studio_CPU0/src/port/lvgl_port_mtk3.c (lvgl_port_mtk3_flush_cb)
  */
 typedef struct {
-    uint32_t swap_count;            /**< Number of buffer swaps completed (Vsync-synchronized) */
+    uint32_t flush_count;           /**< Number of completed LVGL flushes (buffer changes requested) */
     uint32_t vsync_count;           /**< Total Vsync interrupt count since initialization */
-    uint32_t front_buffer_index;    /**< Currently displayed buffer index (0 or 1) */
-    uint32_t back_buffer_index;     /**< Current render target buffer index (0 or 1) */
-    uint32_t front_buffer_addr;     /**< Address of the currently displayed buffer */
-    uint32_t back_buffer_addr;      /**< Address of the current render target buffer */
+    uint32_t last_flush_addr;       /**< Buffer address passed to the last R_GLCDC_BufferChange() (0 = none yet) */
+    uint32_t bufchange_err_count;   /**< Number of R_GLCDC_BufferChange() calls that returned an error */
+    int32_t  bufchange_last_err;    /**< fsp_err_t returned by the last failing R_GLCDC_BufferChange() */
     uint32_t underflow_count;       /**< Number of GLCDC underflow errors detected */
     bool     double_buffer_enabled; /**< true if double buffering is active (2 framebuffers) */
 } glcdc_dbuf_status_t;
@@ -297,11 +305,14 @@ bool glcdc_port_is_available(void);
 uint32_t glcdc_port_get_vsync_count(void);
 
 /*
- * Issue #183: the test pattern generators (S-002-4) are bring-up-only and are
- * excluded from the default build together with the "display test" command.
- * See src/diag_config.h.
+ * Issue #183 / #218: the test pattern generators (S-002-4) used to be excluded
+ * from the default build together with the "display test" command. Issue #218
+ * needs "display test colorbar" to write the GLCDC framebuffer WITHOUT going
+ * through LVGL, which is the only way to tell a broken GLCDC/panel output path
+ * apart from LVGL rendering white. Measured cost of building them in: 3,072
+ * bytes of internal flash (.flash.endof 0x020C5400 -> 0x020C6000), so they are
+ * now always built. See src/diag_config.h.
  */
-#if MIMAMORI_VERBOSE_DIAG
 
 /**
  * Draw a color bar test pattern to a frame buffer
@@ -353,8 +364,6 @@ void glcdc_port_draw_checker(uint8_t *p_fb, uint32_t block_size);
  */
 void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565);
 
-#endif /* MIMAMORI_VERBOSE_DIAG */
-
 /**
  * Control the LCD backlight
  *
@@ -387,22 +396,23 @@ void glcdc_port_get_timing_info(glcdc_timing_info_t *info);
 void glcdc_port_get_fb_info(glcdc_fb_info_t *info);
 
 /**
- * Get double-buffering status information (S-002-3)
+ * Get double-buffering status information (S-002-3, revised by Issue #218)
  *
- * @details Fills the double-buffering status structure with current state
- *          including buffer swap count, front/back buffer indices and addresses,
- *          underflow error count, and double-buffering enabled flag.
+ * @details Fills the double-buffering status structure with the current
+ *          state: LVGL flush count, Vsync count, the buffer address passed to
+ *          the last R_GLCDC_BufferChange(), the BufferChange failure count and
+ *          last error, the underflow count, and the double-buffering flag.
  *
- *          Buffer index convention:
- *            - front_buffer_index: The buffer currently being displayed by GLCDC
- *            - back_buffer_index:  The buffer LVGL is currently rendering to
- *            - These alternate (0->1->0->1...) on each Vsync-synchronized swap
+ *          flush_count vs vsync_count: flush_count only advances when LVGL
+ *          actually finished a frame and requested a buffer change, so a
+ *          stalled flush_count with a still-advancing vsync_count means LVGL
+ *          stopped rendering while the GLCDC keeps scanning out (Issue #218).
  *
- *          The swap is performed by RM_LVGL_PORT via R_GLCDC_BufferChange()
- *          in the flush callback, and the swap timing is synchronized to the
- *          Vsync interrupt via a FreeRTOS semaphore.
+ *          The buffer the GLCDC really reads is NOT tracked here - it is a
+ *          hardware register (R_GLCDC->GR[0].FLM2) and is reported by the
+ *          "display reg" sub-command.
  *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
+ * Reference: e2studio_CPU0/src/port/lvgl_port_mtk3.c (lvgl_port_mtk3_flush_cb)
  *
  * @param status Pointer to glcdc_dbuf_status_t structure to fill
  */
@@ -421,15 +431,73 @@ void glcdc_port_get_dbuf_status(glcdc_dbuf_status_t *status);
 uint32_t glcdc_port_get_underflow_count(void);
 
 /**
- * Get the buffer swap count (S-002-3)
+ * Get the LVGL flush count (S-002-3, revised by Issue #218)
  *
- * @details Returns the number of Vsync-synchronized buffer swaps completed
- *          since initialization. This count increments each time the GLCDC
- *          switches to a newly rendered framebuffer at a Vsync boundary.
+ * @details Returns the number of completed LVGL flushes since initialization.
+ *          One flush = one call of the LVGL flush callback for the last area
+ *          of a frame, i.e. one R_GLCDC_BufferChange() request.
  *
- * @return Number of buffer swaps completed
+ * @return Number of LVGL flushes completed
  */
-uint32_t glcdc_port_get_swap_count(void);
+uint32_t glcdc_port_get_flush_count(void);
+
+/**
+ * Query the diagnostic blank request (Issue #218)
+ *
+ * @details Returns true while "display blank on" is in effect. The LVGL flush
+ *          callback reads this once per rendered frame and, when set, hands
+ *          NULL to R_GLCDC_BufferChange() instead of the rendered buffer. The
+ *          FSP driver then makes the graphics plane transparent and disables
+ *          its frame buffer read (AB1.DISPSEL = 1, FLMRD = 0;
+ *          ra/fsp/src/r_glcdc/r_glcdc.c:666-685), so the panel shows the
+ *          background plane colour BG.BGC with no SDRAM access at all.
+ *
+ *          This is a declaration/reconcile pair rather than a direct register
+ *          write: R_GLCDC_BufferChange() must have no caller that can run
+ *          concurrently with the flush callback, or its four register writes
+ *          can interleave and latch "layer visible + FLM2 = 0". See CLAUDE.md,
+ *          and doc/design/issue-218.md section 8.
+ *
+ *          Side effect (measured): FLMRD = 0 starves the layer-1 FIFO while
+ *          the plane pipeline keeps running, so layer 1 underflows every
+ *          frame while the blank is on. GR0.MON.UNDFLST latches and
+ *          glcdc_underflow_1_isr() fires, advancing the underflow counter
+ *          reported by "display dbuf". Neither indicates a real fault; the
+ *          command says so in its output.
+ *
+ * Execution context: called from the LVGL task (flush callback). Never
+ * blocks - it is a single volatile read.
+ *
+ * @retval true   The graphics plane should be hidden (diagnostic blank on)
+ * @retval false  Normal operation
+ */
+bool glcdc_port_blank_requested(void);
+
+/**
+ * Report the result of one LVGL flush to the port layer (Issue #218)
+ *
+ * @details Called by lvgl_port_mtk3_flush_cb() immediately after its
+ *          R_GLCDC_BufferChange() retry loop returns. Records the flush,
+ *          the buffer address that was requested, and any error the FSP
+ *          driver returned (which the flush callback itself discards).
+ *
+ * Execution context: LVGL task only. The flush callback is reached through
+ * lv_timer_handler() -> lv_display_refr_timer() -> draw_buf_flush()
+ * (ra/lvgl/lvgl/src/core/lv_refr.c:1348,1373,1409); there is no ISR path.
+ * The updated variables are plain aligned 32-bit volatile stores from that
+ * single writer, read by ntshell_task, so no critical section is needed.
+ *
+ * This function must not block: it runs on every rendered frame, immediately
+ * before the Vsync wait.
+ *
+ * A NULL p_framebuffer is how the callback reports that it honoured a
+ * "display blank" request, which is what acknowledges it to the shell.
+ *
+ * @param p_framebuffer Buffer address passed to R_GLCDC_BufferChange()
+ *                      (NULL while the diagnostic blank is applied)
+ * @param err           Value returned by R_GLCDC_BufferChange() (fsp_err_t)
+ */
+void glcdc_port_notify_flush(const void *p_framebuffer, int32_t err);
 
 /**
  * LVGL GLCDC callback function
@@ -453,6 +521,8 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg);
  *            display status    - Show GLCDC timing parameters and configuration
  *            display fb        - Show frame buffer addresses and sizes
  *            display dbuf      - Show double-buffering status (S-002-3)
+ *            display reg       - Read back GLCDC hardware registers (#218)
+ *            display fbstat    - Sample the framebuffer contents (#218)
  *            display test      - Draw test patterns on the LCD (S-002-4)
  *            display backlight - Control LCD backlight on/off (S-002-4)
  *

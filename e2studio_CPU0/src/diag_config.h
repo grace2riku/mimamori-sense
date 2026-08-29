@@ -33,8 +33,15 @@
  *   - `camera test`     : capture/FPS/stream integration test suite
  *   - `dave2d test`     : GPU drawing self-tests
  *   - `dave2d bench`    : GPU vs CPU benchmark suite
- *   - `display test`    : GLCDC test pattern generator
  *   - `sdram test`      : SDRAM data/address bus and pattern tests
+ *
+ * Issue #218 moved `display test` (GLCDC test pattern generator) back into
+ * the default build. It writes known pixels straight into the GLCDC
+ * framebuffer without going through LVGL, which is the only way to tell a
+ * broken GLCDC/panel output path apart from LVGL rendering the wrong thing -
+ * the exact question raised by the intermittent all-white screen. Measured
+ * cost: 3,072 bytes of internal flash (`.flash.endof` 0x020C5400 ->
+ * 0x020C6000, i.e. 807,936 -> 811,008 of the 1,015,808 byte budget).
  *
  * A command excluded from the build still parses and responds; it reports
  * that the verbose build is required (see cmd_print_diag_disabled()), so the

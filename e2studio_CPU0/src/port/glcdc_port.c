@@ -85,7 +85,6 @@
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
-#include "diag_config.h"
 #include "r_ioport.h"
 #include "rm_lvgl_port.h"      /* types only (rm_lvgl_port_cfg_t / callback args) */
 #include "lvgl_port_mtk3.h"    /* R-006: uT-Kernel display port (replaces RM_LVGL_PORT_Open) */
@@ -125,6 +124,58 @@
 /** Checkerboard block size: 1-pixel blocks for pixel-level accuracy test */
 #define GLCDC_CHECKER_BLOCK_SIZE_PIXEL  (1)
 
+/**
+ * Framebuffer census sampling grid ("display fbstat", Issue #218)
+ *
+ * 1024/16 x 600/8 = 64 x 75 = 4,800 samples per buffer. Dense enough that a
+ * uniformly white screen and a screen with any real content are never
+ * confused, cheap enough to finish in a few milliseconds on the shared
+ * SDRAM bus.
+ */
+#define GLCDC_FBSTAT_X_STEP     (16)
+#define GLCDC_FBSTAT_Y_STEP     (8)
+
+/**
+ * "display blank" reconcile wait (Issue #218)
+ *
+ * The blank request is applied by the LVGL task on its next flush, so the
+ * shell polls for the acknowledgement. At the 20 fps this project renders,
+ * one frame is 50 ms; 500 ms is ten frames of slack, and reaching the
+ * timeout is itself the answer ("LVGL is not flushing").
+ */
+#define GLCDC_BLANK_POLL_MS             (10)
+#define GLCDC_BLANK_APPLY_TIMEOUT_MS    (500)
+
+/**
+ * PmnPFS fields checked by "display pins" (Issue #218)
+ *
+ * The IOPORT configuration word FSP writes IS the PmnPFS register value
+ * (ra/fsp/src/bsp/mcu/all/bsp_io.h:386), so the constants below are the
+ * register bit positions:
+ *   PSEL[28:24] = 0x19 -> IOPORT_PERIPHERAL_LCD_GRAPHICS
+ *                 (r_ioport.h:428, IOPORT_PRV_PFS_PSEL_OFFSET = 24)
+ *   PMR[16]     = 1    -> IOPORT_CFG_PERIPHERAL_PIN (r_ioport.h:481)
+ */
+#define GLCDC_PFS_PSEL_MASK             (0x1F000000UL)
+#define GLCDC_PFS_PSEL_LCD_GRAPHICS     (0x19000000UL)
+#define GLCDC_PFS_PMR_BIT               (0x00010000UL)
+
+/**
+ * "display signals" sampling window (Issue #218)
+ *
+ * GLCDC_SIGNALS_ROUNDS bursts of GLCDC_SIGNALS_BURST samples per pin,
+ * GLCDC_SIGNALS_GAP_MS apart. The gap is not a divisor of the ~14.08 ms frame
+ * period (71 Hz), so bursts land at different phases of the frame rather than
+ * resampling the same lines. Total: 2,000 samples per pin over ~100 ms, about
+ * seven frames.
+ */
+#define GLCDC_SIGNALS_ROUNDS            (10)
+#define GLCDC_SIGNALS_BURST             (200)
+#define GLCDC_SIGNALS_GAP_MS            (10)
+
+/** Number of pins the GLCDC drives (see g_glcdc_pins) */
+#define GLCDC_PIN_COUNT                 (30)
+
 /**********************************************************************************************************************
  Private (static) variables
  *********************************************************************************************************************/
@@ -136,34 +187,74 @@ static glcdc_status_t s_glcdc_status = GLCDC_STATUS_NOT_INITIALIZED;
 static volatile uint32_t s_vsync_count = 0;
 
 /**
- * Double-buffering state tracking (S-002-3)
+ * Double-buffering state tracking (S-002-3, revised by Issue #218)
  *
- * These variables are updated from the Vsync interrupt callback context
- * (lvgl_glcdc_callback) and read from the NT-Shell thread or LVGL thread.
- * They are declared volatile to ensure visibility across contexts.
+ * Issue #218: the previous implementation incremented a "swap count" and
+ * toggled a "front buffer index" inside the Vsync branch of
+ * lvgl_glcdc_callback(). Both advanced on EVERY Vsync whether or not LVGL had
+ * flushed anything, which made "Swap Count" a duplicate of "Vsync Count" and
+ * the reported front buffer a free-running toggle. While triaging the
+ * all-white screen those two numbers looked like proof that LVGL was still
+ * rendering, but they only proved that the GLCDC line-detect interrupt was
+ * still firing. They are replaced by the counters below, which are written
+ * from the flush callback (LVGL task) instead.
  *
- * Initial state after RM_LVGL_PORT_Open():
- *   - GLCDC displays fb_background[1] (front buffer index = 1)
- *   - LVGL renders to fb_background[0] (back buffer index = 0)
- *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:126-133
+ * Writer  : lvgl_task, via glcdc_port_notify_flush() from
+ *           lvgl_port_mtk3_flush_cb(). Single writer, no ISR path
+ *           (lv_refr.c:1348,1373,1409 -> lv_timer_handler).
+ * Readers : ntshell_task ("display dbuf" / "display reg").
+ * Each value is an independently meaningful aligned 32-bit volatile store, so
+ * no critical section is required (CLAUDE.md concurrency rules apply to
+ * multi-word publish/sample pairs, which this is not).
  */
 
-/** Buffer swap counter (incremented on each Vsync-synchronized swap) */
-static volatile uint32_t s_swap_count = 0;
+/** Completed LVGL flushes (one per R_GLCDC_BufferChange() request) */
+static volatile uint32_t s_flush_count = 0;
+
+/** Buffer address passed to the last R_GLCDC_BufferChange() (0 = none yet) */
+static volatile uint32_t s_last_flush_addr = 0;
 
 /**
- * Current front buffer index (the buffer being displayed by GLCDC)
+ * Number of R_GLCDC_BufferChange() calls that returned an error.
  *
- * After RM_LVGL_PORT_Open(), fb_background[1] is set as the displayed buffer
- * via R_GLCDC_BufferChange(), so the initial front buffer index is 1.
- *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:126-133
+ * The flush callback retries only FSP_ERR_INVALID_UPDATE_TIMING and discards
+ * every other return value (lvgl_port_mtk3.c). A persistent failure would
+ * therefore freeze the displayed image with nothing reported; this counter
+ * makes it visible.
  */
-static volatile uint32_t s_front_buffer_index = 1;
+static volatile uint32_t s_bufchange_err_count = 0;
 
-/** GLCDC underflow error counter */
+/** fsp_err_t returned by the last failing R_GLCDC_BufferChange() */
+static volatile int32_t s_bufchange_last_err = 0;
+
+/** GLCDC underflow error counter (written from the Vsync/underflow ISR) */
 static volatile uint32_t s_underflow_count = 0;
+
+/**
+ * Diagnostic blank request ("display blank", Issue #218)
+ *
+ * Declaration / reconcile pair, per the concurrency rules in CLAUDE.md:
+ *   s_blank_desired : written by ntshell_task, read by lvgl_task in the flush
+ *                     callback, which then hands NULL to
+ *                     R_GLCDC_BufferChange() instead of the framebuffer.
+ *   s_blank_applied : written by lvgl_task (glcdc_port_notify_flush), read by
+ *                     ntshell_task while it waits for the acknowledgement.
+ *
+ * The flush callback stays the only caller of R_GLCDC_BufferChange() that
+ * can run concurrently with anything. (lvgl_port_mtk3_open() also calls it,
+ * once, during initialisation - but glcdc_cmd_blank() refuses while
+ * s_glcdc_status is not GLCDC_STATUS_INITIALIZED, and that is set only after
+ * lvgl_port_mtk3_open() has returned, so the two can never overlap.) A
+ * concurrent second caller would interleave with its AB1 -> FLMRD -> FLM2 ->
+ * VEN writes (r_glcdc.c:677-685) and could latch "layer visible + FLM2 = 0".
+ *
+ * Each is a single aligned 32-bit volatile with one writer, and they are
+ * never read as a pair, so no critical section is needed. The reconcile is
+ * idempotent - the last declaration wins - so no sequence number or ticket is
+ * needed either.
+ */
+static volatile uint32_t s_blank_desired = 0;
+static volatile uint32_t s_blank_applied = 0;
 
 /**********************************************************************************************************************
  Private (static) functions prototypes
@@ -174,13 +265,13 @@ static void glcdc_cmd_status(void);
 static void glcdc_cmd_fb(void);
 static void glcdc_cmd_dbuf(void);
 static void glcdc_cmd_backlight(int argc, char **argv);
-
-/* Issue #183: "display test" is a bring-up-only test pattern generator.
- * Its usage/result strings are excluded from the default build to free CPU0
- * internal flash. See src/diag_config.h. */
-#if MIMAMORI_VERBOSE_DIAG
 static void glcdc_cmd_test(int argc, char **argv);
-#endif
+static void glcdc_cmd_reg(void);
+static void glcdc_cmd_fbstat(void);
+static int glcdc_cmd_blank(int argc, char **argv);
+static const char *glcdc_tcon_sel_name(uint32_t sel);
+static void glcdc_cmd_pins(void);
+static void glcdc_cmd_signals(void);
 
 /**********************************************************************************************************************
  Private (static) functions
@@ -402,15 +493,24 @@ static void glcdc_cmd_fb(void)
 
     print_to_console("[Frame Buffer Addresses]\r\n");
 
+    /*
+     * Issue #218: the "(front/display)" annotation used to come from a
+     * software index that toggled on every Vsync, so it never named the
+     * buffer the GLCDC was really reading. The displayed buffer is a hardware
+     * register; "display reg" reads it back. Here we only report which buffer
+     * LVGL last handed to R_GLCDC_BufferChange().
+     */
     snprintf(buf, sizeof(buf), "  FB[0]       : 0x%08lX%s\r\n",
              (unsigned long)fb.fb0_addr,
-             (s_front_buffer_index == 0) ? " (front/display)" : " (back/render)");
+             (s_last_flush_addr == fb.fb0_addr) ? " (last flushed by LVGL)" : "");
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  FB[1]       : 0x%08lX%s\r\n",
              (unsigned long)fb.fb1_addr,
-             (s_front_buffer_index == 1) ? " (front/display)" : " (back/render)");
+             (s_last_flush_addr == fb.fb1_addr) ? " (last flushed by LVGL)" : "");
     print_to_console(buf);
+
+    print_to_console("  (displayed buffer: see 'display reg' GR0.FLM2)\r\n");
 
     print_to_console("[Placement]\r\n");
     print_to_console("  Section     : .sdram_noinit_nocache\r\n");
@@ -420,21 +520,31 @@ static void glcdc_cmd_fb(void)
 }
 
 /**
- * "display dbuf" sub-command handler (S-002-3)
+ * "display dbuf" sub-command handler (S-002-3, revised by Issue #218)
  *
  * @details Displays the current double-buffering status including:
  *   - Whether double buffering is enabled
- *   - Front/back buffer indices and addresses
- *   - Buffer swap count and Vsync count
- *   - Underflow error count
- *   - Frame rate estimation from swap count
+ *   - The buffer address LVGL last requested
+ *   - LVGL flush count, Vsync count, BufferChange failures, underflow count
+ *   - Flush rate and Vsync rate measured over one second
  *
- * The double-buffering mechanism is implemented by RM_LVGL_PORT:
+ * Issue #218: the two rates are the point of this command. They come from
+ * independent sources - the flush rate is written by the LVGL task, the Vsync
+ * rate by the GLCDC line-detect ISR - so "Vsync 70 Hz / Flush 0 fps" says
+ * LVGL stopped rendering while the panel keeps being scanned out, and
+ * "Vsync 0 Hz" says the GLCDC itself stopped. Before Issue #218 both numbers
+ * were derived from the Vsync interrupt and were therefore always equal.
+ *
+ * The buffer swap mechanism (src/port/lvgl_port_mtk3.c):
  *   - flush_cb: calls R_GLCDC_BufferChange() to schedule swap at next Vsync
  *   - flush_wait_cb: blocks on semaphore until Vsync fires
- *   - _rm_lvgl_port_display_callback: releases semaphore on Vsync interrupt
+ *   - lvgl_port_mtk3_display_callback: releases semaphore on Vsync interrupt
  *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-269
+ * Limitation: Flush Count is the number of buffer changes LVGL REQUESTED, not
+ * the number the GLCDC has latched. The flush callback waits for the next
+ * Vsync immediately afterwards, so over a one-second window the two differ by
+ * at most one frame - fine for "is LVGL still rendering?" and for a rough
+ * frame-rate figure, not a presented-frame count.
  */
 static void glcdc_cmd_dbuf(void)
 {
@@ -457,74 +567,68 @@ static void glcdc_cmd_dbuf(void)
 
     print_to_console("[Buffer State]\r\n");
 
-    snprintf(buf, sizeof(buf), "  Front (display) : FB[%lu] @ 0x%08lX\r\n",
-             (unsigned long)dbuf.front_buffer_index,
-             (unsigned long)dbuf.front_buffer_addr);
+    snprintf(buf, sizeof(buf), "  Last flushed by LVGL : 0x%08lX%s\r\n",
+             (unsigned long)dbuf.last_flush_addr,
+             (dbuf.last_flush_addr != 0) ? "" :
+             ((dbuf.flush_count == 0) ? " (no flush yet)"
+                                      : " (NULL - 'display blank' is on)"));
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  Back  (render)  : FB[%lu] @ 0x%08lX\r\n",
-             (unsigned long)dbuf.back_buffer_index,
-             (unsigned long)dbuf.back_buffer_addr);
-    print_to_console(buf);
+    print_to_console("  Displayed by GLCDC   : see 'display reg' (GR0.FLM2)\r\n");
 
     print_to_console("[Counters]\r\n");
 
-    snprintf(buf, sizeof(buf), "  Vsync Count     : %lu\r\n",
+    snprintf(buf, sizeof(buf), "  Vsync Count      : %lu\r\n",
              (unsigned long)dbuf.vsync_count);
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  Swap Count      : %lu\r\n",
-             (unsigned long)dbuf.swap_count);
+    snprintf(buf, sizeof(buf), "  Flush Count      : %lu\r\n",
+             (unsigned long)dbuf.flush_count);
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  Underflow Count : %lu%s\r\n",
+    snprintf(buf, sizeof(buf), "  BufChange Errors : %lu (last: %ld)\r\n",
+             (unsigned long)dbuf.bufchange_err_count,
+             (long)dbuf.bufchange_last_err);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  Underflow Count  : %lu%s\r\n",
              (unsigned long)dbuf.underflow_count,
              dbuf.underflow_count > 0 ? " (WARNING: SDRAM bandwidth issue)" : "");
     print_to_console(buf);
 
     /*
-     * Estimate current frame rate from swap count.
+     * Measure the flush rate and the Vsync rate over one second.
      *
-     * We sample swap_count at two points with a 1-second interval,
-     * then compute the difference. This gives the actual rendered FPS,
-     * which may be lower than the display refresh rate (~59 Hz) if LVGL
-     * does not invalidate every frame.
+     * Issue #218: these two now come from different writers (LVGL task vs
+     * GLCDC ISR), so comparing them tells which side stopped.
      */
     if (s_glcdc_status == GLCDC_STATUS_INITIALIZED) {
-        print_to_console("[Frame Rate Measurement]\r\n");
-        print_to_console("  Measuring FPS over 1 second...\r\n");
+        print_to_console("[Rate Measurement]\r\n");
+        print_to_console("  Measuring over 1 second...\r\n");
 
-        uint32_t swap_start = s_swap_count;
+        uint32_t flush_start = s_flush_count;
         uint32_t vsync_start = s_vsync_count;
         tk_dly_tsk(1000);   /* R-006: vTaskDelay(pdMS_TO_TICKS(1000)) -> tk_dly_tsk(1000) ms */
-        uint32_t swap_end = s_swap_count;
+        uint32_t flush_end = s_flush_count;
         uint32_t vsync_end = s_vsync_count;
 
-        uint32_t fps = swap_end - swap_start;
+        uint32_t fps = flush_end - flush_start;
         uint32_t vsync_rate = vsync_end - vsync_start;
 
         snprintf(buf, sizeof(buf), "  Vsync Rate  : %lu Hz\r\n",
                  (unsigned long)vsync_rate);
         print_to_console(buf);
 
-        snprintf(buf, sizeof(buf), "  Render FPS  : %lu fps\r\n",
+        snprintf(buf, sizeof(buf), "  Flush Rate  : %lu fps\r\n",
                  (unsigned long)fps);
         print_to_console(buf);
 
-        if (vsync_rate > 0 && fps > 0) {
-            /*
-             * Buffer swap overhead estimation:
-             *   swap_overhead_us = (1,000,000 / vsync_rate) - (1,000,000 / fps)
-             *   But this is the "idle" time, not overhead.
-             *   True swap overhead = time from BufferChange() call to semaphore release
-             *   This is typically < 1ms and cannot be easily measured here without
-             *   instrumentation in the interrupt context. We report it qualitatively.
-             */
-            print_to_console("  Swap Overhead : < 1ms (Vsync-synchronized)\r\n");
-        }
-
-        if (fps == 0) {
-            print_to_console("  Note: No buffer swaps detected. LVGL may not be rendering.\r\n");
+        if ((fps == 0) && (vsync_rate > 0)) {
+            print_to_console("  Note: GLCDC scans out but LVGL is not flushing.\r\n");
+        } else if (vsync_rate == 0) {
+            print_to_console("  Note: No Vsync. GLCDC output has stopped.\r\n");
+        } else {
+            /* Both sides alive - nothing to flag. */
         }
     }
 
@@ -536,8 +640,916 @@ static void glcdc_cmd_dbuf(void)
     print_to_console("  Tearing prevention: guaranteed by Vsync sync\r\n");
 }
 
-/* Issue #183: excluded from the default build (see src/diag_config.h). */
-#if MIMAMORI_VERBOSE_DIAG
+/**
+ * Name the signal a TCON output register is routing (Issue #218)
+ *
+ * @details Decodes the SEL[2:0] field of TCON.STVA2 / STVB2 / STHA2 / STHB2.
+ *          Values are glcdc_tcon_signal_select_t
+ *          (ra/fsp/inc/instances/r_glcdc.h:95-99).
+ *
+ * @param sel SEL field value (0-7)
+ * @return Human-readable signal name
+ */
+static const char *glcdc_tcon_sel_name(uint32_t sel)
+{
+    const char *name;
+
+    switch (sel) {
+        case 0: name = "STVA/VS"; break;
+        case 1: name = "STVB/VE"; break;
+        case 2: name = "STHA/HS"; break;
+        case 3: name = "STHB/HE"; break;
+        case 7: name = "DE";      break;
+        default: name = "(reserved)"; break;
+    }
+
+    return name;
+}
+
+/**
+ * "display reg" sub-command handler (Issue #218)
+ *
+ * @details Reads back the GLCDC hardware registers that decide what reaches
+ *          the panel, instead of the software-tracked values printed by
+ *          "display status" / "display fb" / "display dbuf".
+ *
+ *          Issue #218 (all-white screen after minutes of runtime) needs this
+ *          because every software-side number kept looking healthy while the
+ *          panel was white. The registers answer three questions the tracked
+ *          values cannot:
+ *            - GR0.FLM2  : which address is the GLCDC really fetching?
+ *                          Compared here against fb_background[0] / [1].
+ *            - GR0.AB1   : is the graphics plane still blended in
+ *                          (DISPSEL == 3)? If it went transparent
+ *                          (DISPSEL == 1) the panel would show the lower
+ *                          layer, and since graphics layer 2 is disabled
+ *                          (GLCDC_CFG_LAYER_2_ENABLE false) that is BG.BGC,
+ *                          configured black - so a WHITE panel is not
+ *                          explained by a transparent plane.
+ *            - OUT.BRIGHT1/2, OUT.CONTRAST : has the colour correction
+ *                          saturated the output to full scale (= white)?
+ *            - TCON.*    : is the DE (data enable) pin still driven? This
+ *                          project routes DE to LCD_TCON2
+ *                          (g_display0_extend_cfg.tcon_de =
+ *                          GLCDC_TCON_PIN_2), and FSP writes the per-pin
+ *                          signal selection through
+ *                          g_tcon_lut[] = {STVA2, STVB2, STHA2, STHB2}
+ *                          (r_glcdc.c:283-286), so DE lands in
+ *                          TCON.STHA2.SEL. If DE stopped, the panel loses its
+ *                          valid-data window (many TFTs go white) while the
+ *                          line-detect interrupt keeps firing from the
+ *                          GLCDC's internal counter - which is exactly the
+ *                          state Issue #218 is in.
+ *            - SYSCNT.PANEL_CLK : is the panel clock output still enabled
+ *                          (CLKEN)?
+ *
+ *          Register block layout: R_GLCDC->GR[0] is frame layer 1
+ *          (DISPLAY_FRAME_LAYER_1 == 0, ra/fsp/inc/api/r_display_api.h:50),
+ *          which is the layer this project uses (g_lvgl_port_cfg
+ *          .inherit_frame_layer, ra_gen/common_data.c).
+ *
+ * All accesses are reads. This runs on ntshell_task concurrently with LVGL
+ * rendering, but reading peripheral registers cannot disturb it.
+ */
+static void glcdc_cmd_reg(void)
+{
+    char buf[GLCDC_PRINT_BUF_SIZE];
+
+    if (s_glcdc_status != GLCDC_STATUS_INITIALIZED) {
+        print_to_console("[GLCDC Registers]\r\n");
+        print_to_console("  GLCDC is not initialized; registers are not meaningful.\r\n");
+        return;
+    }
+
+    /*
+     * Read all registers up front. Printing is UART-paced (tens of ms for this
+     * many lines), so reading as we print would spread the sample over that
+     * window. This is not an atomic snapshot - the 19 reads are still
+     * sequential - but it keeps them within a few microseconds of each other.
+     */
+    const uint32_t gr_ven    = R_GLCDC->GR[0].VEN;
+    const uint32_t gr_flmrd  = R_GLCDC->GR[0].FLMRD;
+    const uint32_t gr_flm2   = R_GLCDC->GR[0].FLM2;
+    const uint32_t gr_flm3   = R_GLCDC->GR[0].FLM3;
+    const uint32_t gr_flm5   = R_GLCDC->GR[0].FLM5;
+    const uint32_t gr_flm6   = R_GLCDC->GR[0].FLM6;
+    const uint32_t gr_ab1    = R_GLCDC->GR[0].AB1;
+    const uint32_t gr_mon    = R_GLCDC->GR[0].MON;
+    const uint32_t bg_en     = R_GLCDC->BG.EN;
+    const uint32_t bg_bgc    = R_GLCDC->BG.BGC;
+    const uint32_t bg_mon    = R_GLCDC->BG.MON;
+    const uint32_t out_vlatch  = R_GLCDC->OUT.VLATCH;
+    const uint32_t out_set     = R_GLCDC->OUT.SET;
+    const uint32_t out_bright1 = R_GLCDC->OUT.BRIGHT1;
+    const uint32_t out_bright2 = R_GLCDC->OUT.BRIGHT2;
+    const uint32_t out_contrast = R_GLCDC->OUT.CONTRAST;
+    const uint32_t out_clkphase = R_GLCDC->OUT.CLKPHASE;
+    const uint32_t out_pdtha    = R_GLCDC->OUT.PDTHA;
+    const uint32_t tcon_tim   = R_GLCDC->TCON.TIM;
+    const uint32_t tcon_stva1 = R_GLCDC->TCON.STVA1;
+    const uint32_t tcon_stva2 = R_GLCDC->TCON.STVA2;
+    const uint32_t tcon_stvb1 = R_GLCDC->TCON.STVB1;
+    const uint32_t tcon_stvb2 = R_GLCDC->TCON.STVB2;
+    const uint32_t tcon_stha1 = R_GLCDC->TCON.STHA1;
+    const uint32_t tcon_stha2 = R_GLCDC->TCON.STHA2;
+    const uint32_t tcon_sthb1 = R_GLCDC->TCON.STHB1;
+    const uint32_t tcon_sthb2 = R_GLCDC->TCON.STHB2;
+    const uint32_t tcon_de    = R_GLCDC->TCON.DE;
+    const uint32_t sys_inten = R_GLCDC->SYSCNT.INTEN;
+    const uint32_t sys_stmon = R_GLCDC->SYSCNT.STMON;
+    const uint32_t sys_panel_clk = R_GLCDC->SYSCNT.PANEL_CLK;
+
+    print_to_console("[GLCDC Graphics Layer 1 (GR[0]) Registers]\r\n");
+
+    snprintf(buf, sizeof(buf), "  VEN        : 0x%08lX\r\n", (unsigned long)gr_ven);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  FLMRD      : 0x%08lX (read enable: %s)\r\n",
+             (unsigned long)gr_flmrd,
+             (gr_flmrd & 1UL) ? "on" : "OFF");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  FLM2 (base): 0x%08lX\r\n", (unsigned long)gr_flm2);
+    print_to_console(buf);
+
+    /*
+     * Compare the address the hardware is fetching against the two LVGL
+     * framebuffers. "neither" means the GLCDC is scanning out memory that
+     * LVGL never renders into, which on its own explains a frozen or garbage
+     * screen.
+     */
+#if GLCDC_CFG_LAYER_1_ENABLE
+    {
+        const uint32_t fb0 = (uint32_t)(uintptr_t)&fb_background[0];
+        const uint32_t fb1 = (uint32_t)(uintptr_t)&fb_background[1];
+        const char *which;
+
+        if (gr_flm2 == fb0) {
+            which = "fb_background[0]";
+        } else if (gr_flm2 == fb1) {
+            which = "fb_background[1]";
+        } else {
+            which = "NEITHER framebuffer (unexpected)";
+        }
+
+        snprintf(buf, sizeof(buf), "    -> %s\r\n", which);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "    fb[0]=0x%08lX fb[1]=0x%08lX last flush=0x%08lX\r\n",
+                 (unsigned long)fb0, (unsigned long)fb1,
+                 (unsigned long)s_last_flush_addr);
+        print_to_console(buf);
+    }
+#endif
+
+    snprintf(buf, sizeof(buf), "  FLM3 (ofs) : 0x%08lX\r\n", (unsigned long)gr_flm3);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  FLM5 (line): 0x%08lX\r\n", (unsigned long)gr_flm5);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  FLM6 (fmt) : 0x%08lX\r\n", (unsigned long)gr_flm6);
+    print_to_console(buf);
+
+    {
+        /*
+         * DISPSEL encoding (ra/fsp/src/r_glcdc/r_glcdc.c:158-162):
+         *   1 = transparent (the lower layer is shown; graphics layer 2 is
+         *       disabled here, so that means the background plane = BG.BGC)
+         *   2 = this plane displayed opaque
+         *   3 = this plane blended onto the lower layer - what
+         *       R_GLCDC_BufferChange() writes for a non-NULL framebuffer
+         *       (r_glcdc.c:666-678)
+         */
+        const uint32_t dispsel = gr_ab1 & 3UL;
+        const char *dispsel_txt;
+
+        if (dispsel == 1UL) {
+            dispsel_txt = "transparent - panel shows BG.BGC";
+        } else if (dispsel == 2UL) {
+            dispsel_txt = "plane displayed (opaque)";
+        } else if (dispsel == 3UL) {
+            dispsel_txt = "plane blended on lower layer (expected)";
+        } else {
+            dispsel_txt = "0 - never written by the driver (unexpected)";
+        }
+
+        snprintf(buf, sizeof(buf), "  AB1        : 0x%08lX (DISPSEL=%lu: %s)\r\n",
+                 (unsigned long)gr_ab1, (unsigned long)dispsel, dispsel_txt);
+        print_to_console(buf);
+    }
+
+    snprintf(buf, sizeof(buf), "  MON        : 0x%08lX (underflow flag: %s)\r\n",
+             (unsigned long)gr_mon,
+             (gr_mon & 0x00010000UL) ? "SET" : "clear");
+    print_to_console(buf);
+
+    print_to_console("[GLCDC Background Plane (BG) Registers]\r\n");
+
+    snprintf(buf, sizeof(buf), "  EN         : 0x%08lX\r\n", (unsigned long)bg_en);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  BGC        : 0x%08lX (R=%lu G=%lu B=%lu)\r\n",
+             (unsigned long)bg_bgc,
+             (unsigned long)((bg_bgc >> 16) & 0xFFUL),
+             (unsigned long)((bg_bgc >> 8) & 0xFFUL),
+             (unsigned long)(bg_bgc & 0xFFUL));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  MON        : 0x%08lX (module enabled: %s)\r\n",
+             (unsigned long)bg_mon,
+             (bg_mon & 1UL) ? "yes" : "NO");
+    print_to_console(buf);
+
+    print_to_console("[GLCDC Output Block (OUT) Registers]\r\n");
+
+    snprintf(buf, sizeof(buf), "  VLATCH     : 0x%08lX\r\n", (unsigned long)out_vlatch);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  SET        : 0x%08lX\r\n", (unsigned long)out_set);
+    print_to_console(buf);
+
+    /*
+     * Colour correction is compiled out in this project
+     * (GLCDC_CFG_COLOR_CORRECTION_ENABLE is false, ra_cfg/fsp_cfg/r_glcdc_cfg.h),
+     * so R_GLCDC_Open() writes fixed neutral values once (r_glcdc.c:407-414)
+     * and nothing calls R_GLCDC_ColorCorrection() afterwards. Anything other
+     * than the expected words below means the correction stage drifted, which
+     * would tint or saturate every pixel regardless of the framebuffer
+     * contents - one of the ways a panel can go white with healthy pixel data.
+     */
+    snprintf(buf, sizeof(buf), "  BRIGHT1    : 0x%08lX (expect 0x00000200)%s\r\n",
+             (unsigned long)out_bright1,
+             (out_bright1 == 0x00000200UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  BRIGHT2    : 0x%08lX (expect 0x02000200)%s\r\n",
+             (unsigned long)out_bright2,
+             (out_bright2 == 0x02000200UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  CONTRAST   : 0x%08lX (expect 0x00808080)%s\r\n",
+             (unsigned long)out_contrast,
+             (out_contrast == 0x00808080UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  CLKPHASE   : 0x%08lX\r\n", (unsigned long)out_clkphase);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  PDTHA      : 0x%08lX (dithering off in this project)\r\n",
+             (unsigned long)out_pdtha);
+    print_to_console(buf);
+
+    /*
+     * TCON: the pin timing block. Only the DE path is configured here -
+     * tcon_hsync and tcon_vsync are GLCDC_TCON_PIN_NONE, so r_glcdc.c:1286-1302
+     * calls r_glcdc_data_enable_set() alone. That writes:
+     *   STHA2 = GLCDC_TCON_SIGNAL_SELECT_DE (7)          [pin LCD_TCON2]
+     *   STHB1 = (h back porch 160 << 16) | h display 1024 = 0x00A00400
+     *   STVB1 = (v back porch  23 << 16) | v display  600 = 0x00170258
+     *   TCON.DE = 0, because data_enable_polarity is HIACTIVE
+     * (r_glcdc.c:1368-1379 and ra_gen/common_data.c g_display0_cfg.output).
+     * STVA1/STVA2/STVB2/STHA1/STHB2 are never written and keep their reset
+     * values, so no expectation is asserted for them.
+     */
+    print_to_console("[GLCDC Timing Control (TCON) Registers]\r\n");
+
+    snprintf(buf, sizeof(buf), "  TIM        : 0x%08lX\r\n", (unsigned long)tcon_tim);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  STVA1/STVA2: 0x%08lX / 0x%08lX (TCON0 <- %s)\r\n",
+             (unsigned long)tcon_stva1, (unsigned long)tcon_stva2,
+             glcdc_tcon_sel_name(tcon_stva2 & 7UL));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  STVB1/STVB2: 0x%08lX / 0x%08lX (TCON1 <- %s)\r\n",
+             (unsigned long)tcon_stvb1, (unsigned long)tcon_stvb2,
+             glcdc_tcon_sel_name(tcon_stvb2 & 7UL));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  STHA1/STHA2: 0x%08lX / 0x%08lX (TCON2 <- %s)%s\r\n",
+             (unsigned long)tcon_stha1, (unsigned long)tcon_stha2,
+             glcdc_tcon_sel_name(tcon_stha2 & 7UL),
+             ((tcon_stha2 & 7UL) == 7UL) ? "" : "  <<< DE LOST");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  STHB1/STHB2: 0x%08lX / 0x%08lX (TCON3 <- %s)\r\n",
+             (unsigned long)tcon_sthb1, (unsigned long)tcon_sthb2,
+             glcdc_tcon_sel_name(tcon_sthb2 & 7UL));
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  DE window  : STHB1 0x%08lX (expect 0x00A00400)%s\r\n",
+             (unsigned long)tcon_sthb1,
+             (tcon_sthb1 == 0x00A00400UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "               STVB1 0x%08lX (expect 0x00170258)%s\r\n",
+             (unsigned long)tcon_stvb1,
+             (tcon_stvb1 == 0x00170258UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  DE polarity: 0x%08lX (expect 0x00000000 = high active)%s\r\n",
+             (unsigned long)tcon_de,
+             (tcon_de == 0UL) ? "" : "  <<< UNEXPECTED");
+    print_to_console(buf);
+
+    print_to_console("[GLCDC System Control (SYSCNT) Registers]\r\n");
+
+    snprintf(buf, sizeof(buf), "  INTEN      : 0x%08lX\r\n", (unsigned long)sys_inten);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf), "  STMON      : 0x%08lX\r\n", (unsigned long)sys_stmon);
+    print_to_console(buf);
+
+    /*
+     * PANEL_CLK.CLKEN gates the panel clock output. If it were cleared the
+     * panel would lose everything at once - the failure mode this command is
+     * looking for. DCDR / CLKSEL / PIXSEL are printed raw; they come from
+     * g_display0_extend_cfg (clksrc INTERNAL, clock_div_ratio
+     * GLCDC_PANEL_CLK_DIVISOR_4).
+     */
+    snprintf(buf, sizeof(buf), "  PANEL_CLK  : 0x%08lX\r\n", (unsigned long)sys_panel_clk);
+    print_to_console(buf);
+
+    snprintf(buf, sizeof(buf),
+             "    CLKEN=%lu%s DCDR=%lu CLKSEL=%lu PIXSEL=%lu VER=0x%04lX\r\n",
+             (unsigned long)((sys_panel_clk >> 6) & 1UL),
+             (((sys_panel_clk >> 6) & 1UL) != 0UL) ? "" : " <<< PANEL CLOCK OFF",
+             (unsigned long)(sys_panel_clk & 0x3FUL),
+             (unsigned long)((sys_panel_clk >> 8) & 1UL),
+             (unsigned long)((sys_panel_clk >> 12) & 1UL),
+             (unsigned long)((sys_panel_clk >> 16) & 0xFFFFUL));
+    print_to_console(buf);
+}
+
+/**
+ * "display fbstat" sub-command handler (Issue #218)
+ *
+ * @details Samples the contents of both framebuffers and reports how many of
+ *          the sampled pixels are white (0xFFFF), black (0x0000) or something
+ *          else, plus the raw value at four fixed screen positions.
+ *
+ *          This is the measurement that splits Issue #218 in half:
+ *            - all-white census  -> the white comes from what is WRITTEN into
+ *                                   the framebuffer (LVGL / Dave2D / SDRAM)
+ *            - normal census     -> the framebuffer is fine and the white
+ *                                   comes from the GLCDC output stage or the
+ *                                   panel; continue with "display test
+ *                                   colorbar", which bypasses LVGL entirely
+ *
+ *          "display backlight off" turning the panel black proves only that
+ *          the backlight pin works; it says nothing about the pixel data.
+ *          This command is what says something about the pixel data.
+ *
+ *          Sampling: every GLCDC_FBSTAT_X_STEP-th pixel of every
+ *          GLCDC_FBSTAT_Y_STEP-th line = 4,800 samples per buffer. At the
+ *          ~4 MB/s effective SDRAM read rate measured for this platform
+ *          (see the performance notes in src/camera_display.c) the two
+ *          buffers together take well under 10 ms, and no lock is held.
+ *
+ *          The buffers are live: LVGL keeps rendering into the back buffer
+ *          while this runs, so a census taken mid-frame can mix old and new
+ *          content. That is fine for "is the whole screen white?" and is
+ *          noted in the output.
+ */
+static void glcdc_cmd_fbstat(void)
+{
+#if GLCDC_CFG_LAYER_1_ENABLE
+    char buf[GLCDC_PRINT_BUF_SIZE];
+
+    /* Probe points, chosen to cover regions with different update rates. */
+    static const struct {
+        uint16_t    x;
+        uint16_t    y;
+        const char *name;
+    } probes[] = {
+        {  20u,  20u, "status bar left"       },
+        { 900u,  20u, "status bar right/clock"},
+        { 512u, 320u, "camera image centre"   },
+        {  40u, 300u, "letterbox margin"      },
+    };
+
+    print_to_console("[Frame Buffer Content Census (Issue #218)]\r\n");
+
+    snprintf(buf, sizeof(buf), "  Grid      : every %u px x %u lines (%lu samples/buffer)\r\n",
+             (unsigned int)GLCDC_FBSTAT_X_STEP,
+             (unsigned int)GLCDC_FBSTAT_Y_STEP,
+             (unsigned long)(((uint32_t)DISPLAY_HSIZE_INPUT0 / GLCDC_FBSTAT_X_STEP) *
+                             ((uint32_t)DISPLAY_VSIZE_INPUT0 / GLCDC_FBSTAT_Y_STEP)));
+    print_to_console(buf);
+
+    print_to_console("  Note      : buffers are live; a census may mix frames.\r\n");
+
+    for (uint32_t fb_index = 0; fb_index < 2u; fb_index++) {
+        const uint8_t *p_fb = &fb_background[fb_index][0];
+
+        uint32_t white = 0;
+        uint32_t black = 0;
+        uint32_t other = 0;
+        uint16_t vmin  = 0xFFFFu;
+        uint16_t vmax  = 0x0000u;
+
+        for (uint32_t y = 0; y < (uint32_t)DISPLAY_VSIZE_INPUT0; y += GLCDC_FBSTAT_Y_STEP) {
+            const volatile uint16_t *p_line =
+                (const volatile uint16_t *)(const void *)
+                (p_fb + (y * (uint32_t)DISPLAY_BUFFER_STRIDE_BYTES_INPUT0));
+
+            for (uint32_t x = 0; x < (uint32_t)DISPLAY_HSIZE_INPUT0; x += GLCDC_FBSTAT_X_STEP) {
+                const uint16_t px = p_line[x];
+
+                if (px == 0xFFFFu) {
+                    white++;
+                } else if (px == 0x0000u) {
+                    black++;
+                } else {
+                    other++;
+                }
+
+                if (px < vmin) {
+                    vmin = px;
+                }
+                if (px > vmax) {
+                    vmax = px;
+                }
+            }
+        }
+
+        const uint32_t total = white + black + other;
+
+        snprintf(buf, sizeof(buf), "[fb_background[%lu] @ 0x%08lX]\r\n",
+                 (unsigned long)fb_index,
+                 (unsigned long)(uintptr_t)p_fb);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  White(FFFF): %lu (%lu%%)\r\n",
+                 (unsigned long)white,
+                 (unsigned long)((total > 0u) ? ((white * 100u) / total) : 0u));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Black(0000): %lu (%lu%%)\r\n",
+                 (unsigned long)black,
+                 (unsigned long)((total > 0u) ? ((black * 100u) / total) : 0u));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Other      : %lu (%lu%%)\r\n",
+                 (unsigned long)other,
+                 (unsigned long)((total > 0u) ? ((other * 100u) / total) : 0u));
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "  Min / Max  : 0x%04X / 0x%04X\r\n",
+                 (unsigned int)vmin, (unsigned int)vmax);
+        print_to_console(buf);
+
+        /*
+         * The single most useful line for Issue #218: if every sampled pixel
+         * has the same value, the buffer holds one flat colour and there is
+         * no image in it at all.
+         */
+        if (vmin == vmax) {
+            snprintf(buf, sizeof(buf), "  ** UNIFORM : every sample is 0x%04X (no image) **\r\n",
+                     (unsigned int)vmin);
+            print_to_console(buf);
+        }
+
+        for (uint32_t i = 0; i < (sizeof(probes) / sizeof(probes[0])); i++) {
+            const volatile uint16_t *p_line =
+                (const volatile uint16_t *)(const void *)
+                (p_fb + ((uint32_t)probes[i].y * (uint32_t)DISPLAY_BUFFER_STRIDE_BYTES_INPUT0));
+
+            snprintf(buf, sizeof(buf), "  (%4u,%4u) : 0x%04X  %s\r\n",
+                     (unsigned int)probes[i].x,
+                     (unsigned int)probes[i].y,
+                     (unsigned int)p_line[probes[i].x],
+                     probes[i].name);
+            print_to_console(buf);
+        }
+    }
+#else
+    print_to_console("  Error: GLCDC Layer 1 is not enabled.\r\n");
+#endif
+}
+
+/**
+ * "display blank on|off" sub-command handler (Issue #218)
+ *
+ * @details Asks the LVGL task to hand NULL to R_GLCDC_BufferChange() instead
+ *          of the rendered framebuffer. The FSP driver then writes
+ *          AB1.DISPSEL = 1 (transparent) and FLMRD = 0 (frame buffer read
+ *          disabled) - see ra/fsp/src/r_glcdc/r_glcdc.c:666-685 - so what
+ *          reaches the panel is the background plane colour BG.BGC, which is
+ *          configured black and is generated inside the GLCDC WITHOUT reading
+ *          SDRAM at all. Graphics layer 2 is disabled
+ *          (GLCDC_CFG_LAYER_2_ENABLE false), so the background plane really
+ *          is the lower layer here.
+ *
+ *          That makes this the measurement that splits what Issue #218 was
+ *          left with after "display test red" failed to change an all-white
+ *          panel:
+ *            - panel turns BLACK -> the GLCDC output stage and the panel are
+ *                                   healthy; the fault is in the graphics
+ *                                   plane's SDRAM read path (a different bus
+ *                                   master from the CPU, which is why
+ *                                   "display fbstat" can still read a sane
+ *                                   image out of the same memory)
+ *            - panel stays WHITE -> the fault is in the GLCDC output stage or
+ *                                   the panel/board; software cannot narrow
+ *                                   it further
+ *
+ * Why this does not call R_GLCDC_BufferChange() itself:
+ *   lvgl_port_mtk3_flush_cb() calls it ~20 times a second from the LVGL task.
+ *   A second caller would interleave with that function's four register
+ *   writes (AB1 -> FLMRD -> FLM2 -> VEN, r_glcdc.c:677-685) and could latch
+ *   "layer visible + FLM2 = 0", pointing the GLCDC at address 0 for a 1.2 MB
+ *   read. So this command only declares the desired state and the owning task
+ *   reconciles it on its next frame, per the concurrency rules in CLAUDE.md.
+ *
+ * Execution context: ntshell_task. Blocks for at most
+ * GLCDC_BLANK_APPLY_TIMEOUT_MS while waiting for the LVGL task to apply the
+ * request; no lock is held.
+ *
+ * @param argc Argument count
+ * @param argv Argument vector
+ *
+ * @return CMD_OK on success (including "declared but not applied yet"),
+ *         CMD_ERR_USAGE / CMD_ERR_INVALID_ARG / CMD_ERR_EXECUTE otherwise
+ */
+static int glcdc_cmd_blank(int argc, char **argv)
+{
+    char buf[GLCDC_PRINT_BUF_SIZE];
+    uint32_t want;
+
+    if (s_glcdc_status != GLCDC_STATUS_INITIALIZED) {
+        print_to_console("  Error: GLCDC is not initialized.\r\n");
+        return CMD_ERR_EXECUTE;
+    }
+
+    if (argc < 3) {
+        print_to_console("Usage: display blank <on|off>\r\n");
+        print_to_console("  on  - Hide the graphics plane; show BG.BGC (black) instead.\r\n");
+        print_to_console("        The panel then shows a colour the GLCDC generates\r\n");
+        print_to_console("        internally, with no SDRAM read involved.\r\n");
+        print_to_console("  off - Show the rendered framebuffer again.\r\n");
+        print_to_console("  Diagnostic only (Issue #218). Remember to turn it off.\r\n");
+        return CMD_ERR_USAGE;
+    }
+
+    if (ntlibc_strcmp(argv[2], "on") == 0) {
+        want = 1u;
+    } else if (ntlibc_strcmp(argv[2], "off") == 0) {
+        want = 0u;
+    } else {
+        snprintf(buf, sizeof(buf), "  Error: expected 'on' or 'off', got '%s'.\r\n", argv[2]);
+        print_to_console(buf);
+        return CMD_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Declare the desired state. The LVGL task samples it in its flush
+     * callback and drives the GLCDC; nothing is written to the hardware here.
+     */
+    s_blank_desired = want;
+
+    /*
+     * Wait for the LVGL task to apply it. This only happens when LVGL renders
+     * a frame, so a timeout is itself a useful result: it means LVGL is not
+     * flushing (nothing invalidated, or rendering has stalled).
+     */
+    {
+        uint32_t waited_ms = 0;
+
+        while ((s_blank_applied != want) && (waited_ms < GLCDC_BLANK_APPLY_TIMEOUT_MS)) {
+            tk_dly_tsk(GLCDC_BLANK_POLL_MS);
+            waited_ms += GLCDC_BLANK_POLL_MS;
+        }
+
+        if (s_blank_applied == want) {
+            snprintf(buf, sizeof(buf), "  Blank %s, applied by LVGL after %lu ms.\r\n",
+                     (want != 0u) ? "ON" : "OFF",
+                     (unsigned long)waited_ms);
+            print_to_console(buf);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "  Blank %s requested, but LVGL has not flushed within %u ms.\r\n",
+                     (want != 0u) ? "ON" : "OFF",
+                     (unsigned int)GLCDC_BLANK_APPLY_TIMEOUT_MS);
+            print_to_console(buf);
+            print_to_console("  LVGL is not rendering (nothing invalidated, or stalled).\r\n");
+            print_to_console("  Check 'display dbuf' Flush Rate. It will take effect on the\r\n");
+            print_to_console("  next frame LVGL draws.\r\n");
+            return CMD_OK;
+        }
+    }
+
+    if (want != 0u) {
+        print_to_console("  Panel now shows BG.BGC (black) with no SDRAM read.\r\n");
+        print_to_console("    black -> GLCDC output stage and panel are healthy\r\n");
+        print_to_console("    white -> fault is in the output stage or the panel\r\n");
+        print_to_console("  Confirm with 'display reg': FLMRD=0, AB1 DISPSEL=1.\r\n");
+        /*
+         * Measured side effect: with FLMRD = 0 the graphics FIFO is starved
+         * while the plane pipeline keeps running, so layer 1 underflows every
+         * frame. That latches GR0.MON.UNDFLST and makes glcdc_underflow_1_isr
+         * fire, which advances s_underflow_count. Say so here, or the inflated
+         * "display dbuf" Underflow Count gets chased as a real fault later.
+         */
+        print_to_console("  NOTE: blanking starves the layer-1 FIFO on purpose, so it\r\n");
+        print_to_console("  inflates 'display dbuf' Underflow Count and latches\r\n");
+        print_to_console("  GR0.MON.UNDFLST. Neither is a real fault.\r\n");
+        print_to_console("  Run 'display blank off' to restore the picture.\r\n");
+    }
+
+    return CMD_OK;
+}
+
+/**
+ * "display pins" sub-command handler (Issue #218)
+ *
+ * @details Reads back the PmnPFS pin-function register of every pin the GLCDC
+ *          drives and checks that it is still assigned to the LCD graphics
+ *          peripheral.
+ *
+ *          This is the last layer software can inspect. By the time this was
+ *          added, Issue #218 had established that during the all-white fault
+ *          the framebuffer holds a correct image, every GLCDC register is at
+ *          its expected value, and hiding the graphics plane entirely (so the
+ *          GLCDC emits its internally generated black background with no
+ *          SDRAM access) still leaves the panel white. If a pin had reverted
+ *          from peripheral function to GPIO the GLCDC would look perfectly
+ *          healthy while nothing reached the panel - which is exactly that
+ *          state. One pin is enough when it is DISP_CLK, PARLCD_DE,
+ *          PARLCD_HSYNC or PARLCD_VSYNC; a stray data pin would only corrupt
+ *          colour, not blank the screen.
+ *
+ *          Expected PmnPFS bits: PSEL = 0x19 (IOPORT_PERIPHERAL_LCD_GRAPHICS,
+ *          ra/fsp/inc/instances/r_ioport.h:428, shifted by
+ *          IOPORT_PRV_PFS_PSEL_OFFSET = 24) and PMR = 1
+ *          (IOPORT_CFG_PERIPHERAL_PIN = 0x00010000, r_ioport.h:481). The pin
+ *          list and the expectation both come from ra_gen/pin_data.c, where
+ *          all 30 entries are
+ *          IOPORT_CFG_DRIVE_HIGH | IOPORT_CFG_PERIPHERAL_PIN |
+ *          IOPORT_PERIPHERAL_LCD_GRAPHICS.
+ *
+ *          Other PmnPFS fields are printed but not judged: PIDR reflects the
+ *          live input level and changes on its own, and the drive strength
+ *          (DSCR, IOPORT_CFG_DRIVE_HIGH = 0x00000C00) affects signal quality
+ *          rather than whether the pin is connected to the GLCDC at all.
+ *
+ * Execution context: ntshell_task. Reads only - PmnPFS reads need no PWPR
+ * unlock, and nothing here writes a pin register. Does not block.
+ */
+/**
+ * Every pin ra_gen/pin_data.c assigns to IOPORT_PERIPHERAL_LCD_GRAPHICS, with
+ * the board net name from ra_cfg/fsp_cfg/bsp/bsp_pin_cfg.h. Shared by
+ * "display pins" (function assignment) and "display signals" (live activity).
+ *
+ * "driven" marks the pins this configuration actually drives, which is what
+ * "display signals" judges. Four of the thirty are deliberately idle and must
+ * not be reported as faults:
+ *   PARLCD_HSYNC (P805, LCD_TCON0) and PARLCD_VSYNC (P806, LCD_TCON1)
+ *     - g_display0_extend_cfg.tcon_hsync / .tcon_vsync are
+ *       GLCDC_TCON_PIN_NONE, so R_GLCDC_Open() never assigns them a signal
+ *       (r_glcdc.c:1286-1294). This panel runs DE-only.
+ *   DISP_TCON3 (P513, LCD_TCON3)
+ *     - tcon_de is GLCDC_TCON_PIN_2, so TCON3 carries nothing.
+ *   PARLCD_EXTCLK (P710)
+ *     - g_display0_extend_cfg.clksrc is GLCDC_CLK_SRC_INTERNAL; the external
+ *       clock input is unused.
+ * The DE pin is PARLCD_DE (P807) = LCD_TCON2, confirmed on hardware: it
+ * measured 74.4% high against the 72.0% duty the configured timing implies
+ * ((1024/1344) * (600/635)).
+ */
+static const struct {
+    uint16_t    pin;
+    const char *name;
+    bool        driven;
+} g_glcdc_pins[GLCDC_PIN_COUNT] = {
+        { (uint16_t)PARLCD_D9G1,                   "PARLCD_D9G1",     true  },
+        { (uint16_t)DISP_TCON3,                    "DISP_TCON3",      false },
+        { (uint16_t)DISP_CLK,                      "DISP_CLK",        true  },
+        { (uint16_t)PARLCD_D18R2,                  "PARLCD_D18R2",    true  },
+        { (uint16_t)PARLCD_EXTCLK,                 "PARLCD_EXTCLK",   false },
+        { (uint16_t)PARLCD_D19R3,                  "PARLCD_D19R3",    true  },
+        { (uint16_t)PARLCD_D20R4,                  "PARLCD_D20R4",    true  },
+        { (uint16_t)PARLCD_D21R5,                  "PARLCD_D21R5",    true  },
+        { (uint16_t)PARLCD_D22R6,                  "PARLCD_D22R6",    true  },
+        { (uint16_t)PARLCD_D23R7,                  "PARLCD_D23R7",    true  },
+        { (uint16_t)PARLCD_HSYNC,                  "PARLCD_HSYNC",    false },
+        { (uint16_t)PARLCD_VSYNC,                  "PARLCD_VSYNC",    false },
+        { (uint16_t)PARLCD_DE,                     "PARLCD_DE",       true  },
+        { (uint16_t)PARLCD_D3B3_PARCAM_D1,         "PARLCD_D3B3",     true  },
+        { (uint16_t)PARLCD_D2B2,                   "PARLCD_D2B2",     true  },
+        { (uint16_t)PARLCD_D8G0,                   "PARLCD_D8G0",     true  },
+        { (uint16_t)PARLCD_D4B4,                   "PARLCD_D4B4",     true  },
+        { (uint16_t)PARLCD_D5B5,                   "PARLCD_D5B5",     true  },
+        { (uint16_t)PARLCD_D6B6,                   "PARLCD_D6B6",     true  },
+        { (uint16_t)PARLCD_D7B7,                   "PARLCD_D7B7",     true  },
+        { (uint16_t)PARLCD_D0B0,                   "PARLCD_D0B0",     true  },
+        { (uint16_t)PARLCD_D1B1,                   "PARLCD_D1B1",     true  },
+        { (uint16_t)PARLCD_D17R1,                  "PARLCD_D17R1",    true  },
+        { (uint16_t)PARLCD_D13G5,                  "PARLCD_D13G5",    true  },
+        { (uint16_t)PARLCD_D16R0_PARCAM_VSYNC,     "PARLCD_D16R0",    true  },
+        { (uint16_t)PARLCD_D15G7_PARCAM_HSYNC,     "PARLCD_D15G7",    true  },
+        { (uint16_t)PARLCD_D14G6_PARCAM_PCLK,      "PARLCD_D14G6",    true  },
+        { (uint16_t)PARLCD_D12G4,                  "PARLCD_D12G4",    true  },
+        { (uint16_t)PARLCD_D11G3,                  "PARLCD_D11G3",    true  },
+    { (uint16_t)PARLCD_D10G2,                  "PARLCD_D10G2",    true  },
+};
+
+static void glcdc_cmd_pins(void)
+{
+    char buf[GLCDC_PRINT_BUF_SIZE];
+    uint32_t ok_count = 0;
+
+    print_to_console("[GLCDC Pin Function (PmnPFS) Readback]\r\n");
+    print_to_console("  Expect PSEL=0x19 (LCD_GRAPHICS) and PMR=1 on every pin.\r\n");
+
+    for (uint32_t i = 0; i < GLCDC_PIN_COUNT; i++) {
+        const uint32_t pin = g_glcdc_pins[i].pin;
+        const uint32_t pfs = R_PFS->PORT[pin >> 8].PIN[pin & 0xFFU].PmnPFS;
+
+        /* PSEL[28:24] and PMR[16] are what decides whether the GLCDC drives
+         * this pin at all. Everything else is left out of the verdict. */
+        const bool ok = ((pfs & (GLCDC_PFS_PSEL_MASK | GLCDC_PFS_PMR_BIT)) ==
+                         (GLCDC_PFS_PSEL_LCD_GRAPHICS | GLCDC_PFS_PMR_BIT));
+
+        if (ok) {
+            ok_count++;
+        }
+
+        snprintf(buf, sizeof(buf), "  %-13s P%u%02u 0x%08lX PSEL=0x%02lX PMR=%lu %s\r\n",
+                 g_glcdc_pins[i].name,
+                 (unsigned int)(pin >> 8),
+                 (unsigned int)(pin & 0xFFU),
+                 (unsigned long)pfs,
+                 (unsigned long)((pfs >> 24) & 0x1FUL),
+                 (unsigned long)((pfs >> 16) & 1UL),
+                 ok ? "" : "<<< NOT LCD_GRAPHICS");
+        print_to_console(buf);
+    }
+
+    snprintf(buf, sizeof(buf), "  %lu / %u pins assigned to the GLCDC.%s\r\n",
+             (unsigned long)ok_count,
+             (unsigned int)GLCDC_PIN_COUNT,
+             (ok_count == GLCDC_PIN_COUNT) ?
+             "" : "  <<< SIGNAL PATH BROKEN AT THE PIN");
+    print_to_console(buf);
+}
+
+/**
+ * "display signals" sub-command handler (Issue #218)
+ *
+ * @details Samples the live input level (PmnPFS.PIDR) of every GLCDC pin over
+ *          a window spanning several frames and reports which pins ever
+ *          changed state. A pin that never changes while the GLCDC is running
+ *          is not being driven.
+ *
+ *          This is the last thing software can say about the all-white fault.
+ *          By this point everything the software configures has been verified
+ *          correct - registers, TCON/DE routing, panel clock, all 30 pin
+ *          function assignments - and hiding the graphics plane entirely
+ *          still leaves the panel white. What is left is whether the signals
+ *          actually leave the MCU:
+ *            - DISP_CLK stuck    -> no pixel clock reaches the panel
+ *            - PARLCD_DE stuck   -> no data-enable window
+ *            - data lines stuck  -> no pixel data
+ *            - everything toggles -> the MCU drives the panel correctly and
+ *                                    the fault is past the pins (connector,
+ *                                    flex, expansion board, or the panel)
+ *          Either way it decides which trace to put a probe on first.
+ *
+ *          Sampling: GLCDC_SIGNALS_ROUNDS bursts of GLCDC_SIGNALS_BURST reads
+ *          per pin, separated by GLCDC_SIGNALS_GAP_MS. The gap is deliberately
+ *          not a divisor of the ~14.08 ms frame period (71 Hz), so successive
+ *          bursts land at different phases of the frame instead of resampling
+ *          the same lines.
+ *
+ *          Reading a level says nothing about frequency - the pixel clock is
+ *          far faster than this loop, so the samples are effectively random
+ *          phases. That is enough to answer "does it ever change?", which is
+ *          the only question being asked.
+ *
+ *          Caveat worth knowing before reading the output: a data line is
+ *          legitimately constant if the picture being scanned out happens to
+ *          hold that bit constant. Run "display test checker1" first - a
+ *          one-pixel white/black checkerboard forces every data line to
+ *          toggle at the pixel clock - so that "stuck" means something.
+ *
+ *          PARLCD_HSYNC / PARLCD_VSYNC carry no expectation here: this project
+ *          sets tcon_hsync and tcon_vsync to GLCDC_TCON_PIN_NONE and drives
+ *          only DE (see "display reg"), so those pins keep whatever their
+ *          TCON registers default to.
+ *
+ * Execution context: ntshell_task. Reads only. Sleeps in tk_dly_tsk between
+ * bursts for a total of about GLCDC_SIGNALS_ROUNDS * GLCDC_SIGNALS_GAP_MS.
+ */
+static void glcdc_cmd_signals(void)
+{
+    char buf[GLCDC_PRINT_BUF_SIZE];
+
+    /*
+     * uint16_t, not uint32_t: the maximum count is
+     * GLCDC_SIGNALS_ROUNDS * GLCDC_SIGNALS_BURST = 2,000, and ntshell_task
+     * runs on a 4 KB stack (usermain.c: stksz = 4096). Two 30-entry arrays
+     * cost 120 bytes this way instead of 240.
+     */
+    uint16_t seen_low[GLCDC_PIN_COUNT];
+    uint16_t seen_high[GLCDC_PIN_COUNT];
+    uint32_t toggling = 0;
+
+    for (uint32_t i = 0; i < GLCDC_PIN_COUNT; i++) {
+        seen_low[i]  = 0;
+        seen_high[i] = 0;
+    }
+
+    if (s_glcdc_status != GLCDC_STATUS_INITIALIZED) {
+        print_to_console("  Error: GLCDC is not initialized.\r\n");
+        return;
+    }
+
+    print_to_console("[GLCDC Pin Signal Activity]\r\n");
+    print_to_console("  Hint: run 'display test checker1' first so every data\r\n");
+    print_to_console("  line is forced to toggle at the pixel clock.\r\n");
+
+    for (uint32_t round = 0; round < GLCDC_SIGNALS_ROUNDS; round++) {
+        for (uint32_t burst = 0; burst < GLCDC_SIGNALS_BURST; burst++) {
+            for (uint32_t i = 0; i < GLCDC_PIN_COUNT; i++) {
+                const uint32_t pin = g_glcdc_pins[i].pin;
+                const uint32_t pidr =
+                    (R_PFS->PORT[pin >> 8].PIN[pin & 0xFFU].PmnPFS >> 1) & 1UL;
+
+                if (pidr != 0u) {
+                    seen_high[i] = (uint16_t)(seen_high[i] + 1u);
+                } else {
+                    seen_low[i] = (uint16_t)(seen_low[i] + 1u);
+                }
+            }
+        }
+
+        /* Let the scan-out advance to a different phase before the next burst. */
+        tk_dly_tsk(GLCDC_SIGNALS_GAP_MS);
+    }
+
+    for (uint32_t i = 0; i < GLCDC_PIN_COUNT; i++) {
+        const uint32_t pin = g_glcdc_pins[i].pin;
+        const bool changed = ((seen_low[i] != 0u) && (seen_high[i] != 0u));
+        const char *verdict;
+
+        if (!g_glcdc_pins[i].driven) {
+            /* Idle by configuration - see the note on g_glcdc_pins. */
+            verdict = changed ? "toggling (not driven in this config)"
+                              : "idle (not driven in this config)";
+        } else if (changed) {
+            verdict = "toggling";
+            toggling++;
+        } else if (seen_high[i] != 0u) {
+            verdict = "STUCK HIGH  <<<";
+        } else {
+            verdict = "STUCK LOW   <<<";
+        }
+
+        snprintf(buf, sizeof(buf), "  %-13s P%u%02u lo=%-5u hi=%-5u %s\r\n",
+                 g_glcdc_pins[i].name,
+                 (unsigned int)(pin >> 8),
+                 (unsigned int)(pin & 0xFFU),
+                 (unsigned int)seen_low[i],
+                 (unsigned int)seen_high[i],
+                 verdict);
+        print_to_console(buf);
+    }
+
+    {
+        uint32_t driven_count = 0;
+
+        for (uint32_t i = 0; i < GLCDC_PIN_COUNT; i++) {
+            if (g_glcdc_pins[i].driven) {
+                driven_count++;
+            }
+        }
+
+        snprintf(buf, sizeof(buf), "  %lu / %lu driven pins toggling over ~%u ms.\r\n",
+                 (unsigned long)toggling,
+                 (unsigned long)driven_count,
+                 (unsigned int)(GLCDC_SIGNALS_ROUNDS * GLCDC_SIGNALS_GAP_MS));
+        print_to_console(buf);
+
+        if (toggling == driven_count) {
+            print_to_console("  Every signal the GLCDC drives is present at the pin:\r\n");
+            print_to_console("  the MCU side is working. Look past the pins - connector,\r\n");
+            print_to_console("  flex, expansion board, panel.\r\n");
+        } else {
+            print_to_console("  A pin marked <<< is where to put the probe first.\r\n");
+        }
+    }
+}
+
+/*
+ * Issue #183 / #218: "display test" used to be excluded from the default
+ * build. Issue #218 needs it in every build: it is the only way to put known
+ * pixels into the GLCDC framebuffer WITHOUT going through LVGL, which
+ * separates "LVGL renders white" from "the GLCDC/panel output path is
+ * broken". Measured cost of building it (and the pattern generators below)
+ * in: 3,072 bytes of internal flash. See src/diag_config.h.
+ */
 
 /**
  * "display test" sub-command handler (S-002-4)
@@ -664,8 +1676,6 @@ static void glcdc_cmd_test(int argc, char **argv)
     print_to_console("  Error: GLCDC Layer 1 is not enabled.\r\n");
 #endif
 }
-
-#endif /* MIMAMORI_VERBOSE_DIAG */
 
 /**
  * "display backlight" sub-command handler (S-002-4)
@@ -852,27 +1862,11 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg)
         s_vsync_count++;
 
         /*
-         * Track buffer swap (S-002-3)
-         *
-         * On each Vsync, the GLCDC hardware latches any pending buffer change
-         * that was requested via R_GLCDC_BufferChange() in the flush callback.
-         *
-         * We increment the swap counter and toggle the front buffer index.
-         * The front buffer is the one being displayed, the back buffer is the
-         * one LVGL will render to next.
-         *
-         * Note: Not every Vsync results in a buffer swap. A swap only occurs
-         * when LVGL has called flush_cb with lv_display_flush_is_last() == true.
-         * However, the RM_LVGL_PORT semaphore mechanism ensures that the callback
-         * only returns from flush_wait_cb after a Vsync, so the swap_count
-         * closely tracks actual rendered frames. We increment on every Vsync
-         * for simplicity; the difference between vsync_count and swap_count
-         * can be observed via the "display dbuf" command.
-         *
-         * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:223-244
+         * Issue #218: buffer-swap tracking used to live here. It counted
+         * Vsyncs, not swaps, because this callback fires on every line-detect
+         * interrupt regardless of whether LVGL flushed. The real flush count
+         * is now recorded by glcdc_port_notify_flush() from the LVGL task.
          */
-        s_swap_count++;
-        s_front_buffer_index = (s_front_buffer_index == 0) ? 1 : 0;
     }
 
     if (RM_LVGL_PORT_EVENT_UNDERFLOW == p_arg->event) {
@@ -894,12 +1888,10 @@ void lvgl_glcdc_callback(rm_lvgl_port_callback_args_t *p_arg)
 /*
  * Issue #183: test pattern generators (S-002-4). Verified with a tree-wide grep
  * of e2studio_CPU0/src that glcdc_port_draw_colorbar / _draw_gradient /
- * _draw_checker / _fill_color are referenced only by glcdc_cmd_test() above,
- * which is gated by the same switch. The declarations in glcdc_port.h are gated
- * too, so a call from ungated code fails at compile time, not link time.
- * See src/diag_config.h.
+ * _draw_checker / _fill_color are referenced only by glcdc_cmd_test() above.
+ * Issue #218 removed the build gate from both (see the comment on
+ * glcdc_cmd_test); they are now always built. See src/diag_config.h.
  */
-#if MIMAMORI_VERBOSE_DIAG
 
 /**
  * Draw a color bar test pattern to a frame buffer
@@ -1037,8 +2029,6 @@ void glcdc_port_fill_color(uint8_t *p_fb, uint16_t color565)
     }
 }
 
-#endif /* MIMAMORI_VERBOSE_DIAG */
-
 /**
  * Control the LCD backlight (S-002-4)
  *
@@ -1148,19 +2138,16 @@ void glcdc_port_get_fb_info(glcdc_fb_info_t *info)
 }
 
 /**
- * Get double-buffering status information (S-002-3)
+ * Get double-buffering status information (S-002-3, revised by Issue #218)
  *
- * @details Fills the double-buffering status structure with current state.
- *          The buffer indices are derived from the Vsync callback tracking.
+ * @details Fills the double-buffering status structure with the counters
+ *          maintained by glcdc_port_notify_flush() (LVGL task) and by the
+ *          Vsync/underflow callback (ISR).
  *
- *          Initial state (after RM_LVGL_PORT_Open):
- *            - Front buffer: fb_background[1] (displayed by GLCDC)
- *            - Back buffer:  fb_background[0] (LVGL renders to this)
- *
- *          On each Vsync-synchronized swap:
- *            - Front/back indices toggle (0<->1)
- *
- * Reference: e2studio_CPU0/ra/fsp/src/rm_lvgl_port/rm_lvgl_port.c:126-133
+ *          The buffer the GLCDC hardware is actually scanning out is NOT
+ *          derived here. It lives in R_GLCDC->GR[0].FLM2 and is reported by
+ *          the "display reg" sub-command (Issue #218); the value tracked in
+ *          software is only "what LVGL last asked for".
  */
 void glcdc_port_get_dbuf_status(glcdc_dbuf_status_t *status)
 {
@@ -1168,25 +2155,16 @@ void glcdc_port_get_dbuf_status(glcdc_dbuf_status_t *status)
         return;
     }
 
-    status->swap_count       = s_swap_count;
-    status->vsync_count      = s_vsync_count;
-    status->underflow_count  = s_underflow_count;
-
-    /*
-     * Determine buffer indices.
-     * s_front_buffer_index tracks which buffer GLCDC is currently displaying.
-     * The back buffer (render target) is the other one.
-     */
-    status->front_buffer_index = s_front_buffer_index;
-    status->back_buffer_index  = (s_front_buffer_index == 0) ? 1 : 0;
+    status->flush_count         = s_flush_count;
+    status->vsync_count         = s_vsync_count;
+    status->last_flush_addr     = s_last_flush_addr;
+    status->bufchange_err_count = s_bufchange_err_count;
+    status->bufchange_last_err  = s_bufchange_last_err;
+    status->underflow_count     = s_underflow_count;
 
 #if GLCDC_CFG_LAYER_1_ENABLE
-    status->front_buffer_addr  = (uint32_t)&fb_background[s_front_buffer_index];
-    status->back_buffer_addr   = (uint32_t)&fb_background[status->back_buffer_index];
     status->double_buffer_enabled = true;
 #else
-    status->front_buffer_addr  = 0;
-    status->back_buffer_addr   = 0;
     status->double_buffer_enabled = false;
 #endif
 }
@@ -1200,11 +2178,47 @@ uint32_t glcdc_port_get_underflow_count(void)
 }
 
 /**
- * Get the buffer swap count (S-002-3)
+ * Get the LVGL flush count (S-002-3, revised by Issue #218)
  */
-uint32_t glcdc_port_get_swap_count(void)
+uint32_t glcdc_port_get_flush_count(void)
 {
-    return s_swap_count;
+    return s_flush_count;
+}
+
+/**
+ * Query the diagnostic blank request (Issue #218)
+ *
+ * @details See glcdc_port.h. Called from lvgl_port_mtk3_flush_cb() on the
+ *          LVGL task, once per rendered frame; a single volatile read.
+ */
+bool glcdc_port_blank_requested(void)
+{
+    return (s_blank_desired != 0u);
+}
+
+/**
+ * Report the result of one LVGL flush (Issue #218)
+ *
+ * @details See glcdc_port.h for the execution-context contract. Only plain
+ *          volatile stores here - this runs on every rendered frame, right
+ *          before the Vsync wait, and must not block.
+ */
+void glcdc_port_notify_flush(const void *p_framebuffer, int32_t err)
+{
+    s_last_flush_addr = (uint32_t)(uintptr_t)p_framebuffer;
+    s_flush_count++;
+
+    /*
+     * Issue #218: a NULL buffer means the flush callback honoured the
+     * diagnostic blank request. Acknowledging it here (rather than in the
+     * callback) keeps the whole reconcile visible in one place.
+     */
+    s_blank_applied = (NULL == p_framebuffer) ? 1u : 0u;
+
+    if (err != (int32_t)FSP_SUCCESS) {
+        s_bufchange_last_err = err;
+        s_bufchange_err_count++;
+    }
 }
 
 /**
@@ -1214,6 +2228,11 @@ uint32_t glcdc_port_get_swap_count(void)
  *   display status    - Show GLCDC initialization state, timing, clock, output config
  *   display fb        - Show frame buffer addresses, sizes, and format
  *   display dbuf      - Show double-buffering status (S-002-3)
+ *   display reg       - Read back GLCDC hardware registers (#218)
+ *   display fbstat    - Sample framebuffer contents (#218)
+ *   display blank     - Hide graphics plane, show BG.BGC (#218)
+ *   display pins      - Read back GLCDC pin function registers (#218)
+ *   display signals   - Detect GLCDC pins that are not toggling (#218)
  *   display test      - Draw test patterns on the LCD (S-002-4)
  *   display backlight - Control LCD backlight on/off (S-002-4)
  *
@@ -1226,6 +2245,11 @@ int usrcmd_display(int argc, char **argv)
         print_to_console("  status    - Show GLCDC timing parameters and configuration\r\n");
         print_to_console("  fb        - Show frame buffer addresses and sizes\r\n");
         print_to_console("  dbuf      - Show double-buffering status (Vsync sync)\r\n");
+        print_to_console("  reg       - Read back GLCDC hardware registers\r\n");
+        print_to_console("  fbstat    - Sample framebuffer contents (white/black)\r\n");
+        print_to_console("  blank     - Hide graphics plane; show background colour\r\n");
+        print_to_console("  pins      - Read back GLCDC pin function registers\r\n");
+        print_to_console("  signals   - Detect GLCDC pins that are not toggling\r\n");
         print_to_console("  test      - Draw test patterns on the LCD\r\n");
         print_to_console("  backlight - Control LCD backlight on/off\r\n");
         return CMD_ERR_USAGE;
@@ -1246,17 +2270,34 @@ int usrcmd_display(int argc, char **argv)
         return CMD_OK;
     }
 
-    /* Issue #183: "test" is still parsed when the verbose diagnostic build
-     * switch is off, but reports that the verbose build is required instead of
-     * silently ignoring the request. */
+    if (ntlibc_strcmp(argv[1], "reg") == 0) {
+        glcdc_cmd_reg();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "fbstat") == 0) {
+        glcdc_cmd_fbstat();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "blank") == 0) {
+        return glcdc_cmd_blank(argc, argv);
+    }
+
+    if (ntlibc_strcmp(argv[1], "pins") == 0) {
+        glcdc_cmd_pins();
+        return CMD_OK;
+    }
+
+    if (ntlibc_strcmp(argv[1], "signals") == 0) {
+        glcdc_cmd_signals();
+        return CMD_OK;
+    }
+
+    /* Issue #218: no longer gated by MIMAMORI_VERBOSE_DIAG. */
     if (ntlibc_strcmp(argv[1], "test") == 0) {
-#if MIMAMORI_VERBOSE_DIAG
         glcdc_cmd_test(argc, argv);
         return CMD_OK;
-#else
-        cmd_print_diag_disabled("display test");
-        return CMD_ERR_EXECUTE;
-#endif
     }
 
     if (ntlibc_strcmp(argv[1], "backlight") == 0) {
@@ -1275,6 +2316,11 @@ int usrcmd_display(int argc, char **argv)
     print_to_console("  status    - Show GLCDC timing parameters and configuration\r\n");
     print_to_console("  fb        - Show frame buffer addresses and sizes\r\n");
     print_to_console("  dbuf      - Show double-buffering status (Vsync sync)\r\n");
+    print_to_console("  reg       - Read back GLCDC hardware registers\r\n");
+    print_to_console("  fbstat    - Sample framebuffer contents (white/black)\r\n");
+    print_to_console("  blank     - Hide graphics plane; show background colour\r\n");
+    print_to_console("  pins      - Read back GLCDC pin function registers\r\n");
+    print_to_console("  signals   - Detect GLCDC pins that are not toggling\r\n");
     print_to_console("  test      - Draw test patterns on the LCD\r\n");
     print_to_console("  backlight - Control LCD backlight on/off\r\n");
 

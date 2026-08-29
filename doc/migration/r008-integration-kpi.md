@@ -447,26 +447,35 @@ KPI 定義の出典は `doc/product-requirements.md` の **3.1 定量的指標�
     呼ばれた回数（＝カメラ画像の**更新要求/invalidate 要求**）を 1 秒窓で数えた値
     （`camera_display.c:266-276`）。要求ベースであり、GLCDC が実際にその更新を提示し終えたことは
     保証しない。
-  - **レンダ FPS**（`display dbuf` の `Render FPS`、`glcdc_port.c:503-504`）は使えない。算出元の
-    `s_swap_count` は **VPOS（Vsync/line-detect）割り込みごとに無条件でインクリメント**される
-    （`lvgl_glcdc_callback`、`glcdc_port.c:862`）。コメント自身が「Not every Vsync results in a
-    buffer swap ... We increment on every Vsync for simplicity」と認めている（`:852-858`）。
-    よって `Render FPS` は実質 `Vsync Rate`（**~70.3Hz**。2026-07-26 実測 71Hz。→ 4.4 D-03）を
-    反映するだけで、**LVGL が実際に描画を完了した
-    フレーム数ではない**。`display dbuf` の説明コメント（`:480-484`）の「actual rendered FPS」表現は
-    実装（毎 Vsync カウント）と食い違っており、合格判定の根拠にしてはならない。
+  - **レンダ FPS**（`display dbuf`）: **Issue #218 で計装を入れ替えた**。
+    - **旧版（`Render FPS` / `Swap Count`）は使えなかった**。算出元の `s_swap_count` は
+      **VPOS（Vsync/line-detect）割り込みごとに無条件でインクリメント**されており
+      （`lvgl_glcdc_callback`）、コメント自身が「Not every Vsync results in a buffer swap ...
+      We increment on every Vsync for simplicity」と認めていた。よって `Render FPS` は実質
+      `Vsync Rate`（**~70.3Hz**。2026-07-26 実測 71Hz。→ 4.4 D-03）を反映するだけで、
+      **LVGL が実際に描画を完了したフレーム数ではなかった**。
+    - **新版（`Flush Rate` / `Flush Count`）は使える**。`s_flush_count` は
+      `lvgl_port_mtk3_flush_cb()` が `R_GLCDC_BufferChange()` を呼び終えた時点で
+      `glcdc_port_notify_flush()` から加算される（`lvgl_port_mtk3.c:279` /
+      `glcdc_port.c:1559-1566`）。書き手は **lvgl_task** であって Vsync ISR ではないので、
+      Vsync レートとは独立に動く。
+    - **残る限界**: これは「LVGL がフレームを描き終えてバッファ切替を**要求**した回数」であり、
+      その切替が Vsync で**反映され終えた**回数ではない。要求の直後に `flush_wait_cb` が
+      次の Vsync を待つため、1 秒窓での差は最大 1 フレームにとどまる。厳密な提示完了カウントが
+      要るなら、要求と Vsync 反映を対応付ける実装が別途必要（下の「恒久対応」参照）。
   - ⚠ **訂正（前版の誤り）**: 前版（commit 7dda415）は KPI-01 を「表示更新 FPS とレンダ FPS を主判定」と
-    したが、上記のとおり**レンダ FPS は Vsync レートを数えているだけ**で、LCD が 30fps で描画できて
-    いなくても常に ~70 を返す（2026-07-26 実測 71）。表示更新 FPS も**更新要求**の回数であり物理提示ではない。両者が 30 を
-    超えても実際の描画が 30fps 未満というケースを検出できない（P1 指摘）。
+    したが、当時の**レンダ FPS は Vsync レートを数えているだけ**で、LCD が 30fps で描画できて
+    いなくても常に ~70 を返した（2026-07-26 実測 71）。表示更新 FPS も**更新要求**の回数であり物理提示ではない。両者が 30 を
+    超えても実際の描画が 30fps 未満というケースを検出できなかった（P1 指摘）。
+    Issue #218 の `Flush Rate` はこの穴を塞ぐ（LVGL 側で数えるため、描画が落ちれば値も落ちる）。
   - **当面の判定方針**: 物理描画 FPS の計装が入るまでは、①表示更新 FPS（更新要求レート）を目安に、
     ②`Underflow count = 0`（`display dbuf`、`glcdc_port.c` の `s_underflow_count`、`:866-879`。
     SDRAM 帯域不足があると増える）、③**目視でカクつき・ティアリングが無いこと**、を併せて総合判定する。
     VIN キャプチャが 30fps でも AI 並走で描画パスが落ちるケース（R-007 の 20fps 懸念 = I-18）は
     `camera status` だけでは検出できない点も引き続き注意。
-  - **恒久対応（別 Issue 推奨）**: KPI-01 を厳密に測るには、**保留中のバッファ変更が実際に完了した
-    ときだけ**増えるカウンタ（＝`R_GLCDC_BufferChange()` 要求とその Vsync 反映を対応付けた完了カウント）を
-    `lvgl_glcdc_callback` に実装し、それを `display dbuf` の描画完了 FPS として公開する。
+  - **恒久対応**: Issue #218 で `Flush Rate`（LVGL 側のフレーム完了レート）を実装済み。
+    さらに厳密な**提示完了**カウント（`R_GLCDC_BufferChange()` 要求とその Vsync 反映を対応付けた
+    完了カウント）が必要になった場合は、`lvgl_glcdc_callback` 側に対応付けを追加する。
 - **KPI-05 と F-004（警報音）未実装**: PRD は F-004 を「人の転倒を検出した場合に**警報音**で
   同居家族に通知する」と定義する（`product-requirements.md` の「F-004: 人の転倒検出を警報音で通知」節。出力デバイス・音量・停止方法は
   TODO で未確定）。KPI-05「転倒検出→通知時間 10 秒以内」はこの**警報音通知**を対象とする。
