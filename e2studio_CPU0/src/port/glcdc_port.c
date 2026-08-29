@@ -161,6 +161,20 @@
 #define GLCDC_PFS_PMR_BIT               (0x00010000UL)
 
 /**
+ * PmnPFS fields checked for the GPIO control pins (Issue #222)
+ *
+ * DISP_RESET and DISP_BLEN are plain outputs, not peripheral pins, so their
+ * pass condition is the inverse of the 30 above: PSEL = 0 and PMR = 0.
+ * Bit positions from the MCU header (R7KA8P1KF_core0.h:66216-66220):
+ *   PODR[0] - the level software drives
+ *   PIDR[1] - the level actually present on the pad
+ *   PDR[2]  - direction, 1 = output
+ */
+#define GLCDC_PFS_PODR_BIT              (0x00000001UL)
+#define GLCDC_PFS_PIDR_BIT              (0x00000002UL)
+#define GLCDC_PFS_PDR_BIT               (0x00000004UL)
+
+/**
  * "display signals" sampling window (Issue #218)
  *
  * GLCDC_SIGNALS_ROUNDS bursts of GLCDC_SIGNALS_BURST samples per pin,
@@ -175,6 +189,9 @@
 
 /** Number of pins the GLCDC drives (see g_glcdc_pins) */
 #define GLCDC_PIN_COUNT                 (30)
+
+/** Number of LCD control pins driven as GPIO (see g_glcdc_gpio_pins) */
+#define GLCDC_GPIO_PIN_COUNT            (2)
 
 /**********************************************************************************************************************
  Private (static) variables
@@ -271,6 +288,7 @@ static void glcdc_cmd_fbstat(void);
 static int glcdc_cmd_blank(int argc, char **argv);
 static const char *glcdc_tcon_sel_name(uint32_t sel);
 static void glcdc_cmd_pins(void);
+static void glcdc_pins_report_gpio(void);
 static void glcdc_cmd_signals(void);
 
 /**********************************************************************************************************************
@@ -1316,6 +1334,11 @@ static int glcdc_cmd_blank(int argc, char **argv)
  *          (DSCR, IOPORT_CFG_DRIVE_HIGH = 0x00000C00) affects signal quality
  *          rather than whether the pin is connected to the GLCDC at all.
  *
+ *          Issue #222: these 30 pins are not the whole signal path. Two more
+ *          lines reach the panel from outside the GLCDC, and holding either
+ *          one low blanks the display without disturbing anything above.
+ *          glcdc_pins_report_gpio() covers them in a second section.
+ *
  * Execution context: ntshell_task. Reads only - PmnPFS reads need no PWPR
  * unlock, and nothing here writes a pin register. Does not block.
  */
@@ -1377,6 +1400,57 @@ static const struct {
     { (uint16_t)PARLCD_D10G2,                  "PARLCD_D10G2",    true  },
 };
 
+/**
+ * The two LCD control lines the GLCDC does not drive (Issue #222)
+ *
+ * "display pins" and "display signals" only ever looked at the 30 pins above,
+ * so these two were invisible to every command. DISP_RESET is the dangerous
+ * one: while it is held low the panel stays blank and the GLCDC registers,
+ * the framebuffer and the pin waveforms all still look perfectly healthy -
+ * indistinguishable from the Issue #218 fault by software alone. It also
+ * resets the GT911 touch controller, which is why a working "touch read" is
+ * independent evidence that the line is released.
+ *
+ * ra_gen/pin_data.c:255-257 (P514) and :267-269 (P606) configure both as
+ * IOPORT_CFG_DRIVE_MID | PORT_DIRECTION_OUTPUT | PORT_OUTPUT_LOW, so reset
+ * asserted and backlight off is the normal state at power-on. glcdc_lcd_reset()
+ * releases DISP_RESET during glcdc_port_init(); DISP_BLEN is raised later, by
+ * glcdc_backlight_on_event() after the first LVGL flush.
+ *
+ * "low_is_fault" is what separates the two. DISP_RESET low always breaks the
+ * display. DISP_BLEN low does not: it is the state both after "display
+ * backlight off" and before the first flush, so it is reported as information
+ * rather than as a fault.
+ *
+ * PR #224 review: a low level also means different things before and after
+ * glcdc_port_init() has run, so each pin carries two notes. usermain.c starts
+ * ntshell_task (priority 12) before it even creates lvgl_task (priority 14),
+ * which is what calls glcdc_port_init(), so "display pins" can genuinely run
+ * while both pins are still at their pin_data.c reset level.
+ *
+ * The early note re-attributes the cause; it does not clear "low_is_fault".
+ * A DISP_RESET still low because lvgl_task never reached glcdc_port_init()
+ * (failed to start, hung, crashed) is exactly why the panel would be blank,
+ * and that is worth reporting - naming the reason is more useful than
+ * suppressing the verdict, which would recreate the Issue #222 blind spot in
+ * a new place.
+ */
+static const struct {
+    uint16_t    pin;
+    const char *name;
+    const char *role;
+    bool        low_is_fault;
+    const char *low_note;       /* PODR=0 once glcdc_port_init() has run */
+    const char *low_note_early;  /* PODR=0 before it has run */
+} g_glcdc_gpio_pins[GLCDC_GPIO_PIN_COUNT] = {
+    { (uint16_t)GLCDC_PIN_RESET,     "DISP_RESET", "panel + touch reset", true,
+      "<<< RESET ASSERTED (panel and touch held in reset)",
+      "<<< RESET NOT RELEASED (display init has not run yet)" },
+    { (uint16_t)GLCDC_PIN_BACKLIGHT, "DISP_BLEN",  "backlight enable",    false,
+      "-- backlight off (normal after 'display backlight off')",
+      "-- backlight off (raised after the first LVGL flush)" },
+};
+
 static void glcdc_cmd_pins(void)
 {
     char buf[GLCDC_PRINT_BUF_SIZE];
@@ -1414,6 +1488,115 @@ static void glcdc_cmd_pins(void)
              (unsigned int)GLCDC_PIN_COUNT,
              (ok_count == GLCDC_PIN_COUNT) ?
              "" : "  <<< SIGNAL PATH BROKEN AT THE PIN");
+    print_to_console(buf);
+
+    glcdc_pins_report_gpio();
+}
+
+/**
+ * Second half of "display pins": the GPIO control lines (Issue #222)
+ *
+ * @details Reports DISP_RESET (P606) and DISP_BLEN (P514). These get their own
+ *          section because their pass condition is the inverse of the 30 pins
+ *          above - here PSEL=0 and PMR=0 mean "still a GPIO", which is correct,
+ *          whereas on a GLCDC pin that would mean the peripheral had lost it.
+ *
+ *          PIDR is judged here, unlike in the GLCDC section where it is only
+ *          printed. On a peripheral pin PIDR changes on its own every frame; on
+ *          a static push-pull output it must equal PODR, so any disagreement
+ *          means something off-chip is fighting the driver.
+ *
+ *          A low level is judged against s_glcdc_status, because both pins
+ *          power up low and are only raised during display bring-up. See the
+ *          note on g_glcdc_gpio_pins for why that re-words the verdict instead
+ *          of suppressing it.
+ *
+ * Execution context: ntshell_task, via glcdc_cmd_pins(). Reads only - PmnPFS
+ * reads need no PWPR unlock (see R_BSP_PinRead(), bsp_io.h:347-351), and
+ * nothing here writes a pin register, so this cannot disturb a running panel.
+ * Does not block. s_glcdc_status is written only by lvgl_task and read here
+ * the same way the other "display" sub-commands already read it (:747, :1210,
+ * :1635, :1757); a stale read can only mis-word one line of diagnostics.
+ */
+static void glcdc_pins_report_gpio(void)
+{
+    char buf[GLCDC_PRINT_BUF_SIZE];
+    uint32_t fault_count = 0;
+
+    /* Both pins power up low (ra_gen/pin_data.c) and are raised during display
+     * bring-up, so a low level only means "wrong" once that has run. Sampled
+     * once here rather than per pin so both lines describe the same instant. */
+    const bool early = (GLCDC_STATUS_NOT_INITIALIZED == s_glcdc_status);
+
+    print_to_console("[LCD GPIO Control Pins (PmnPFS) Readback]\r\n");
+    print_to_console("  Not GLCDC pins. Expect PSEL=0x00, PMR=0, PDR=1, PODR=PIDR.\r\n");
+
+    snprintf(buf, sizeof(buf), "  Display init: %s\r\n",
+             early ? "NOT RUN YET - a low level here is the power-on state" :
+             ((GLCDC_STATUS_ERROR == s_glcdc_status) ? "FAILED" : "done"));
+    print_to_console(buf);
+
+    for (uint32_t i = 0; i < GLCDC_GPIO_PIN_COUNT; i++) {
+        const uint32_t pin  = g_glcdc_gpio_pins[i].pin;
+        const uint32_t pfs  = R_PFS->PORT[pin >> 8].PIN[pin & 0xFFU].PmnPFS;
+        const uint32_t pmr  = (pfs >> 16) & 1UL;
+        const uint32_t psel = (pfs >> 24) & 0x1FUL;
+        const bool podr = (0U != (pfs & GLCDC_PFS_PODR_BIT));
+        const bool pidr = (0U != (pfs & GLCDC_PFS_PIDR_BIT));
+        const bool pdr  = (0U != (pfs & GLCDC_PFS_PDR_BIT));
+
+        /* First match wins - the checks run most to least fundamental, so a pin
+         * that is not even a GPIO any more is not also reported as "not an
+         * output". */
+        const char *verdict = "";
+        bool fault = true;
+
+        if ((0U != pmr) || (0U != psel)) {
+            verdict = "<<< NOT GPIO (taken by a peripheral)";
+        } else if (!pdr) {
+            verdict = "<<< NOT OUTPUT";
+        } else if (podr && !pidr) {
+            verdict = "<<< DRIVEN HIGH BUT PAD IS LOW (pulled down off-chip)";
+        } else if (!podr && pidr) {
+            verdict = "<<< DRIVEN LOW BUT PAD IS HIGH (driven off-chip)";
+        } else if (!podr) {
+            /* Software really is holding the line low. What that means depends
+             * on which line it is and on whether display bring-up has run. */
+            verdict = early ? g_glcdc_gpio_pins[i].low_note_early
+                            : g_glcdc_gpio_pins[i].low_note;
+            fault   = g_glcdc_gpio_pins[i].low_is_fault;
+        } else {
+            fault = false;
+        }
+
+        if (fault) {
+            fault_count++;
+        }
+
+        snprintf(buf, sizeof(buf),
+                 "  %-10s P%u%02u 0x%08lX PODR=%lu PIDR=%lu PDR=%lu PMR=%lu PSEL=0x%02lX\r\n",
+                 g_glcdc_gpio_pins[i].name,
+                 (unsigned int)(pin >> 8),
+                 (unsigned int)(pin & 0xFFU),
+                 (unsigned long)pfs,
+                 (unsigned long)podr,
+                 (unsigned long)pidr,
+                 (unsigned long)pdr,
+                 (unsigned long)pmr,
+                 (unsigned long)psel);
+        print_to_console(buf);
+
+        snprintf(buf, sizeof(buf), "    %s%s%s\r\n",
+                 g_glcdc_gpio_pins[i].role,
+                 ('\0' == verdict[0]) ? "" : "  ",
+                 verdict);
+        print_to_console(buf);
+    }
+
+    snprintf(buf, sizeof(buf), "  %lu / %u GPIO control pins healthy.%s\r\n",
+             (unsigned long)(GLCDC_GPIO_PIN_COUNT - fault_count),
+             (unsigned int)GLCDC_GPIO_PIN_COUNT,
+             (0U == fault_count) ? "" : "  <<< PANEL CANNOT DISPLAY");
     print_to_console(buf);
 }
 
@@ -2266,7 +2449,7 @@ void glcdc_port_notify_flush(const void *p_framebuffer, int32_t err)
  *   display reg       - Read back GLCDC hardware registers (#218)
  *   display fbstat    - Sample framebuffer contents (#218)
  *   display blank     - Hide graphics plane, show BG.BGC (#218)
- *   display pins      - Read back GLCDC pin function registers (#218)
+ *   display pins      - Read back GLCDC and LCD control pin registers (#218, #222)
  *   display signals   - Detect GLCDC pins that are not toggling (#218)
  *   display test      - Draw test patterns on the LCD (S-002-4)
  *   display backlight - Control LCD backlight on/off (S-002-4)
@@ -2283,7 +2466,7 @@ int usrcmd_display(int argc, char **argv)
         print_to_console("  reg       - Read back GLCDC hardware registers\r\n");
         print_to_console("  fbstat    - Sample framebuffer contents (white/black)\r\n");
         print_to_console("  blank     - Hide graphics plane; show background colour\r\n");
-        print_to_console("  pins      - Read back GLCDC pin function registers\r\n");
+        print_to_console("  pins      - Read back GLCDC and LCD control pin registers\r\n");
         print_to_console("  signals   - Detect GLCDC pins that are not toggling\r\n");
         print_to_console("  test      - Draw test patterns on the LCD\r\n");
         print_to_console("  backlight - Control LCD backlight on/off\r\n");
@@ -2354,7 +2537,7 @@ int usrcmd_display(int argc, char **argv)
     print_to_console("  reg       - Read back GLCDC hardware registers\r\n");
     print_to_console("  fbstat    - Sample framebuffer contents (white/black)\r\n");
     print_to_console("  blank     - Hide graphics plane; show background colour\r\n");
-    print_to_console("  pins      - Read back GLCDC pin function registers\r\n");
+    print_to_console("  pins      - Read back GLCDC and LCD control pin registers\r\n");
     print_to_console("  signals   - Detect GLCDC pins that are not toggling\r\n");
     print_to_console("  test      - Draw test patterns on the LCD\r\n");
     print_to_console("  backlight - Control LCD backlight on/off\r\n");
