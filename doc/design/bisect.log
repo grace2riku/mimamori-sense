@@ -1,0 +1,14 @@
+# bad: [4f2902807c1554bcd491b906eae546bc2c907630] Merge pull request #229 from grace2riku/docs/issue-225-power-supply
+# good: [ccca50b6cc59e34ceea1f0fc0f13f8c281b1612f] Merge pull request #177 from grace2riku/feature/issue-175
+git bisect start '--first-parent' 'main' 'ccca50b'
+# good: [3121df2b8537d605c43c5cd2e1557f8b5523d230] Merge pull request #199 from grace2riku/feature/issue-45
+git bisect good 3121df2b8537d605c43c5cd2e1557f8b5523d230
+# good: [4cc1d8631b1672d1cb435ef065c9afa48e082867] Merge pull request #210 from grace2riku/fix/202-cpu1-secure-azone-gpt1
+git bisect good 4cc1d8631b1672d1cb435ef065c9afa48e082867
+# bad: [f536ec4969e65cfabbb0dbae2a04f290ed880252] Merge pull request #217 from grace2riku/feature/issue-213
+git bisect bad f536ec4969e65cfabbb0dbae2a04f290ed880252
+# bad: [c3ad729c8165c226e662a8af4bf4bf8e881af0ba] Merge pull request #216 from grace2riku/feature/issue-212
+git bisect bad c3ad729c8165c226e662a8af4bf4bf8e881af0ba
+# bad: [6dbafb0613f5d2b7dd39b74ea8947ce2bbe9c8cc] Merge pull request #215 from grace2riku/feature/issue-211
+git bisect bad 6dbafb0613f5d2b7dd39b74ea8947ce2bbe9c8cc
+# first bad commit: [6dbafb0613f5d2b7dd39b74ea8947ce2bbe9c8cc] Merge pull request #215 from grace2riku/feature/issue-211
