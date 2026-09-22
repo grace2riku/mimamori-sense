@@ -78,6 +78,11 @@ FSP_CPP_FOOTER
  * ------------------------------------------------------------------------- */
 #define MIMAMORI_USE_MTKERNEL_BOOT  (1)
 
+/* Issue #230: early-boot delay workaround; 200 ms requested, minimum unknown.
+ * Wait after BSP RTC setup, before pin and SDRAM initialization.
+ * See doc/design/issue-230.md, section 31, for validation and remaining work. */
+#define MIMAMORI_BOOT_DELAY_MS     (200U)
+
 #if (MIMAMORI_USE_MTKERNEL_BOOT == 1)
 /* BSP2 が提供する μT-Kernel 起動関数（戻らない）。
  * mtk3_bsp2/sysdepend/ra_fsp/cpu/core/armv8m/sys_start.c */
@@ -115,6 +120,11 @@ void R_BSP_WarmStart (bsp_warm_start_event_t event)
     if (BSP_WARM_START_POST_C == event)
     {
         /* C runtime environment and system clocks are setup. */
+
+        /* Keep the wait after R_BSP_Init_RTC() writes RCR4. Waiting in
+         * POST_CLOCK instead left this write after the delay and failed
+         * the main-wait-r1 acceptance test (white 5/10). */
+        R_BSP_SoftwareDelay(MIMAMORI_BOOT_DELAY_MS, BSP_DELAY_UNITS_MILLISECONDS);
 
         /* Configure pins. */
         R_IOPORT_Open(&IOPORT_CFG_CTRL, &IOPORT_CFG_NAME);
