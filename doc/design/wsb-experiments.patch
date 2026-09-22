@@ -1,0 +1,177 @@
+diff --git a/e2studio/solution.xml b/e2studio/solution.xml
+index a4e3c51..2435e9c 100644
+--- a/e2studio/solution.xml
++++ b/e2studio/solution.xml
+@@ -370,7 +370,7 @@
+     <node id="board.clock.gptclk.display" option="board.clock.gptclk.display.value"/>
+     <node id="board.clock.gtclk.source" option="board.clock.gtclk.source.pclkd"/>
+     <node id="board.clock.gtclk.display" option="board.clock.gtclk.display.value"/>
+-    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll2r"/>
++    <node id="board.clock.lcdclk.source" option="board.clock.lcdclk.source.pll1r"/>
+     <node id="board.clock.lcdclk.div" option="board.clock.lcdclk.div.2"/>
+     <node id="board.clock.lcdclk.display" option="board.clock.lcdclk.display.value"/>
+     <node id="board.clock.i3cclk.source" option="board.clock.i3cclk.source.pll2q"/>
+diff --git a/e2studio_CPU0/ra_gen/bsp_clock_cfg.h b/e2studio_CPU0/ra_gen/bsp_clock_cfg.h
+index adacf83..08b0045 100644
+--- a/e2studio_CPU0/ra_gen/bsp_clock_cfg.h
++++ b/e2studio_CPU0/ra_gen/bsp_clock_cfg.h
+@@ -54,7 +54,7 @@
+ #define BSP_CFG_GPTCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2R) /* GPTCLK Src: PLL2R */
+ #define BSP_CFG_GPTCLK_DIV (BSP_CLOCKS_GPT_CLOCK_DIV_2) /* GPTCLK Div /2 */
+ #define BSP_CFG_GPT_COUNT_CLOCK_SOURCE (1) /* GPT Src: PCLKD */
+-#define BSP_CFG_LCDCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2R) /* LCDCLK Src: PLL2R */
++#define BSP_CFG_LCDCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL1R) /* LCDCLK Src: PLL1R */
+ #define BSP_CFG_LCDCLK_DIV (BSP_CLOCKS_LCD_CLOCK_DIV_2) /* LCDCLK Div /2 */
+ #define BSP_CFG_I3CCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2Q) /* I3CCLK Src: PLL2Q */
+ #define BSP_CFG_I3CCLK_DIV (BSP_CLOCKS_I3C_CLOCK_DIV_4) /* I3CCLK Div /4 */
+diff --git a/e2studio_CPU0/src/port/glcdc_port.c b/e2studio_CPU0/src/port/glcdc_port.c
+index 6ce4a11..2c6b089 100644
+--- a/e2studio_CPU0/src/port/glcdc_port.c
++++ b/e2studio_CPU0/src/port/glcdc_port.c
+@@ -98,6 +98,25 @@
+  *********************************************************************************************************************/
+ 
+ /** Console output buffer size */
++/* ---------------------------------------------------------------------------
++ * 白画面切り分け用の一時スイッチ（doc/design/white-screen-boot-regression.md 4.6）
++ *
++ * 電源投入から DISP_RESET 解放までの時間を延ばす。0 = 遅延なし（本来の動作）。
++ *
++ * 目的: 表示の設定値・立ち上げコード・新規デバイスの負荷・パネルクロックはすべて
++ *       白画面の成立条件ではないと実測で潰れた（手順書 4.6.1）。残る差は
++ *       「同じコードがいつ走るか」だけなので、立ち上げを遅らせて白が消えるかを見る。
++ *
++ * 待ちに tk_dly_tsk() を使う理由: glcdc_port_init() の呼び出し元は lvgl_task だけ
++ *       （src/lvgl_thread_entry.c:168。他に呼び出し元は無い）なのでタスクコンテキストで
++ *       あることが保証される。同ファイルの glcdc_cmd_dbuf() も tk_dly_tsk() を使っている。
++ *       R_BSP_SoftwareDelay() はビジーループで他タスクを止めてしまい、
++ *       「立ち上げを遅らせる」以外の条件も変わるため使わない。
++ *
++ * ★ 調査が終わったら 0 に戻すこと（git checkout -- src/port/glcdc_port.c でも戻せる）。
++ * ------------------------------------------------------------------------- */
++#define WSB_DISPLAY_INIT_DELAY_MS   (500)
++
+ #define GLCDC_PRINT_BUF_SIZE    (128)
+ 
+ /**
+@@ -1942,6 +1961,12 @@ bool glcdc_port_init(void)
+      *
+      * Reference: reference_projects/lv_port_renesas_ek_ra8p1/src/port/lv_port_disp.c:88-102
+      */
++#if (WSB_DISPLAY_INIT_DELAY_MS > 0)
++    /* 白画面切り分け用の遅延（ファイル先頭の WSB_DISPLAY_INIT_DELAY_MS）。
++     * DISP_RESET を解放する前に待つ。調査用の一時コード。 */
++    tk_dly_tsk(WSB_DISPLAY_INIT_DELAY_MS);
++#endif
++
+     glcdc_lcd_reset();
+ 
+     /*
+diff --git a/e2studio_CPU0/src/usermain.c b/e2studio_CPU0/src/usermain.c
+index 1e5b7b3..56db034 100644
+--- a/e2studio_CPU0/src/usermain.c
++++ b/e2studio_CPU0/src/usermain.c
+@@ -60,6 +60,42 @@
+  * ISR からは呼べない audio_stop() をタスクコンテキストで代行する。 */
+ #include "audio_alarm.h"
+ 
++/* ---------------------------------------------------------------------------
++ * 白画面切り分け用の一時スイッチ（doc/design/white-screen-boot-regression.md 4.3）
++ *
++ * 1 = タスクを生成・起動する（本来の動作） / 0 = 生成しない
++ *
++ * 目的: `main` の起動時消費電流を下げたときに白画面が消えるかを見て、
++ *       退行が「負荷要因」か「ソフト要因」かを分ける（Phase 1 / 実験 B-2）。
++ *
++ * 落としてよい根拠（grep で確認済み）:
++ *   - audio: audio_init() の呼び出し元は audio_port.c:775（audio_task）と
++ *     :931（NT-Shell の手動実行）だけ。audio_task を生成しなければ
++ *     起動時に DA7212 は初期化されない。
++ *   - alarm: audio_start() / audio_stop() の呼び出し元は audio_alarm.c:799 / :647
++ *     （どちらも alarm_task の reconcile 経路。集約点は :1471-1472）、
++ *     audio_port.c:940 / :957（NT-Shell の手動）、:641（audio_start 内部の
++ *     ロールバック）だけ。起動時に音を出す経路は alarm_task のみ。
++ *     ★ AUDIO を 0 にするなら ALARM も必ず 0 にする。
++ *   - ai: g_ai_app_flgid は ai_inference_task が生成するまで 0 のままで、
++ *     camera_display.c:401 のガードにより AI 連携ブロックが丸ごとスキップされる。
++ *     表示パイプラインは動く。
++ *
++ * 注意:
++ *   - 0 にしたタスクの ctsk_xxx が未使用になり -Wunused-variable が出る。
++ *     .cproject に -Werror は無いのでビルドは通る。
++ *   - camera / lvgl は表示そのものなので落とさない。
++ *   - この実験でも消えないもの: RTC サブクロック発振（#215、BSP 初期化）、
++ *     pin_data.c のピン設定、LTO（#196）、Dave2D プール化（#197）、
++ *     lv_conf_user.h（#190）、FreeRTOS 撤去（#198）。
++ *
++ * ★ 調査が終わったら 3 つすべて 1 に戻すこと。
++ *   git checkout -- e2studio_CPU0/src/usermain.c でも戻せる。
++ * ------------------------------------------------------------------------- */
++#define WSB_ENABLE_AI_TASK      1   /* AI 推論（NPU / 224px） */
++#define WSB_ENABLE_AUDIO_TASK   1   /* DA7212 + SSIE0/DTC/GPT の初期化 */
++#define WSB_ENABLE_ALARM_TASK   1   /* 警報音（AUDIO=0 ならこちらも 0） */
++
+ /*
+  * ボード LED 定義（FSP 提供）。
+  * FreeRTOS 版 blinky_thread_entry.c と同じく g_bsp_leds を使用する。
+@@ -548,6 +584,7 @@ EXPORT INT usermain(void)
+      * （LVGL タイマ）側は ID が 0 の間は AI 連携ブロックをスキップする。
+      * ログは他タスクと同じく T-Monitor（SCI8 一本化 ― R-005 の注意参照）。
+      * --------------------------------------------------------------------- */
++#if WSB_ENABLE_AI_TASK      /* 白画面切り分け用スイッチ（ファイル先頭） */
+     tskid = tk_cre_tsk(&ctsk_ai_inference);
+     if (tskid <= E_OK) {
+         tm_printf((UB *)"[usermain] tk_cre_tsk(ai_inference) failed. ercd = %d\n", (INT)tskid);
+@@ -561,6 +598,7 @@ EXPORT INT usermain(void)
+     }
+ 
+     tm_putstring((UB *)"[usermain] ai_inference_task created & started.\n");
++#endif /* WSB_ENABLE_AI_TASK */
+ 
+     /* ---------------------------------------------------------------------
+      * オーディオ出力タスクを生成・起動（Issue #46 / S-005-2）
+@@ -570,6 +608,7 @@ EXPORT INT usermain(void)
+      * 待ってから IIC1 を開くため、camera / lvgl との起動順に制約は無い。
+      * ログは他タスクと同じく T-Monitor（SCI8 一本化 ― R-005 の注意参照）。
+      * --------------------------------------------------------------------- */
++#if WSB_ENABLE_AUDIO_TASK   /* 白画面切り分け用スイッチ（ファイル先頭） */
+     tskid = tk_cre_tsk(&ctsk_audio);
+     if (tskid <= E_OK) {
+         tm_printf((UB *)"[usermain] tk_cre_tsk(audio) failed. ercd = %d\n", (INT)tskid);
+@@ -583,6 +622,7 @@ EXPORT INT usermain(void)
+     }
+ 
+     tm_putstring((UB *)"[usermain] audio_task created & started.\n");
++#endif /* WSB_ENABLE_AUDIO_TASK */
+ 
+     /* ---------------------------------------------------------------------
+      * 警報音タスクを生成・起動（Issue #47 / S-005-3）
+@@ -594,6 +634,7 @@ EXPORT INT usermain(void)
+      * audio_start() 経由でデバイス状態を検査し、未初期化なら
+      * FSP_ERR_NOT_OPEN を返す（src/port/audio_port.c:562-575）。
+      * --------------------------------------------------------------------- */
++#if WSB_ENABLE_ALARM_TASK   /* 白画面切り分け用スイッチ（ファイル先頭） */
+     tskid = tk_cre_tsk(&ctsk_alarm);
+     if (tskid <= E_OK) {
+         tm_printf((UB *)"[usermain] tk_cre_tsk(alarm) failed. ercd = %d\n", (INT)tskid);
+@@ -607,6 +648,7 @@ EXPORT INT usermain(void)
+     }
+ 
+     tm_putstring((UB *)"[usermain] alarm_task created & started.\n");
++#endif /* WSB_ENABLE_ALARM_TASK */
+ 
+     /* usermain() を終了させない（終了すると μT-Kernel がシャットダウンするため）。
+      * 初期タスクは高優先度のため、ここで待ち状態に入れて他タスクへ実行を譲る。 */
+diff --git a/e2studio_CPU1/ra_gen/bsp_clock_cfg.h b/e2studio_CPU1/ra_gen/bsp_clock_cfg.h
+index adacf83..08b0045 100644
+--- a/e2studio_CPU1/ra_gen/bsp_clock_cfg.h
++++ b/e2studio_CPU1/ra_gen/bsp_clock_cfg.h
+@@ -54,7 +54,7 @@
+ #define BSP_CFG_GPTCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2R) /* GPTCLK Src: PLL2R */
+ #define BSP_CFG_GPTCLK_DIV (BSP_CLOCKS_GPT_CLOCK_DIV_2) /* GPTCLK Div /2 */
+ #define BSP_CFG_GPT_COUNT_CLOCK_SOURCE (1) /* GPT Src: PCLKD */
+-#define BSP_CFG_LCDCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2R) /* LCDCLK Src: PLL2R */
++#define BSP_CFG_LCDCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL1R) /* LCDCLK Src: PLL1R */
+ #define BSP_CFG_LCDCLK_DIV (BSP_CLOCKS_LCD_CLOCK_DIV_2) /* LCDCLK Div /2 */
+ #define BSP_CFG_I3CCLK_SOURCE (BSP_CLOCKS_SOURCE_CLOCK_PLL2Q) /* I3CCLK Src: PLL2Q */
+ #define BSP_CFG_I3CCLK_DIV (BSP_CLOCKS_I3C_CLOCK_DIV_4) /* I3CCLK Div /4 */

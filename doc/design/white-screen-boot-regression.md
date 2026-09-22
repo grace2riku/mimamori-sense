@@ -2642,3 +2642,51 @@ Issue #225 の落とし穴メモ 2 に従い `lv_port_indev_init()`（タッチ�
 **表示立ち上げと並行する SDRAM・外部バスのトラフィックも原因ではない。**
 
 これで単独調査は打ち切り（4.21）。問い合わせ材料は 4.22。
+
+---
+
+## 付録E 実験用スイッチのパッチ（`doc/design/wsb-experiments.patch`）
+
+実験を再現するための差分。**`main` に対して生成してある**ので、`main`（または `main` から切った
+ブランチ）で以下を実行すれば適用できる。
+
+```bash
+git apply doc/design/wsb-experiments.patch
+```
+
+適用後は各スイッチの値を変えてビルドする。**測定が終わったら `git checkout -- .` で戻すこと。**
+
+### E.1 パッチに含まれるもの
+
+| ファイル | スイッチ / 変更 | 対応する実験 |
+|---|---|---|
+| `e2studio_CPU0/src/usermain.c` | `WSB_ENABLE_AI_TASK` / `WSB_ENABLE_AUDIO_TASK` / `WSB_ENABLE_ALARM_TASK`（0 で当該タスクを生成しない） | 実験 B-2 の ①②③（4.3）／付録D-3 〜 D-5 |
+| `e2studio_CPU0/src/port/glcdc_port.c` | `WSB_DISPLAY_INIT_DELAY_MS`（DISP_RESET 解放前に `tk_dly_tsk()` で待つ。パッチ内の値は 500） | 実験 B-4（4.6）／付録D-7 |
+| `e2studio/solution.xml` ＋ 両コアの `ra_gen/bsp_clock_cfg.h` | LCDCLK 源を PLL2R → PLL1R（パネルクロック 60 → 50 MHz） | 実験 B-3（4.5.3）／付録D-6 |
+
+`ra_gen/` は本来編集禁止（`CLAUDE.md`）だが、ここでは **Generate Project Content の結果をそのまま
+記録してある**ので、e2 studio を操作せずに適用できる。恒久的な変更として採用する場合は
+必ず `solution.xml` を変更して再生成すること。
+
+### E.2 パッチに含まれないもの（本文に手順を記載）
+
+後半の実験は 1 ファイル 1 行程度の変更なので、パッチ化せず本文に記載した。
+
+| 実験 | 変更内容 | 記載場所 |
+|---|---|---|
+| B-7 | P606 の初期出力を Low → High | 3.6 / 4.10.3（FSP の Pins タブ。`solution.xml`） |
+| B-10 | `BSP_CFG_RTC_USED` を 1 → 0 | 4.12.3 / 付録D-14 |
+| B-13 | LTO（`-flto`）を外す | 4.13.1 / 付録D-15 |
+| B-15 | `BSP_TZ_CFG_PSARE` の RTC ビットを非セキュアへ | 4.14.2 / 付録D-16 |
+| B-16 | `usermain()` 先頭で `R_ICU->IELSR[22] = 0U` | 4.14.3 / 付録D-17 |
+| B-17 / B-19 | `.rodata` 4 KB ＋ `.bss` 64 B のパディング | 4.15.1 / 付録D-18 / D-20 |
+| B-20 | `glcdc_lcd_reset()` の待ちを 1/1/1 ms → 10/10/50 ms | 付録D-21 |
+| B-23 | `R_GLCDC_Open()` / `R_GLCDC_Start()` の後に 20 ms ずつ待つ | 付録D-24 |
+| B-24 | リセット解除を GLCDC 起動後に移す | 付録D-25 |
+| B-25 | `camera` タスクとタッチ初期化を止める | 付録D-26 |
+
+### E.3 注意
+
+- パッチは `main`（`4f29028`）に対して生成している。**別のコミットに当てると衝突しうる**
+- `WSB_*` で始まる識別子はすべて調査用の一時コードである。**製品コードに残さないこと**
+- 測定の作法（対照は同一セッション、モードF / G を白と数えない、必要回数）は 0.5 と 3.1.1 を参照
