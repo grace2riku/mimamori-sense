@@ -1,0 +1,29 @@
+BOOTTRACE232 v=23201 fnv=3615F648 hz=1000000000 tick_ms=10 probe=4 fault=0 epoch=1 count=24
+POST_C cycles=45 ctrl=80000001
+BT INIT_BEGIN seq=2 hi=0 lo=460 cyc=662421164 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INIT_END seq=10 hi=0 lo=460 cyc=662432020 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_BEGIN seq=3 hi=0 lo=460 cyc=662423485 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_END seq=4 hi=0 lo=460 cyc=662424180 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT BRANCH seq=5 hi=0 lo=460 cyc=662425248 epoch=0 ctrl=80000001 result=1 aux=00004100 extra=00000000
+BT PROVISION_BEGIN seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT PROVISION_END seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT GET_BEGIN seq=6 hi=0 lo=460 cyc=662426108 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GET_END seq=7 hi=0 lo=460 cyc=662427904 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_BEGIN seq=8 hi=0 lo=460 cyc=662430139 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_END seq=9 hi=0 lo=460 cyc=662431348 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_BEGIN seq=1 hi=0 lo=60 cyc=263636148 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_END seq=19 hi=0 lo=193420 cyc=1756164426 epoch=1 ctrl=80000001 result=1 aux=00000000 extra=00000000
+BT RESET_BEGIN seq=11 hi=0 lo=193400 cyc=1731449571 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT RESET_END seq=12 hi=0 lo=193400 cyc=1734469363 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_BEGIN seq=13 hi=0 lo=193400 cyc=1740605105 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_END seq=14 hi=0 lo=193400 cyc=1740639471 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_BEGIN seq=15 hi=0 lo=193400 cyc=1740640134 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_END seq=16 hi=0 lo=193400 cyc=1740640926 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_BEGIN seq=17 hi=0 lo=193400 cyc=1740641594 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_END seq=18 hi=0 lo=193420 cyc=1754629222 epoch=1 ctrl=80000001 result=0 aux=6812C000 extra=00000000
+BT FLUSH_BEGIN seq=20 hi=0 lo=193460 cyc=1795352003 epoch=1 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT FLUSH_END seq=21 hi=0 lo=193460 cyc=1795352958 epoch=1 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT BACKLIGHT seq=22 hi=0 lo=193460 cyc=1795356574 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_BEGIN seq=23 hi=0 lo=193480 cyc=1819677519 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_END seq=24 hi=0 lo=193490 cyc=1825976902 epoch=1 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BOOTTRACE232 END

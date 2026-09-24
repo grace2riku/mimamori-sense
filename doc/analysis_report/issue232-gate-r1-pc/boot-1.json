@@ -1,0 +1,372 @@
+{
+  "firmware_fnv": "3615F648",
+  "fingerprint_checked": true,
+  "branch": {
+    "provisioned_predicate": true,
+    "rcr1": "00",
+    "rcr2": "41",
+    "rcr4": "00",
+    "sosccr": "00",
+    "somcr": "00"
+  },
+  "ordered_events": [
+    {
+      "name": "DISPLAY_BEGIN",
+      "seq": 1,
+      "ms": 60,
+      "cycles": 263636148,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "INIT_BEGIN",
+      "seq": 2,
+      "ms": 460,
+      "cycles": 662421164,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "OPEN_BEGIN",
+      "seq": 3,
+      "ms": 460,
+      "cycles": 662423485,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "OPEN_END",
+      "seq": 4,
+      "ms": 460,
+      "cycles": 662424180,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "BRANCH",
+      "seq": 5,
+      "ms": 460,
+      "cycles": 662425248,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 1,
+      "aux": 16640,
+      "extra": 0
+    },
+    {
+      "name": "GET_BEGIN",
+      "seq": 6,
+      "ms": 460,
+      "cycles": 662426108,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "GET_END",
+      "seq": 7,
+      "ms": 460,
+      "cycles": 662427904,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "SYNC_BEGIN",
+      "seq": 8,
+      "ms": 460,
+      "cycles": 662430139,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "SYNC_END",
+      "seq": 9,
+      "ms": 460,
+      "cycles": 662431348,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "INIT_END",
+      "seq": 10,
+      "ms": 460,
+      "cycles": 662432020,
+      "epoch": 0,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "RESET_BEGIN",
+      "seq": 11,
+      "ms": 193400,
+      "cycles": 1731449571,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "RESET_END",
+      "seq": 12,
+      "ms": 193400,
+      "cycles": 1734469363,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "GLCDC_OPEN_BEGIN",
+      "seq": 13,
+      "ms": 193400,
+      "cycles": 1740605105,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "GLCDC_OPEN_END",
+      "seq": 14,
+      "ms": 193400,
+      "cycles": 1740639471,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "GLCDC_START_BEGIN",
+      "seq": 15,
+      "ms": 193400,
+      "cycles": 1740640134,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "GLCDC_START_END",
+      "seq": 16,
+      "ms": 193400,
+      "cycles": 1740640926,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "INITIAL_BUFFER_BEGIN",
+      "seq": 17,
+      "ms": 193400,
+      "cycles": 1740641594,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "INITIAL_BUFFER_END",
+      "seq": 18,
+      "ms": 193420,
+      "cycles": 1754629222,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 1746059264,
+      "extra": 0
+    },
+    {
+      "name": "DISPLAY_END",
+      "seq": 19,
+      "ms": 193420,
+      "cycles": 1756164426,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 1,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "FLUSH_BEGIN",
+      "seq": 20,
+      "ms": 193460,
+      "cycles": 1795352003,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 1744830464,
+      "extra": 0
+    },
+    {
+      "name": "FLUSH_END",
+      "seq": 21,
+      "ms": 193460,
+      "cycles": 1795352958,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 1744830464,
+      "extra": 0
+    },
+    {
+      "name": "BACKLIGHT",
+      "seq": 22,
+      "ms": 193460,
+      "cycles": 1795356574,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "WAIT_BEGIN",
+      "seq": 23,
+      "ms": 193480,
+      "cycles": 1819677519,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    },
+    {
+      "name": "WAIT_END",
+      "seq": 24,
+      "ms": 193490,
+      "cycles": 1825976902,
+      "epoch": 1,
+      "ctrl": 2147483649,
+      "result": 0,
+      "aux": 0,
+      "extra": 0
+    }
+  ],
+  "durations": {
+    "INIT": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 10856,
+      "dwt_invalid_reason": null
+    },
+    "OPEN": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 695,
+      "dwt_invalid_reason": null
+    },
+    "PROVISION": {
+      "status": "not_reached"
+    },
+    "GET": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 1796,
+      "dwt_invalid_reason": null
+    },
+    "SYNC": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 1209,
+      "dwt_invalid_reason": null
+    },
+    "DISPLAY": {
+      "status": "returned",
+      "os_delta_ms_quantized": 193360,
+      "tick_ms": 10,
+      "result": 1,
+      "dwt_invalid_reason": "counter_reset_between_events"
+    },
+    "RESET": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 3019792,
+      "dwt_invalid_reason": null
+    },
+    "GLCDC_OPEN": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 34366,
+      "dwt_invalid_reason": null
+    },
+    "GLCDC_START": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 792,
+      "dwt_invalid_reason": null
+    },
+    "INITIAL_BUFFER": {
+      "status": "returned",
+      "os_delta_ms_quantized": 20,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 13987628,
+      "dwt_invalid_reason": null
+    },
+    "FLUSH": {
+      "status": "returned",
+      "os_delta_ms_quantized": 0,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 955,
+      "dwt_invalid_reason": null
+    },
+    "WAIT": {
+      "status": "returned",
+      "os_delta_ms_quantized": 10,
+      "tick_ms": 10,
+      "result": 0,
+      "dwt_cycle_interval": 6299383,
+      "dwt_invalid_reason": null
+    }
+  },
+  "warnings": [],
+  "limits": "Cycles include preemption and may exclude stopped/sleep clock time; OS delta is 10ms quantized. No visual success inferred."
+}

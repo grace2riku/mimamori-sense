@@ -1,0 +1,2 @@
+# Preserve received measurement logs byte-for-byte.
+*.txt -text -whitespace

@@ -1,0 +1,144 @@
+1
+1
+2
+2
+3
+3
+4
+4
+5
+5
+6
+6
+7
+7
+8
+8
+D D
+C C
+B B
+A A
+1 304 July 2025
+APP_LCD_EK_PAR_1
+Product Issue:Date: Page of mp
+www.renesas.com
+Renesas Electronics
+©2025
+Size
+A3
+Document Number
+d02031
+Title
+2_04_v0203
+Title Page
+Table of Contents:
+1
+2
+Title Page
+Connections
+Rev DateComment
+1.0 04 Jul 2025MP release
+APP_LCD_EK_PAR_1
+0.0 Release notes
+0.0 Release notes
+0.0 Release notes
+0.0 Release notes
+0.0 Release notes
+0.0 Release notes
+0.0 Release notes
+Drawn By
+SDD/KSS
+dd m..m yyyy
+dd m..m yyyy
+dd m..m yyyy
+dd m..m yyyy
+dd m..m yyyy
+dd m..m yyyy
+dd m..m yyyy
+3 Power
+EastRising
+ER-TFT070-6
+LCD1
+1 304 July 2025
+APP_LCD_EK_PAR_1
+Product Issue:Date: Page of mp
+www.renesas.com
+Renesas Electronics
+©2025
+Size
+A3
+Document Number
+d02031
+Title
+2_04_v0203
+NC
+FID1
+NC
+FID2
+NC
+FID3
+0.0 Release notes dd m..m yyyy
+0.0 Release notes dd m..m yyyy
+ERC Suppression Markers
+General suppress all ERC errors
+Unconnected Pins and Ports
+Floating Input Pin
+Power Nets with Power Pins and I/O objects
+Nets connected to multiple inputs
+Nets connected to Outputs and Bi-directional objects
+Nets connected to power nets and output objects
+Power pins connected to high impedance pins
+Nets connected to multiple outputs
+Net has no driving source
+25mm
+M3
+STDF1
+25mm
+M3
+STDF2
+6mm
+M3
+SCR1
+6mm
+M3
+SCR2
+M3
+12mm
+STDF4
+25mm
+M3
+STDF3
+6mm
+M3
+SCR3
+6mm
+M3
+SCR4
+M3
+12mm
+STDF5
+6mm
+M3
+SCR5
+14mm
+M3
+STDF6
+PIFID101 
+COFID1 
+PIFID201 
+COFID2 
+PIFID301 
+COFID3 
+COLCD1 
+COSCR1 COSCR2 COSCR3 COSCR4 COSCR5 
+COSTDF1 COSTDF2 COSTDF3 COSTDF4 COSTDF5 COSTDF6 
+PIFID101 PIFID201 PIFID301 PIFID101 
+COFID1 
+PIFID201 
+COFID2 
+PIFID301 
+COFID3 
+COLCD1 
+COSCR1 COSCR2 COSCR3 COSCR4 COSCR5 
+COSTDF1 COSTDF2 COSTDF3 COSTDF4 COSTDF5 COSTDF6 
+PIFID101 PIFID201 PIFID301 

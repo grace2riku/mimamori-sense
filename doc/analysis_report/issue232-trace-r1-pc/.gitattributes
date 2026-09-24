@@ -1,0 +1,3 @@
+# Preserve received logs and PDF extraction data byte-for-byte.
+*.txt -text -whitespace
+*.pdf binary

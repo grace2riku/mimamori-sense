@@ -1,0 +1,238 @@
+#　1回目　白画面
+
+mimamori>boottrace
+BOOTTRACE232 v=23201 fnv=E10C55EF hz=1000000000 tick_ms=10 probe=4 fault=0 epoch=1 count=24
+POST_C cycles=33 ctrl=80000001
+BT INIT_BEGIN seq=11 hi=0 lo=460 cyc=662421778 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INIT_END seq=19 hi=0 lo=460 cyc=662432648 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_BEGIN seq=12 hi=0 lo=460 cyc=662424108 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_END seq=13 hi=0 lo=460 cyc=662424788 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT BRANCH seq=14 hi=0 lo=460 cyc=662425856 epoch=0 ctrl=80000001 result=1 aux=00004100 extra=00000000
+BT PROVISION_BEGIN seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT PROVISION_END seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT GET_BEGIN seq=15 hi=0 lo=460 cyc=662426712 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GET_END seq=16 hi=0 lo=460 cyc=662428452 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_BEGIN seq=17 hi=0 lo=460 cyc=662430711 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_END seq=18 hi=0 lo=460 cyc=662431968 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_BEGIN seq=1 hi=0 lo=60 cyc=263637306 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_END seq=10 hi=0 lo=80 cyc=287258762 epoch=0 ctrl=80000001 result=1 aux=00000000 extra=00000000
+BT RESET_BEGIN seq=2 hi=0 lo=60 cyc=263637996 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT RESET_END seq=3 hi=0 lo=60 cyc=266640406 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_BEGIN seq=4 hi=0 lo=60 cyc=271707992 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_END seq=5 hi=0 lo=60 cyc=271742344 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_BEGIN seq=6 hi=0 lo=60 cyc=271743020 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_END seq=7 hi=0 lo=60 cyc=271743808 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_BEGIN seq=8 hi=0 lo=60 cyc=271744468 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_END seq=9 hi=0 lo=80 cyc=285732110 epoch=0 ctrl=80000001 result=0 aux=6812C000 extra=00000000
+BT FLUSH_BEGIN seq=20 hi=0 lo=2530 cyc=2741184972 epoch=0 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT FLUSH_END seq=21 hi=0 lo=2530 cyc=2741185920 epoch=0 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT BACKLIGHT seq=22 hi=0 lo=2530 cyc=2741189592 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_BEGIN seq=23 hi=0 lo=2550 cyc=2752616780 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_END seq=24 hi=0 lo=2560 cyc=2766475514 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BOOTTRACE232 END
+mimamori>
+mimamori>display dbuf
+[Double Buffering Status (S-002-3)]
+  Enabled     : Yes
+  Render Mode : DIRECT (full framebuffer)
+  Sync        : Vsync (uT-Kernel semaphore)
+[Buffer State]
+  Last flushed by LVGL : 0x68000000
+  Displayed by GLCDC   : see 'display reg' (GR0.FLM2)
+[Counters]
+  Vsync Count      : 2878
+  Flush Count      : 777
+  BufChange Errors : 0 (last: 0)
+  Underflow Count  : 0
+[Rate Measurement]
+  Measuring over 1 second...
+  Vsync Rate  : 71 Hz
+  Flush Rate  : 21 fps
+[Architecture]
+  lvgl_port_mtk3 handles buffer swap (uT-Kernel):
+    flush_cb      -> R_GLCDC_BufferChange(back_buf)
+    flush_wait_cb -> tk_wai_sem(vsync_sem)
+    Vsync ISR     -> tk_sig_sem(vsync_sem)
+  Tearing prevention: guaranteed by Vsync sync
+mimamori>
+mimamori>display reg
+[GLCDC Graphics Layer 1 (GR[0]) Registers]
+  VEN        : 0x00000000
+  FLMRD      : 0x00000001 (read enable: on)
+  FLM2 (base): 0x6812C000
+    -> fb_background[1]
+    fb[0]=0x68000000 fb[1]=0x6812C000 last flush=0x6812C000
+  FLM3 (ofs) : 0x08000000
+  FLM5 (line): 0x0257001F
+  FLM6 (fmt) : 0x00000000
+  AB1        : 0x00000003 (DISPSEL=3: plane blended on lower layer (expected))
+  MON        : 0x00000000 (underflow flag: clear)
+[GLCDC Background Plane (BG) Registers]
+  EN         : 0x00010001
+  BGC        : 0x00000000 (R=0 G=0 B=0)
+  MON        : 0x00010001 (module enabled: yes)
+[GLCDC Output Block (OUT) Registers]
+  VLATCH     : 0x00000000
+  SET        : 0x00000000
+  BRIGHT1    : 0x00000200 (expect 0x00000200)
+  BRIGHT2    : 0x02000200 (expect 0x02000200)
+  CONTRAST   : 0x00808080 (expect 0x00808080)
+  CLKPHASE   : 0x00000178
+  PDTHA      : 0x00000000 (dithering off in this project)
+[GLCDC Timing Control (TCON) Registers]
+  TIM        : 0x00000000
+  STVA1/STVA2: 0x00000000 / 0x00000000 (TCON0 <- STVA/VS)
+  STVB1/STVB2: 0x00170258 / 0x00000000 (TCON1 <- STVA/VS)
+  STHA1/STHA2: 0x00000000 / 0x00000007 (TCON2 <- DE)
+  STHB1/STHB2: 0x00A00400 / 0x00000000 (TCON3 <- STVA/VS)
+  DE window  : STHB1 0x00A00400 (expect 0x00A00400)
+               STVB1 0x00170258 (expect 0x00170258)
+  DE polarity: 0x00000000 (expect 0x00000000 = high active)
+[GLCDC System Control (SYSCNT) Registers]
+  INTEN      : 0x00000007
+  STMON      : 0x00000004
+  PANEL_CLK  : 0x01100144
+    CLKEN=1 DCDR=4 CLKSEL=1 PIXSEL=0 VER=0x0110
+mimamori>
+mimamori>display fbstat
+[Frame Buffer Content Census (Issue #218)]
+  Grid      : every 16 px x 8 lines (4800 samples/buffer)
+  Note      : buffers are live; a census may mix frames.
+[fb_background[0] @ 0x68000000]
+  White(FFFF): 1 (0%)
+  Black(0000): 1713 (35%)
+  Other      : 3086 (64%)
+  Min / Max  : 0x0000 / 0xFFFF
+  (  20,  20) : 0x1905  status bar left
+  ( 900,  20) : 0x1905  status bar right/clock
+  ( 512, 320) : 0x9532  camera image centre
+  (  40, 300) : 0x0000  letterbox margin
+[fb_background[1] @ 0x6812C000]
+  White(FFFF): 1 (0%)
+  Black(0000): 1711 (35%)
+  Other      : 3088 (64%)
+  Min / Max  : 0x0000 / 0xFFFF
+  (  20,  20) : 0x1905  status bar left
+  ( 900,  20) : 0x1905  status bar right/clock
+  ( 512, 320) : 0x9D13  camera image centre
+  (  40, 300) : 0x0000  letterbox margin
+
+
+# 2回目 ⇒　正常
+
+mimamori>boottrace
+BOOTTRACE232 v=23201 fnv=E10C55EF hz=1000000000 tick_ms=10 probe=4 fault=0 epoch=1 count=24
+POST_C cycles=33 ctrl=80000001
+BT INIT_BEGIN seq=11 hi=0 lo=460 cyc=662421662 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INIT_END seq=19 hi=0 lo=460 cyc=662432652 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_BEGIN seq=12 hi=0 lo=460 cyc=662424068 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT OPEN_END seq=13 hi=0 lo=460 cyc=662424748 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT BRANCH seq=14 hi=0 lo=460 cyc=662425824 epoch=0 ctrl=80000001 result=1 aux=00004100 extra=00000000
+BT PROVISION_BEGIN seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT PROVISION_END seq=0 hi=0 lo=0 cyc=0 epoch=0 ctrl=00000000 result=0 aux=00000000 extra=00000000
+BT GET_BEGIN seq=15 hi=0 lo=460 cyc=662426680 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GET_END seq=16 hi=0 lo=460 cyc=662428420 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_BEGIN seq=17 hi=0 lo=460 cyc=662430715 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT SYNC_END seq=18 hi=0 lo=460 cyc=662431972 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_BEGIN seq=1 hi=0 lo=60 cyc=263637386 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT DISPLAY_END seq=10 hi=0 lo=80 cyc=287258126 epoch=0 ctrl=80000001 result=1 aux=00000000 extra=00000000
+BT RESET_BEGIN seq=2 hi=0 lo=60 cyc=263638076 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT RESET_END seq=3 hi=0 lo=60 cyc=266640530 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_BEGIN seq=4 hi=0 lo=60 cyc=271707976 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_OPEN_END seq=5 hi=0 lo=60 cyc=271742328 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_BEGIN seq=6 hi=0 lo=60 cyc=271743004 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT GLCDC_START_END seq=7 hi=0 lo=60 cyc=271743792 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_BEGIN seq=8 hi=0 lo=60 cyc=271744452 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT INITIAL_BUFFER_END seq=9 hi=0 lo=80 cyc=285732094 epoch=0 ctrl=80000001 result=0 aux=6812C000 extra=00000000
+BT FLUSH_BEGIN seq=20 hi=0 lo=2530 cyc=2741196520 epoch=0 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT FLUSH_END seq=21 hi=0 lo=2530 cyc=2741197464 epoch=0 ctrl=80000001 result=0 aux=68000000 extra=00000000
+BT BACKLIGHT seq=22 hi=0 lo=2530 cyc=2741201104 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_BEGIN seq=23 hi=0 lo=2550 cyc=2752616852 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BT WAIT_END seq=24 hi=0 lo=2560 cyc=2766475506 epoch=0 ctrl=80000001 result=0 aux=00000000 extra=00000000
+BOOTTRACE232 END
+mimamori>
+mimamori>display dbuf
+[Double Buffering Status (S-002-3)]
+  Enabled     : Yes
+  Render Mode : DIRECT (full framebuffer)
+  Sync        : Vsync (uT-Kernel semaphore)
+[Buffer State]
+  Last flushed by LVGL : 0x68000000
+  Displayed by GLCDC   : see 'display reg' (GR0.FLM2)
+[Counters]
+  Vsync Count      : 2009
+  Flush Count      : 527
+  BufChange Errors : 0 (last: 0)
+  Underflow Count  : 0
+[Rate Measurement]
+  Measuring over 1 second...
+  Vsync Rate  : 71 Hz
+  Flush Rate  : 20 fps
+[Architecture]
+  lvgl_port_mtk3 handles buffer swap (uT-Kernel):
+    flush_cb      -> R_GLCDC_BufferChange(back_buf)
+    flush_wait_cb -> tk_wai_sem(vsync_sem)
+    Vsync ISR     -> tk_sig_sem(vsync_sem)
+  Tearing prevention: guaranteed by Vsync sync
+mimamori>
+mimamori>display reg
+[GLCDC Graphics Layer 1 (GR[0]) Registers]
+  VEN        : 0x00000000
+  FLMRD      : 0x00000001 (read enable: on)
+  FLM2 (base): 0x6812C000
+    -> fb_background[1]
+    fb[0]=0x68000000 fb[1]=0x6812C000 last flush=0x6812C000
+  FLM3 (ofs) : 0x08000000
+  FLM5 (line): 0x0257001F
+  FLM6 (fmt) : 0x00000000
+  AB1        : 0x00000003 (DISPSEL=3: plane blended on lower layer (expected))
+  MON        : 0x00000000 (underflow flag: clear)
+[GLCDC Background Plane (BG) Registers]
+  EN         : 0x00010001
+  BGC        : 0x00000000 (R=0 G=0 B=0)
+  MON        : 0x00010001 (module enabled: yes)
+[GLCDC Output Block (OUT) Registers]
+  VLATCH     : 0x00000000
+  SET        : 0x00000000
+  BRIGHT1    : 0x00000200 (expect 0x00000200)
+  BRIGHT2    : 0x02000200 (expect 0x02000200)
+  CONTRAST   : 0x00808080 (expect 0x00808080)
+  CLKPHASE   : 0x00000178
+  PDTHA      : 0x00000000 (dithering off in this project)
+[GLCDC Timing Control (TCON) Registers]
+  TIM        : 0x00000000
+  STVA1/STVA2: 0x00000000 / 0x00000000 (TCON0 <- STVA/VS)
+  STVB1/STVB2: 0x00170258 / 0x00000000 (TCON1 <- STVA/VS)
+  STHA1/STHA2: 0x00000000 / 0x00000007 (TCON2 <- DE)
+  STHB1/STHB2: 0x00A00400 / 0x00000000 (TCON3 <- STVA/VS)
+  DE window  : STHB1 0x00A00400 (expect 0x00A00400)
+               STVB1 0x00170258 (expect 0x00170258)
+  DE polarity: 0x00000000 (expect 0x00000000 = high active)
+[GLCDC System Control (SYSCNT) Registers]
+  INTEN      : 0x00000007
+  STMON      : 0x00000004
+  PANEL_CLK  : 0x01100144
+    CLKEN=1 DCDR=4 CLKSEL=1 PIXSEL=0 VER=0x0110
+mimamori>
+mimamori>display fbstat
+[Frame Buffer Content Census (Issue #218)]
+  Grid      : every 16 px x 8 lines (4800 samples/buffer)
+  Note      : buffers are live; a census may mix frames.
+[fb_background[0] @ 0x68000000]
+  White(FFFF): 2 (0%)
+  Black(0000): 1713 (35%)
+  Other      : 3085 (64%)
+  Min / Max  : 0x0000 / 0xFFFF
+  (  20,  20) : 0x1905  status bar left
+  ( 900,  20) : 0x1905  status bar right/clock
+  ( 512, 320) : 0x0000  camera image centre
+  (  40, 300) : 0x0000  letterbox margin
+[fb_background[1] @ 0x6812C000]
+  White(FFFF): 2 (0%)
+  Black(0000): 1713 (35%)
+  Other      : 3085 (64%)
+  Min / Max  : 0x0000 / 0xFFFF
+  (  20,  20) : 0x1905  status bar left
+  ( 900,  20) : 0x1905  status bar right/clock
+  ( 512, 320) : 0x9553  camera image centre
+  (  40, 300) : 0x0000  letterbox margin
