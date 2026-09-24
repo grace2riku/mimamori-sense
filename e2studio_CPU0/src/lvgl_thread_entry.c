@@ -26,7 +26,9 @@
  *   6. camera_display_init() / fall_detection_screen_init() / ui_datetime_init()
  *      - Register the periodic lv_timers (F-001-8, F-003-10, S-012-3).
  *        See Steps 7 / 7b / 7c in the task body below.
- *   7. lv_timer_handler() loop - Process LVGL rendering at 1ms intervals
+ *   7. ui_startup_screen_show() - Show artwork and an animated spinner;
+ *      return to the initialized main screen 5 seconds after first refresh.
+ *   8. lv_timer_handler() loop - Process rendering, animations and timers
  *
  * Dave2D-LVGL Integration (S-004-3):
  *   When LV_USE_DRAW_DAVE2D=1 (set in FSP lv_conf.h), lv_init() automatically:
@@ -85,11 +87,13 @@
 #include "port/dave2d_port.h"
 #include "port/lv_port_indev.h"
 #include "ui/ui_main_screen.h"
+#include "ui/ui_startup_screen.h"
 #include "ui/ui_datetime.h"
 #include "ui/fall_detection_screen.h"
 #include "camera_display.h"
 
 #include <tk/tkernel.h>
+#include <tm/tmonitor.h>
 
 /**
  * LVGL task body (uT-Kernel)
@@ -202,7 +206,12 @@ void lvgl_task(INT stacd, void *exinf)
      *
      * Reference: e2studio_CPU0/src/ui/ui_main_screen.c
      */
-    ui_main_screen_create();
+    lv_obj_t *main_screen = ui_main_screen_create();
+    if (main_screen == NULL) {
+        tm_putstring((UB *)"[lvgl] Main screen creation failed.\n");
+        tk_ext_tsk();
+        return;
+    }
 
     /*
      * Step 7: Initialize camera display transfer (F-001-8)
@@ -271,6 +280,12 @@ void lvgl_task(INT stacd, void *exinf)
      * Reference: e2studio_CPU0/src/time_cache.c
      */
     ui_datetime_init();
+
+    /* All main-screen children/timers are ready; no frame has been drawn yet.
+     * The startup screen returns to this same screen after 5 seconds. */
+    if (!ui_startup_screen_show(main_screen)) {
+        tm_putstring((UB *)"[lvgl] Startup screen unavailable; showing main screen.\n");
+    }
 
     /*
      * Step 8: LVGL main loop

@@ -551,9 +551,9 @@
 /* Disabled: A8 / RGB565A8 are source formats for the SW image transform path
  * (ra/lvgl/lvgl/src/draw/sw/lv_draw_sw_transform.c:72-84, 253-283) and, for
  * RGB565A8, an image source arm. Both come from a decoded image's header `cf`;
- * the only image drawn is the camera framebuffer, declared RGB565
- * (src/camera_display.c:169, src/ui/ui_main_screen.c:430) and never rotated or
- * scaled. NOTE: font glyphs do NOT go through A8 here - they use the mask_buf
+ * the camera framebuffer and startup artwork are both RGB565
+ * (src/ui/ui_main_screen.c and src/ui/ui_startup_screen.c), without runtime
+ * rotation/scaling. NOTE: font glyphs do NOT go through A8 here - they use the mask_buf
  * path, which is independent of these switches (see the section header). */
 #define LV_DRAW_SW_SUPPORT_A8                   0
 #define LV_DRAW_SW_SUPPORT_RGB565A8             0
@@ -561,13 +561,14 @@
 /*=============================================================
  * FLASH Reduction: Unused Widgets (Issue #182, category 2)
  *
- * A full grep of e2studio_CPU0/src/ for `lv_*_create(` shows that this
- * application instantiates only four widget classes:
+ * At the Issue #182 baseline, the application used these four classes:
  *
  *   lv_obj_create     (5x)  - core, has no LV_USE_ switch
  *   lv_label_create   (5x)  - src/ui/ui_main_screen.c, fall_detection_screen.c
  *   lv_image_create   (1x)  - src/ui/ui_main_screen.c (camera view)
  *   lv_button_create  (1x)  - src/ui/ui_main_screen.c (settings button)
+ * The startup screen now also instantiates lv_spinner (derived from lv_arc)
+ * and an image. Both switches are enabled below.
  *
  * Everything else below is dead weight, but `--gc-sections` cannot drop it:
  * lv_theme_default.c dispatches on every widget class it was compiled with
@@ -580,14 +581,15 @@
  * silently.
  *============================================================*/
 
-/* Kept: the four classes actually used (see grep above). */
+/* Main screen and startup spinner (arc is the spinner's base class). */
 #define LV_USE_LABEL        1
 #define LV_USE_IMAGE        1
 #define LV_USE_BUTTON       1
+#define LV_USE_ARC          1
+#define LV_USE_SPINNER      1
 
 /* Disabled: never instantiated by this application. */
 #define LV_USE_ANIMIMG      0
-#define LV_USE_ARC          0
 #define LV_USE_BAR          0
 #define LV_USE_BUTTONMATRIX 0
 #define LV_USE_CALENDAR     0
@@ -607,7 +609,6 @@
 #define LV_USE_SLIDER       0
 #define LV_USE_SPAN         0
 #define LV_USE_SPINBOX      0
-#define LV_USE_SPINNER      0
 #define LV_USE_SWITCH       0
 #define LV_USE_TABLE        0
 #define LV_USE_TABVIEW      0
