@@ -118,10 +118,14 @@ void ui_datetime_init(void)
  */
 static void ui_datetime_timer_cb(lv_timer_t *timer)
 {
+    (void)timer;
+    ui_datetime_refresh();
+}
+
+void ui_datetime_refresh(void)
+{
     time_ctrl_time_t now;
     char             text[UI_DATETIME_TEXT_SIZE];
-
-    (void)timer;
 
     if (!time_cache_get(&now)) {
         /* 未初期化 / 時刻未設定 / RTC 異常 / キャッシュ陳腐化（ポーリングタスクが

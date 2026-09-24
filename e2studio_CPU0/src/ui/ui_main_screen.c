@@ -51,6 +51,7 @@
  Includes   <System Includes> , "Project Includes"
  *********************************************************************************************************************/
 #include "ui_main_screen.h"
+#include "ui_time_setting_screen.h"
 #include "port/sdram_port.h"    /* SDRAM_SECTION_ZERO for buffer placement */
 #include <string.h>             /* memset */
 
@@ -441,8 +442,7 @@ static void init_camera_image_descriptor(void)
  * Settings button click event callback
  *
  * @details Called when the settings button is pressed/released.
- *          Currently logs the event for testing purposes. In the future,
- *          this will navigate to the settings screen.
+ *          Opens the date/time setting screen on the LVGL task.
  *
  * @param e  LVGL event object
  */
@@ -451,16 +451,7 @@ static void settings_btn_event_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
 
     if (code == LV_EVENT_CLICKED) {
-        /*
-         * TODO: F-001-8+ Navigate to settings screen
-         * For now, toggle the status text to demonstrate touch responsiveness.
-         */
-        const char *current = lv_label_get_text(s_status_label);
-        if (current != NULL && strcmp(current, "Idle") == 0) {
-            lv_label_set_text(s_status_label, "Monitoring");
-        } else {
-            lv_label_set_text(s_status_label, "Idle");
-        }
+        ui_time_setting_screen_open();
     }
 }
 

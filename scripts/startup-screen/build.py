@@ -26,7 +26,8 @@ def main():
     link = (BASE / "Debug/mimamori_sense_CPU0.elf.in").read_text(encoding="utf-8-sig")
     objects = re.findall(r'\./([^\s"]+\.o)\b', link)
     assert objects and len(objects) == len(set(objects))
-    additions = ["ui_startup_screen", "ui_startup_image", "puff/puff"]
+    additions = ["ui_startup_screen", "ui_startup_image", "puff/puff",
+                 "ui_time_setting_screen"]
     template = (BASE / "Debug/src/ui/ui_main_screen.o.in").read_text(encoding="utf-8-sig")
     for name in additions:
         obj = f"src/ui/{name}.o"

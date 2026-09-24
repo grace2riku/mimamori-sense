@@ -20,14 +20,15 @@
  * LVGL の `lv_timer` コールバックは `lv_timer_handler()` が `lv_lock()` を保持した区間で
  * 走る（`lv_timer.c:81,327,144`）。そこから直接 `time_ctrl_get()` を呼ぶと、この無限待ちが
  * `lv_lock()` を握ったまま発生し、**描画スレッドを含む LVGL 全体が恒久的にフリーズする**。
- * そこで RTC を触る役目を専用タスクへ追い出し、被害をそのタスク 1 本に閉じ込める。
+ * そこで RTC を触る役目を専用タスクへ移し、LVGLロック内の待ちを避ける。
+ * 高優先度タスクの無期限busy waitによるCPU占有は防げない（issue-214設計メモ）。
  * （PR #217 レビュー指摘 P1。詳細は設計メモ §7）
  *
  * ## 陳腐化の検出
  *
  * ポーリングタスクが RTC の中でハングすると publish が止まる。`time_cache_get()` は
  * 最終 publish からの経過時間を見て、`TIME_CACHE_STALE_MS` を超えていたら false を返す。
- * 呼び出し側は「時刻不明」として扱えばよく、自タスクは止まらない。
+ * 呼び出し側が実行される場合は「時刻不明」として扱える。
  *
  * ## 実行コンテキスト制約
  *
@@ -65,7 +66,7 @@ extern "C" {
  * @note 1 回だけ呼ぶこと。2 回目以降は何もせず true を返す。
  *
  * @retval true  利用可能なポーリングタスクがある
- * @retval false タスクの生成または起動に失敗した（以後 `time_cache_get()` は常に false）
+ * @retval false フラグ・タスクの生成または起動に失敗した。再試行可能。
  */
 bool time_cache_init(void);
 
@@ -85,6 +86,23 @@ bool time_cache_init(void);
  *                 （＝ポーリングタスクが RTC の中で戻らなくなっている）
  */
 bool time_cache_get(time_ctrl_time_t *p_out);
+
+/** Submit one time-setting request without waiting. LVGL task only, after init.
+ * Returns false without modifying outputs if unavailable or already pending.
+ * The request is copied, and its nonzero token remains owned until completion.
+ * UI timeout/closing the screen does NOT cancel it. ISR calls are forbidden.
+ * The sole producer must retrieve completion before submitting another request.
+ */
+bool time_cache_set_request(const time_ctrl_time_t *p_time, uint32_t *p_seq);
+
+/** Retrieve only the current token's completion, without waiting (LVGL only).
+ * Returns false without modifying outputs while pending or for another token.
+ * On true, set_err is the time_ctrl_set result; read_err is meaningful only
+ * when set_err == TIME_CTRL_OK. A readback error does not undo a successful set.
+ * Cache publication precedes completion; a hung readback retains the request.
+ */
+bool time_cache_set_result(uint32_t seq, time_ctrl_err_t *p_set_err,
+                           time_ctrl_err_t *p_read_err);
 
 #ifdef __cplusplus
 }

@@ -53,6 +53,9 @@ extern "C" {
  */
 void ui_datetime_init(void);
 
+/** Refresh immediately from the nonblocking cache; LVGL task only. */
+void ui_datetime_refresh(void);
+
 #ifdef __cplusplus
 }
 #endif
