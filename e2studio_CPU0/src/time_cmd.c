@@ -23,6 +23,8 @@
 #include "cmd_utils.h"
 #include "time_ctrl.h"
 #include "time_cmd.h"
+#include "rtc_boot_diag.h"
+#include "rtc_backup.h"
 
 #include <tk/tkernel.h>
 
@@ -43,6 +45,7 @@
 static int  time_cmd_show(void);
 static int  time_cmd_set(int argc, char **argv);
 static int  time_cmd_status(void);
+static void time_cmd_boot_history(void);
 static void time_cmd_usage(void);
 static void time_cmd_print_err(time_ctrl_err_t err);
 
@@ -142,6 +145,29 @@ static int time_cmd_set(int argc, char **argv)
  * 時刻源・各フラグ・RTC 生値・システム時刻を表示する
  * @return `CMD_OK`
  */
+static void time_cmd_boot_history(void)
+{
+    static const char *const names[RTC_BOOT_STAGE_COUNT] = {
+        "RESET", "POST_CLOCK", "POST_C", "BEFORE_OPEN", "BEFORE_DECISION"
+    };
+    char buf[TIME_CMD_BUF_SIZE];
+    print_to_console("--- RTC boot history v1 (control registers only) ---\r\n");
+    for (unsigned int i = 0; i < RTC_BOOT_STAGE_COUNT; ++i) {
+        rtc_boot_snapshot_t snap;
+        if (!rtc_boot_diag_get((rtc_boot_stage_t)i, &snap)) {
+            snprintf(buf, sizeof(buf), " %s: NOT CAPTURED\r\n", names[i]);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     " %s: RCR1/2/4=%02lX/%02lX/%02lX SOSCCR=%02lX SOMCR=%02lX\r\n",
+                     names[i], (unsigned long)snap.rcr1, (unsigned long)snap.rcr2,
+                     (unsigned long)snap.rcr4, (unsigned long)snap.sosccr,
+                     (unsigned long)snap.somcr);
+        }
+        print_to_console(buf);
+    }
+    print_to_console(" History is unchanged by time set. Early calendar reads omitted (UM 27.6.5).\r\n");
+}
+
 static int time_cmd_status(void)
 {
     char               buf[TIME_CMD_BUF_SIZE];
@@ -152,6 +178,25 @@ static int time_cmd_status(void)
     uint32_t           utc_sec;
     uint32_t           utc_ms;
 
+    /* Print saved RAM before potentially blocking on live RTC access. */
+    time_cmd_boot_history();
+    rtc_backup_status_t backup;
+    rtc_backup_get_status(&backup);
+    static const char *const reasons[] = {
+        "not checked", "configured", "OFS mismatch", "VBATT voltage/POR", "write readback failed"
+    };
+    snprintf(buf, sizeof(buf), " Backup        : %s (%s)\r\n",
+             backup.ready ? "ready" : "NOT ready", reasons[backup.result]);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), " OFS1/SEL      : %08lX / %08lX\r\n",
+             (unsigned long)backup.ofs1, (unsigned long)backup.selection);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), " VBATT boot    : CR1/CR2/SR=%02X/%02X/%02X\r\n",
+             backup.before_control1, backup.before_control2, backup.before_status);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), " VBATT now     : CR1/CR2/SR=%02X/%02X/%02X\r\n",
+             backup.control1, backup.control2, backup.status);
+    print_to_console(buf);
     time_ctrl_get_status(&st);
 
     print_to_console("--- time status ---\r\n");
@@ -178,7 +223,7 @@ static int time_cmd_status(void)
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), " Provisioned   : %s\r\n",
-             st.provisioned ? "yes (next boot keeps timekeeping)"
+             st.provisioned ? "yes (RTC configured; see Backup status)"
                             : "no  (next boot will set the clock source)");
     print_to_console(buf);
 

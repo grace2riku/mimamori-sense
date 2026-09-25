@@ -140,8 +140,8 @@
       <property id="config.bsp.option_setting.ofs1.swdbg" value="config.bsp.option_setting.ofs1.swdbg.disabled"/>
       <property id="config.bsp.option_setting.ofs1.initeccen" value="config.bsp.option_setting.ofs1.initeccen.disabled"/>
       <property id="config.bsp.option_setting.ofs1_sec" value="config.bsp.option_setting.ofs1_sec.enabled"/>
-      <property id="config.bsp.option_setting.ofs1_sec.voltage_detection0.start" value="config.bsp.option_setting.ofs1_sec.voltage_detection0.start.disabled"/>
-      <property id="config.bsp.option_setting.ofs1_sec.voltage_detection0_level" value="config.bsp.option_setting.ofs1_sec.voltage_detection0_level.160"/>
+      <property id="config.bsp.option_setting.ofs1_sec.voltage_detection0.start" value="config.bsp.option_setting.ofs1_sec.voltage_detection0.start.enabled"/>
+      <property id="config.bsp.option_setting.ofs1_sec.voltage_detection0_level" value="config.bsp.option_setting.ofs1_sec.voltage_detection0_level.285"/>
       <property id="config.bsp.option_setting.ofs1_sec.hoco_osc" value="config.bsp.option_setting.ofs1_sec.hoco_osc.disabled"/>
       <property id="config.bsp.option_setting.ofs1_sec.voltage_detection0.low_power_consumption" value="config.bsp.option_setting.ofs1_sec.voltage_detection0.low_power_consumption.disabled"/>
       <property id="config.bsp.option_setting.ofs1_sec.swdbg" value="config.bsp.option_setting.ofs1_sec.swdbg.disabled"/>

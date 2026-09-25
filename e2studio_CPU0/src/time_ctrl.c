@@ -75,6 +75,8 @@
 
 #include "hal_data.h"
 #include "time_ctrl.h"
+#include "rtc_boot_diag.h"
+#include "rtc_backup.h"
 
 #include <tk/tkernel.h>
 
@@ -146,6 +148,7 @@ time_ctrl_err_t time_ctrl_init(void)
 {
     fsp_err_t        err;
     bool             time_available;
+    bool             backup_lost;
     rtc_time_t       raw;
     time_ctrl_time_t now;
 
@@ -167,6 +170,12 @@ time_ctrl_err_t time_ctrl_init(void)
         /* RTC_CFG_OPEN_SET_CLOCK_SOURCE = (0)（ra_cfg/fsp_cfg/r_rtc_cfg.h:9）のため、
          * R_RTC_Open() は r_rtc_set_clock_source() を呼ばない（r_rtc.c:240-245）。
          * 実体は R_BSP_IrqCfg() のみでレジスタ待ちが無く、電池バックアップ中の計時も壊さない。 */
+        rtc_boot_diag_capture(RTC_BOOT_BEFORE_OPEN);
+        if (!rtc_backup_prepare(&backup_lost)) {
+            s_last_err = FSP_ERR_INVALID_DATA;
+            time_unlock();
+            return TIME_CTRL_ERR_HW;
+        }
         err        = R_RTC_Open(&g_rtc_ctrl, &g_rtc_cfg);
         s_last_err = err;
 
@@ -175,14 +184,19 @@ time_ctrl_err_t time_ctrl_init(void)
              * R_RTC_ClockSourceSet() は無条件に START をクリアしてソフトウェアリセットを
              * 実行する（r_rtc.c:1075,1094）ため、プロビジョニング済みで呼ぶと
              * 電池でバックアップされた計時を壊す。 */
-            if (!rtc_is_provisioned()) {
+            rtc_boot_diag_capture(RTC_BOOT_BEFORE_DECISION);
+            if (backup_lost || !rtc_is_provisioned()) {
                 /* 戻り値は捨てる: パラメータチェック無効時は常に FSP_SUCCESS
                  * （r_rtc.c:331-350 に err を書き換える文が #if の外に無い）。 */
-                (void)R_RTC_ClockSourceSet(&g_rtc_ctrl);
+                err = R_RTC_ClockSourceSet(&g_rtc_ctrl);
+                s_last_err = err;
                 s_did_provision = true;
             }
 
-            s_initialized = true;
+            if (FSP_SUCCESS == err) {
+                s_initialized = rtc_backup_finish();
+                if (!s_initialized) { s_last_err = FSP_ERR_INVALID_DATA; }
+            }
         }
 
         /* 計時中なら現在時刻を読み出す（同期は区間の外で行う） */

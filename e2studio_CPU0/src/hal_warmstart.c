@@ -5,6 +5,7 @@
 */
 
 #include "hal_data.h"
+#include "rtc_boot_diag.h"
 #include "port/sdram_port.h"
 
 FSP_CPP_HEADER
@@ -99,6 +100,7 @@ void R_BSP_WarmStart (bsp_warm_start_event_t event)
 {
     if (BSP_WARM_START_RESET == event)
     {
+        rtc_boot_diag_begin();
 #if BSP_FEATURE_FLASH_LP_VERSION != 0
 
         /* Enable reading from data flash. */
@@ -117,8 +119,13 @@ void R_BSP_WarmStart (bsp_warm_start_event_t event)
     }
 #endif
 
+    if (BSP_WARM_START_POST_CLOCK == event)
+    {
+        rtc_boot_diag_capture(RTC_BOOT_POST_CLOCK);
+    }
     if (BSP_WARM_START_POST_C == event)
     {
+        rtc_boot_diag_capture(RTC_BOOT_POST_C);
         /* C runtime environment and system clocks are setup. */
 
         /* Keep the wait after R_BSP_Init_RTC() writes RCR4. Waiting in
