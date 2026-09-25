@@ -81,7 +81,8 @@ PR #205（Issue #47）のふりかえりに基づく。同PRは26回のレビュ
 ### 設計合意ゲート
 
 実装系Issueは、コードを書く前に `doc/design/issue-<番号>.md` に設計メモを書き、
-ユーザーの承認を得てから実装に入る。手順は `.claude/commands/implement-issue.md` のステップ2.5。
+ユーザーの承認を得てから実装に入る。Codex用スキルは `.agents/skills/implement-issue/SKILL.md`、手順は同ファイルのステップ2.5。
+呼び出し例: `$implement-issue 123`（123は対象Issue番号）。
 Issueに「設計の入力」（`.github/ISSUE_TEMPLATE/implementation.md`）が無い場合は、
 実装者が洗い出して設計メモに書く。
 
@@ -92,7 +93,7 @@ Issueに「設計の入力」（`.github/ISSUE_TEMPLATE/implementation.md`）が
   例: `alarm_fill_cb` は `audio_start()` で `s_fill_cb` に登録され、
   `audio_fill_buffer()` 経由でタスクと SSI ISR の両方から呼ばれる
   （`audio_port.c:244-252,328,347-348,577,587-588`）。
-  辿り方の詳細は `.claude/commands/implement-issue.md` 2.5.2「呼び出し元の辿り方」（マスタ）
+  辿り方の詳細は `.agents/skills/implement-issue/SKILL.md` 2.5.2「呼び出し元の辿り方」（Codex用のマスタ）
 - 呼び出し元が1つなら1つ向けに作る。ただし「呼び出し元が1つ」は
   「同期が要らない」ではない（下の「並行性の既定形」を参照）
 - 「将来複数から呼ばれるかもしれない」は、実際にその呼び出し元を追加するIssueで対応する
