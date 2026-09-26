@@ -111,16 +111,23 @@ typedef enum e_alarm_wave
  *********************************************************************************************************************/
 
 /**
- * Create the module's uT-Kernel synchronisation objects (event flag + mutex).
+ * Create the module's uT-Kernel event flag.
  *
  * Idempotent, task context only (uses tk_dis_dsp()). Called by alarm_task()
- * before anything else, and lazily by the API functions below so that the
- * order in which usermain() starts the tasks cannot matter.
+ * after checking durable requests, and lazily by manual playback APIs.
+ * Fall synchronization never needs this object to exist.
  *
  * @retval FSP_SUCCESS      Objects available.
- * @retval FSP_ERR_INTERNAL tk_cre_flg() / tk_cre_mtx() failed.
+ * @retval FSP_ERR_INTERNAL tk_cre_flg() failed.
  */
 fsp_err_t alarm_sound_init(void);
+
+/** Synchronize current fall state, task context only, outside any dispatch
+ * lock. Publishes emergency while CONFIRMED and immediate generator silence
+ * on release. Never waits for initialization or hardware. alarm_task retries
+ * automatic requests until applied; manual playback is rejected during fall
+ * confirmation and the subsequent device-stop cleanup. */
+void alarm_sound_sync_fall_state(void);
 
 /**
  * Declare that @p pattern should be playing.
@@ -148,6 +155,7 @@ fsp_err_t alarm_sound_init(void);
  *
  * @retval FSP_SUCCESS              Request accepted.
  * @retval FSP_ERR_INVALID_ARGUMENT @p pattern out of range or NONE.
+ * @retval FSP_ERR_IN_USE           Fall confirmation or stop cleanup owns playback.
  * @retval FSP_ERR_INTERNAL         Synchronisation objects unavailable, so the
  *                                  request could not even be posted.
  */
@@ -156,16 +164,17 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern);
 /**
  * Declare that nothing should be playing.
  *
- * The generator is silenced synchronously, before this call returns and before
- * anything can block, so the output is guaranteed to go quiet within
- * 3 x AUDIO_BUFFER_MS (30 ms). Tearing the device down happens afterwards in
+ * A silence request is published before this call returns. With continuous
+ * buffer servicing it reaches the output within 3 x AUDIO_BUFFER_MS;
+ * interrupt starvation can delay this. Tearing the device down happens in
  * alarm_task(), asynchronously - see alarm_sound_start() for why.
  *
  * If another caller has taken the stream over in the meantime, only this
  * module's own state is cleared; the other stream is left running.
  * Task context only.
  *
- * @retval FSP_SUCCESS      Request accepted; the output is already silent.
+ * @retval FSP_SUCCESS      Silence request accepted.
+ * @retval FSP_ERR_IN_USE   Fall confirmation or stop cleanup owns playback.
  * @retval FSP_ERR_INTERNAL Synchronisation objects unavailable, so the request
  *                          could not be posted. The generator has NOT been
  *                          silenced in that case.
@@ -182,6 +191,7 @@ fsp_err_t alarm_sound_stop(void);
  *
  * @retval FSP_SUCCESS              Request accepted.
  * @retval FSP_ERR_INVALID_ARGUMENT @p pattern out of range or NONE.
+ * @retval FSP_ERR_IN_USE           Fall confirmation or stop cleanup owns playback.
  * @retval FSP_ERR_NOT_OPEN         Not currently playing: this module never
  *                                  started, the device is no longer in
  *                                  AUDIO_STATE_PLAYING, or another caller has

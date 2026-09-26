@@ -504,7 +504,6 @@ static void update_status_text(void)
             text = "Fall Suspected";
             break;
         case FALL_STATE_CONFIRMED:
-        case FALL_STATE_COOLDOWN:
             text = "!! FALL DETECTED !!";
             break;
         default:
@@ -581,7 +580,6 @@ static void get_state_color(fall_state_t state, lv_color_t *color, int32_t *bord
             break;
 
         case FALL_STATE_CONFIRMED:
-        case FALL_STATE_COOLDOWN:
             *color = lv_color_make(FALL_SCREEN_COLOR_CONFIRMED_R,
                                     FALL_SCREEN_COLOR_CONFIRMED_G,
                                     FALL_SCREEN_COLOR_CONFIRMED_B);

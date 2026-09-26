@@ -53,7 +53,9 @@
 #include <tk/tkernel.h>
 
 #include "audio_alarm.h"
+#include "fall_detection_logic.h"
 #include "port/audio_port.h"
+#include "port/da7212.h"
 #include "jlink_console.h"
 #include "cmd_utils.h"
 #include "ntlibc.h"
@@ -102,6 +104,7 @@
 
 /** Retry delay used by alarm_task() if tk_wai_flg() ever fails. */
 #define ALARM_TASK_ERR_DELAY_MS     (100)
+#define ALARM_RETRY_MS              (500U)
 
 /**
  * Buffer fills of silence emitted after a one-shot pattern ends, before
@@ -316,7 +319,7 @@ static volatile alarm_pattern_t s_pattern = ALARM_PATTERN_NONE;
 
 /** true while this module owns the audio stream (audio_start() succeeded and
  *  audio_stop() has not run yet). Written by alarm_task ONLY, which is the
- *  only task that calls audio_start() / audio_stop(); everybody else reads. */
+ *  only task in this module that calls audio_start() / audio_stop(). */
 static volatile bool s_active = false;
 
 /**
@@ -364,7 +367,7 @@ static volatile uint32_t s_finished_req = ALARM_GEN_REQ_NONE;
  *   caller  : s_desired_pattern = X; s_request_seq++;  (one task-atomic step)
  *   alarm_task : drives audio_start() / audio_stop() until the device matches
  *
- * alarm_task is the only task that touches audio_port, so there is no mutex,
+ * alarm_task is the only task in this module that touches audio_port, so there is no mutex,
  * no lock timeout, and nothing to order: "the newest request wins" is simply
  * the last write to a single word. A request that arrives while alarm_task is
  * inside a multi-second audio_start() is picked up by the reconcile loop as
@@ -377,6 +380,15 @@ static volatile uint32_t s_finished_req = ALARM_GEN_REQ_NONE;
  */
 static volatile alarm_pattern_t s_desired_pattern = ALARM_PATTERN_NONE;
 static volatile uint32_t        s_request_seq     = 0;
+/* Task-only publication under the same dispatch lock as desired/sequence.
+ * Cleanup keeps manual commands out until our device stop completes. */
+static volatile bool s_fall_confirmed = false;
+static volatile bool s_fall_cleanup = false;
+static bool s_retry_pending = false;
+static uint32_t s_retry_at = 0;
+static uint32_t s_retry_count = 0;
+static volatile fsp_err_t s_failure_history = FSP_SUCCESS;
+static volatile uint32_t s_event_failures = 0;
 
 /* --- Written by alarm_task only ------------------------------------------- */
 
@@ -460,7 +472,7 @@ static ID s_alarm_flgid = 0;
 static bool      alarm_owns_stream(void);
 static void      alarm_gen_publish_locked(alarm_pattern_t pattern);
 static void      alarm_gen_publish(alarm_pattern_t pattern);
-static void      alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
+static fsp_err_t alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq);
 static void      alarm_reconcile(void);
 static fsp_err_t alarm_apply_stop(uint32_t req_seq);
 static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq);
@@ -551,6 +563,14 @@ static void alarm_gen_publish(alarm_pattern_t pattern)
     }
 }
 
+/** Task-only diagnostic counter; publishers and alarm_task may both fail. */
+static void alarm_record_event_failure(void)
+{
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+    s_event_failures++;
+    if (dispatch_off) { (void)tk_ena_dsp(); }
+}
+
 /**
  * Declare what should be playing and wake alarm_task.
  *
@@ -570,9 +590,16 @@ static void alarm_gen_publish(alarm_pattern_t pattern)
  *                      NULL; kept because "alarm status" and future
  *                      diagnostics may want to name a specific request.
  */
-static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
+static fsp_err_t alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 {
     const bool dispatch_off = (E_OK == tk_dis_dsp());
+
+    if (s_fall_confirmed || s_fall_cleanup ||
+        (FALL_STATE_CONFIRMED == fall_detection_get_state()))
+    {
+        if (dispatch_off) { (void)tk_ena_dsp(); }
+        return FSP_ERR_IN_USE;
+    }
 
     s_desired_pattern = pattern;
     s_request_seq++;
@@ -597,8 +624,44 @@ static void alarm_post_request(alarm_pattern_t pattern, uint32_t *p_seq)
 
     if (s_alarm_flgid > 0)
     {
-        (void)tk_set_flg(s_alarm_flgid, ALARM_EVT_REQUEST);
+        if (E_OK != tk_set_flg(s_alarm_flgid, ALARM_EVT_REQUEST))
+        {
+            alarm_record_event_failure();
+        }
     }
+    return FSP_SUCCESS;
+}
+
+/** Re-read current fall state and publish without any initialization/device wait.
+ * Called after the fall module releases its dispatch lock. */
+void alarm_sound_sync_fall_state(void)
+{
+    bool changed;
+    const bool dispatch_off = (E_OK == tk_dis_dsp());
+    const bool confirmed = (FALL_STATE_CONFIRMED == fall_detection_get_state());
+    changed = (confirmed != s_fall_confirmed);
+    if (changed)
+    {
+        s_fall_confirmed = confirmed;
+        s_fall_cleanup = !confirmed;
+        s_desired_pattern = confirmed ? ALARM_PATTERN_EMERGENCY : ALARM_PATTERN_NONE;
+        s_request_seq++;
+        if (!confirmed) { alarm_gen_publish_locked(ALARM_PATTERN_NONE); }
+    }
+    if (dispatch_off) { (void)tk_ena_dsp(); }
+    if (changed && (s_alarm_flgid > 0) &&
+        (E_OK != tk_set_flg(s_alarm_flgid, ALARM_EVT_REQUEST)))
+    {
+        alarm_record_event_failure();
+    }
+}
+
+/** Monotonic milliseconds; unsigned subtraction handles the low-word wrap. */
+static uint32_t alarm_now_ms(void)
+{
+    SYSTIM now = {0};
+    (void)tk_get_otm(&now);
+    return now.lo;
 }
 
 /**
@@ -637,18 +700,27 @@ static fsp_err_t alarm_apply_stop(uint32_t req_seq)
         return FSP_ERR_ABORTED;
     }
 
-    if (s_active)
+    if (alarm_fill_cb == audio_get_fill_cb())
     {
         /* Stop the DEVICE only while the stream is still ours; otherwise just
          * drop our own bookkeeping, because audio_stop() here would silence a
          * stream another caller started (see alarm_owns_stream()). */
-        if (alarm_owns_stream())
+        if ((AUDIO_STATE_PLAYING == audio_get_state()) ||
+            (AUDIO_STATE_STOPPING == audio_get_state()))
         {
             err = audio_stop();
         }
 
-        s_active = false;
+        if ((FSP_SUCCESS == err) && (AUDIO_STATE_STOPPING == audio_get_state()))
+        {
+            err = FSP_ERR_IN_USE;
+        }
+        if ((FSP_SUCCESS == err) && (AUDIO_STATE_ERROR == audio_get_state()))
+        {
+            err = FSP_ERR_NOT_OPEN;
+        }
     }
+    s_active = false;
 
     return err;
 }
@@ -682,8 +754,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
          * The staleness test and the publication share one tk_dis_dsp()
          * section. Testing first and publishing afterwards would leave a
          * window in which a higher-priority task runs alarm_sound_stop():
-         * that call publishes silence and RETURNS, having promised the caller
-         * quiet within 3 x AUDIO_BUFFER_MS - and then this republication would
+         * that call publishes silence and RETURNS - and this republication would
          * put the superseded pattern straight back into a stream that is still
          * running, audibly, until the reconcile loop reaches the stop. Sharing
          * the section closes it, because alarm_post_request() takes the same
@@ -726,9 +797,6 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
      * instead of silently hijacking it. */
     (void)alarm_apply_stop(req_seq);
 
-    alarm_generator_reset();
-    alarm_gen_publish(pattern);
-
     /* audio_start() validates the device state for us: FSP_ERR_NOT_OPEN when
      * audio_init() has not succeeded, FSP_ERR_IN_USE when the device is
      * already PLAYING (e.g. the "audio start" test tone) or still STOPPING
@@ -738,9 +806,8 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
      *
      * A stop whose I2S_EVENT_IDLE has not arrived yet leaves the device in
      * AUDIO_STATE_STOPPING, and audio_start() turns that into FSP_ERR_IN_USE.
-     * Nothing would retry: the late idle only flips the device to READY, it
-     * does not wake alarm_task, so the newest alarm would stay silent until
-     * somebody issued another request by hand. That is not hypothetical - a
+     * Manual playback is not retried after failure. The late idle only flips
+     * the device to READY, so allow a short wait for a manual request too. A
      * timed-out stop was observed on hardware (Issue #206).
      *
      * Blocking here is harmless: the API is asynchronous, so no caller is
@@ -787,6 +854,25 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
         return FSP_ERR_ABORTED;
     }
 
+    /* Do not reset ISR-owned generator state while any producer is active. */
+    if (AUDIO_STATE_READY != audio_get_state())
+    {
+        return ((AUDIO_STATE_PLAYING == audio_get_state()) ||
+                (AUDIO_STATE_STOPPING == audio_get_state()))
+                   ? FSP_ERR_IN_USE : FSP_ERR_NOT_OPEN;
+    }
+    {
+        const bool dispatch_off = (E_OK == tk_dis_dsp());
+        if ((s_request_seq != req_seq) || (AUDIO_STATE_READY != audio_get_state()))
+        {
+            if (dispatch_off) { (void)tk_ena_dsp(); }
+            return FSP_ERR_ABORTED;
+        }
+        alarm_generator_reset();
+        alarm_gen_publish_locked(pattern);
+        if (dispatch_off) { (void)tk_ena_dsp(); }
+    }
+
     /*
      * Snapshot the completion counter: audio_start() starts the SSI stream
      * BEFORE it retries the codec unmute (src/port/audio_port.c:602-638), and
@@ -820,6 +906,11 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
     }
 
     s_active = true;
+    if (!alarm_owns_stream())
+    {
+        s_active = false;
+        return FSP_ERR_IN_USE;
+    }
 
     if (s_finish_count != finish_before)
     {
@@ -834,7 +925,7 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
          * in its unmute retries for seconds, and a stop posted during that
          * window has already published silence; replaying here would put an
          * audible buffer of the old pattern out seconds after the caller asked
-         * for quiet, breaking the 30 ms silence guarantee. The test and the
+         * for quiet. The test and the
          * publish share one tk_dis_dsp() so a request cannot slip in between
          * them - alarm_post_request() takes the same lock.
          */
@@ -860,8 +951,8 @@ static fsp_err_t alarm_apply_start(alarm_pattern_t pattern, uint32_t req_seq)
  * Drive the device until it matches what has been requested.
  *
  * alarm_task context only - which is what makes the whole module safe: no
- * other task ever calls audio_start() / audio_stop(), so there is nothing to
- * serialise and no lock that could time out.
+ * other task in this module calls audio_start() / audio_stop(). Diagnostic
+ * device commands may still interfere; automatic requests recheck ownership.
  *
  * The loop re-samples the request after every device operation, because
  * audio_start() can take seconds and a caller may well have changed its mind
@@ -872,55 +963,55 @@ static void alarm_reconcile(void)
     for (;;)
     {
         alarm_pattern_t want;
-        uint32_t        seq;
-
-        /* Sample the pair atomically: alarm_post_request() publishes both
-         * together, so they have to be read together. */
+        uint32_t seq;
+        bool automatic;
+        alarm_sound_sync_fall_state();
         {
             const bool dispatch_off = (E_OK == tk_dis_dsp());
-
             want = s_desired_pattern;
-            seq  = s_request_seq;
-
-            if (dispatch_off)
-            {
-                (void)tk_ena_dsp();
-            }
+            seq = s_request_seq;
+            automatic = s_fall_confirmed || s_fall_cleanup;
+            if (dispatch_off) { (void)tk_ena_dsp(); }
         }
-
         if (seq == s_applied_seq)
         {
-            /*
-             * Nothing new has been asked for. A one-shot that has played out
-             * now stops itself; comparing the counters is what distinguishes
-             * that from "alarm start beep" issued a second time, which is a
-             * NEW request for the same pattern and must replay it.
-             */
-            /* A completion counts only while it belongs to the request the
-             * generator is currently under; publishing anything else retires
-             * it without a race (see s_finished_req). */
-            const uint32_t finished = s_finished_req;
-
-            if ((ALARM_GEN_REQ_NONE == finished) || (finished != s_gen_request))
+            if (automatic)
             {
-                s_settle_count++;
-                return;                 /* converged */
+                if ((ALARM_PATTERN_NONE != want) && alarm_owns_stream()) { return; }
+                if (s_retry_pending && ((uint32_t)(alarm_now_ms() - s_retry_at) < ALARM_RETRY_MS)) { return; }
             }
-
-            want = ALARM_PATTERN_NONE;
+            else
+            {
+                const uint32_t finished = s_finished_req;
+                if ((ALARM_GEN_REQ_NONE == finished) || (finished != s_gen_request)) { return; }
+                want = ALARM_PATTERN_NONE;
+            }
         }
-
-        /* Nobody waits on this: the API is asynchronous, so these three are
-         * read only by "alarm status" as diagnostics. */
-        s_last_error      = (ALARM_PATTERN_NONE == want)
-                                ? alarm_apply_stop(seq)
-                                : alarm_apply_start(want, seq);
-        s_applied_pattern = want;
-        s_applied_seq     = seq;
-        s_settle_count++;
+        const fsp_err_t result = (ALARM_PATTERN_NONE == want)
+                                    ? alarm_apply_stop(seq) : alarm_apply_start(want, seq);
+        /* Timestamp completion: lower APIs may block for seconds. */
+        const uint32_t completed_at = alarm_now_ms();
+        {
+            const bool dispatch_off = (E_OK == tk_dis_dsp());
+            s_last_error = result;
+            s_applied_pattern = want;
+            s_applied_seq = seq;
+            s_settle_count++;
+            if (FSP_SUCCESS != result) { s_failure_history = result; }
+            s_retry_at = completed_at;
+            s_retry_pending = automatic && (FSP_SUCCESS != result);
+            if (s_retry_pending) { s_retry_count++; }
+            if ((seq == s_request_seq) && !s_fall_confirmed &&
+                (ALARM_PATTERN_NONE == want) && (FSP_SUCCESS == s_last_error))
+            {
+                s_fall_cleanup = false;
+            }
+            if (dispatch_off) { (void)tk_ena_dsp(); }
+        }
+        /* New requests bypass backoff; unchanged failures wait for task wake. */
+        if (seq == s_request_seq) { return; }
     }
 }
-
 /**********************************************************************************************************************
  Private (static) functions - waveform generator
  *********************************************************************************************************************/
@@ -1332,9 +1423,7 @@ fsp_err_t alarm_sound_start(alarm_pattern_t pattern)
         return err;
     }
 
-    alarm_post_request(pattern, NULL);
-
-    return FSP_SUCCESS;
+    return alarm_post_request(pattern, NULL);
 }
 
 /**
@@ -1349,12 +1438,9 @@ fsp_err_t alarm_sound_stop(void)
         return err;
     }
 
-    /* alarm_post_request() silences the generator before it returns, so the
-     * output is quiet within 3 x AUDIO_BUFFER_MS whatever alarm_task and the
-     * codec mute are busy with afterwards. */
-    alarm_post_request(ALARM_PATTERN_NONE, NULL);
-
-    return FSP_SUCCESS;
+    /* Publish silence before returning. Its output latency depends on SSI
+     * buffer service, not on alarm_task or the codec mute wait. */
+    return alarm_post_request(ALARM_PATTERN_NONE, NULL);
 }
 
 /**
@@ -1367,6 +1453,12 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
     if ((ALARM_PATTERN_NONE == pattern) || (pattern >= ALARM_PATTERN_COUNT))
     {
         return FSP_ERR_INVALID_ARGUMENT;
+    }
+
+    if (s_fall_confirmed || s_fall_cleanup ||
+        (FALL_STATE_CONFIRMED == fall_detection_get_state()))
+    {
+        return FSP_ERR_IN_USE;
     }
 
     /* Retargeting only makes sense while we own a running stream. This is a
@@ -1383,9 +1475,7 @@ fsp_err_t alarm_sound_set_pattern(alarm_pattern_t pattern)
         return err;
     }
 
-    alarm_post_request(pattern, NULL);
-
-    return FSP_SUCCESS;
+    return alarm_post_request(pattern, NULL);
 }
 
 bool alarm_sound_is_active(void)
@@ -1482,34 +1572,25 @@ void alarm_task(INT stacd, void *exinf)
     (void)stacd;
     (void)exinf;
 
-    (void)alarm_sound_init();
-
     for (;;)
     {
-        UINT flgptn = 0;
-        ER   ercd   = tk_wai_flg(s_alarm_flgid,
-                                 (UINT)ALARM_EVT_ANY,
-                                 TWF_ORW | TWF_BITCLR,
-                                 &flgptn,
-                                 TMO_FEVR);
-
-        if (E_OK != ercd)
+        /* Durable requests precede flag creation and survive lost wakeups. */
+        alarm_reconcile();
+        if (FSP_SUCCESS != alarm_sound_init())
         {
-            /* Should not happen (the flag exists and the wait has no timeout).
-             * Back off instead of spinning if it ever does. */
-            tk_dly_tsk(ALARM_TASK_ERR_DELAY_MS);
+            alarm_record_event_failure();
+            tk_dly_tsk(ALARM_RETRY_MS);
             continue;
         }
-
-        /*
-         * The event is only a hint that something MIGHT have changed; the
-         * durable state is s_desired_pattern / s_request_seq / s_finished_req,
-         * and alarm_reconcile() reads those. A wake-up that turns out to have
-         * nothing to do simply converges immediately, and a request that
-         * arrives while we are inside a multi-second audio_start() is picked
-         * up by the loop without needing its own wake-up to survive.
-         */
-        alarm_reconcile();
+        UINT flgptn = 0;
+        ER ercd = tk_wai_flg(s_alarm_flgid, (UINT)ALARM_EVT_ANY,
+                             TWF_ORW | TWF_BITCLR, &flgptn,
+                             ALARM_TASK_ERR_DELAY_MS);
+        if ((E_OK != ercd) && (E_TMOUT != ercd))
+        {
+            alarm_record_event_failure();
+            tk_dly_tsk(ALARM_TASK_ERR_DELAY_MS);
+        }
     }
 }
 
@@ -1532,6 +1613,26 @@ static void alarm_cmd_usage(void)
 static void alarm_cmd_status(void)
 {
     char buf[ALARM_PRINT_BUF_SIZE];
+    bool fall, cleanup, retry;
+    uint32_t retries, failures, request_seq, applied_seq, settles;
+    alarm_pattern_t desired, applied;
+    fsp_err_t history, last_error;
+    {
+        const bool dispatch_off = (E_OK == tk_dis_dsp());
+        fall = s_fall_confirmed;
+        cleanup = s_fall_cleanup;
+        retry = s_retry_pending;
+        retries = s_retry_count;
+        failures = s_event_failures;
+        history = s_failure_history;
+        desired = s_desired_pattern;
+        applied = s_applied_pattern;
+        request_seq = s_request_seq;
+        applied_seq = s_applied_seq;
+        settles = s_settle_count;
+        last_error = s_last_error;
+        if (dispatch_off) { (void)tk_ena_dsp(); }
+    }
 
     const char *gen_str;
     switch (s_gen)
@@ -1542,6 +1643,16 @@ static void alarm_cmd_status(void)
     }
 
     print_to_console("Alarm tone generator (Issue #47 / S-005-3)\r\n");
+    snprintf(buf, sizeof(buf), "  Fall         : confirmed=%u cleanup=%u retry=%u attempts=%lu\r\n",
+             (unsigned)fall, (unsigned)cleanup, (unsigned)retry, (unsigned long)retries);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  History      : failure=0x%lX event failures=%lu\r\n",
+             (unsigned long)history, (unsigned long)failures);
+    print_to_console(buf);
+    snprintf(buf, sizeof(buf), "  Silence      : requested=%u codec-muted=%u volume-zero=%u amplitude-zero=%u\r\n",
+             (unsigned)(ALARM_PATTERN_NONE == s_pattern), (unsigned)da7212_is_muted(),
+             (unsigned)(0 == audio_get_volume()), (unsigned)(0 == s_amplitude));
+    print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Playback     : %s, pattern '%s', generator %s\r\n",
              alarm_owns_stream()
@@ -1603,16 +1714,16 @@ static void alarm_cmd_status(void)
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Requests     : desired '%s' seq=%lu / applied '%s' seq=%lu\r\n",
-             alarm_pattern_name(s_desired_pattern),
-             (unsigned long)s_request_seq,
-             alarm_pattern_name(s_applied_pattern),
-             (unsigned long)s_applied_seq);
+             alarm_pattern_name(desired),
+             (unsigned long)request_seq,
+             alarm_pattern_name(applied),
+             (unsigned long)applied_seq);
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Reconcile    : %lu passes, last err=0x%lX%s\r\n",
-             (unsigned long)s_settle_count,
-             (unsigned long)s_last_error,
-             (s_request_seq == s_applied_seq) ? "" : " (pending)");
+             (unsigned long)settles,
+             (unsigned long)last_error,
+             ((request_seq == applied_seq) && !retry) ? "" : " (pending)");
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Device       : audio state=%d, fs=%lu Hz, volume %u%%\r\n",
@@ -1696,10 +1807,9 @@ int usrcmd_alarm(int argc, char **argv)
     {
         err = alarm_sound_stop();
 
-        /* The generator is silenced inside the call, so this really does
-         * report silence; only the device teardown is left to alarm_task. */
+        /* Request acceptance is distinct from audible/device stop completion. */
         snprintf(buf, sizeof(buf), "alarm stop: %s (err=0x%lX)\r\n",
-                 (FSP_SUCCESS == err) ? "silenced" : "FAILED",
+                 (FSP_SUCCESS == err) ? "requested" : "FAILED",
                  (unsigned long)err);
         print_to_console(buf);
         return (FSP_SUCCESS == err) ? CMD_OK : CMD_ERR_EXECUTE;

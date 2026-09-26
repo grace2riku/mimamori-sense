@@ -72,9 +72,6 @@ extern "C" {
 #define FALL_SCREEN_COLOR_CONFIRMED_G   (0x00)
 #define FALL_SCREEN_COLOR_CONFIRMED_B   (0x00)
 
-#define FALL_SCREEN_COLOR_COOLDOWN_R    (0xFF)  /**< Cooldown: Orange */
-#define FALL_SCREEN_COLOR_COOLDOWN_G    (0x80)
-#define FALL_SCREEN_COLOR_COOLDOWN_B    (0x00)
 /** @} */
 
 /**
