@@ -8,15 +8,18 @@
 ```powershell
 python scripts/issue237/tests/run_arm_tests.py
 python scripts/issue237/build.py --run r1
-python scripts/issue237/verify.py --run r1
+python scripts/issue237/verify.py --run r1 --cpu1-mot "C:/firmware/CPU1.mot" --cpu1-elf "C:/firmware/CPU1.elf"
 ```
 
 - テストは実CコードをARM向けにコンパイルし、RTOS・音声デバイスをモック化して実行する。実際のタスクスケジューリング、AI精度、I2C、SSI、可聴音の検証ではない。
 - `ARM_CLANG` でコンパイラ、`ISSUE237_TEST_DEPS` でUnicornの配置先を指定可能。省略時の依存パスはrunner参照。
 - ビルドはe2 studioの既存 `Debug/*.in` を読み、1600オブジェクトを独立した `e2studio_CPU0/Debug/issue237/<run>/` へ再コンパイルする。生成設定ファイルは変更しない。
 - run名は未使用のものを指定する。入力ソースのハッシュを採取し、ビルド中に変更された場合は失敗する。
-- 検証はCPU0のS-recordとELFのフラッシュ領域一致、チェックサム、SSI ISRラップ、CPU1との非重複を確認する。既存の検証済みCPU1のMOTも同じ出力ディレクトリへコピーする。
+- 初回はe2 studioでCPU0をビルドして `Debug/*.in` を生成する。CPU1も対応するプロジェクトをビルドし、同一ビルドから得たMOTとELFを用意する。上例の `C:/firmware/CPU1.*` は実際の出力パスに置き換える。既存の対応する成果物ペアを明示的に指定してもよい。過去のIssueのローカル成果物を自動で探すことはない。
+- 検証はCPU0のS-recordとELFのフラッシュ領域一致、チェックサム、SSI ISRラップ、指定したCPU1のMOT/ELF一致とCPU0との非重複を確認する。CPU1の入力パスと両ファイルのSHA-256を記録し、MOTを同じ出力ディレクトリへコピーする（`verify.py:91`）。リポジトリ外の入力にも対応する。これはファイルの整合性検証であり、新たに指定したCPU1の実機互換性を保証しない。
 - `manifest.json` と `verification.json` の `hardware_tested: false` は、書き込み・実機確認を代行したという意味に変えない。
+
+PR #238レビュー対応の検証: リポジトリ外へコピーしたCPU1ペアで検証成功、入力引数不足・存在しないファイル・MOT/ELF不一致を拒否すること、出力MOTを入力に再指定できること、入力パスとハッシュの記録を確認した。変更対象は検証スクリプトと文書のみで、実機確認済みのファームウェアは変更していないため、再ビルド・再書き込みは不要。
 
 ## 実機確認の準備
 

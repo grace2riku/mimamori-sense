@@ -1,4 +1,4 @@
-"""Verify Issue237 ISR wrapping, CPU0 S-record and the known CPU1 pair."""
+"""Verify Issue237 ISR wrapping, CPU0 S-record and a supplied CPU1 MOT/ELF pair."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -88,7 +88,9 @@ def verify_wrapping(image, elf, out, nm):
     return report
 
 
-def verify(run):
+def verify(run, cpu1, cpu1_elf):
+    cpu1 = cpu1.resolve()
+    cpu1_elf = cpu1_elf.resolve()
     assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', run), 'Use a single directory name'
     out = (ROOT / 'e2studio_CPU0/Debug/issue237' / run).resolve()
     assert out.is_relative_to((ROOT / 'e2studio_CPU0/Debug/issue237').resolve())
@@ -105,14 +107,10 @@ def verify(run):
     flash = {a: b for a, b in image.loads().items() if 0x02000000 <= a < 0x020F8000}
     assert data == flash and entry == image.entry
     assert all(0x02000000 <= addr < 0x020F8000 for addr in data)
-    baseline = ROOT / 'e2studio_CPU0/Debug/issue230/main-wait-r2/artifacts'
-    cpu1 = baseline / 'MAIN_wait200_postc_CPU1.mot'
-    assert sha(cpu1) == '8cb5d5e9040d0a9bb0ad72d233d21115b5e68cba3c0524e03f3e0fb4d31d2c53'
     other, entry1 = mot_bytes(cpu1)
-    image1 = Elf(baseline / 'MAIN_wait200_postc_CPU1.elf')
-    assert other == image1.loads() and entry1 == image1.entry
-    assert not data.keys() & other.keys()
-    shutil.copy2(cpu1, out / 'mimamori_sense_CPU1.mot')
+    image1 = Elf(cpu1_elf)
+    assert other == image1.loads() and entry1 == image1.entry, 'CPU1 MOT/ELF mismatch'
+    assert not data.keys() & other.keys(), 'CPU0/CPU1 images overlap'
     nm = subprocess.check_output([str(LLVM / 'llvm-nm.exe'), str(elf)], text=True)
     (out / 'symbols.txt').write_text(nm, encoding='utf-8')
     manifest['isr_wrapping'] = verify_wrapping(image, elf, out, nm)
@@ -120,10 +118,14 @@ def verify(run):
                      if line.split()[-1] == '__ddsc_FLASH_END')
     manifest.update(srecord_matches_elf_flash=True, srecord_checksums_valid=True,
                     cpu0_load_bytes=len(data), cpu0_last_load_address=hex(max(data)),
-                    cpu1_mot_sha256=sha(cpu1), cpu1_source=str(cpu1.relative_to(ROOT)),
+                    cpu1_mot_sha256=sha(cpu1), cpu1_source=str(cpu1),
+                    cpu1_elf_sha256=sha(cpu1_elf), cpu1_elf_source=str(cpu1_elf),
                     cpu0_cpu1_overlap_bytes=0, hardware_tested=False)
     manifest['flash_image_end'] = hex(flash_end)
     manifest['flash_used_bytes'] = flash_end - 0x02000000
+    destination = out / 'mimamori_sense_CPU1.mot'
+    if not destination.exists() or not cpu1.samefile(destination):
+        shutil.copy2(cpu1, destination)
     (out / 'verification.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     print(f'PASS ISR vectors/wrapping, S-record/ELF, checksums, flash range, '
           f'CPU0/CPU1 disjoint. CPU0 load: {len(data)} bytes')
@@ -132,4 +134,12 @@ def verify(run):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--run', required=True)
-    verify(parser.parse_args().run)
+    parser.add_argument('--cpu1-mot', required=True, type=Path,
+                        help='CPU1 S-record from the build paired with --cpu1-elf')
+    parser.add_argument('--cpu1-elf', required=True, type=Path,
+                        help='ELF from the same CPU1 build (paths may be outside the repository)')
+    args = parser.parse_args()
+    for path in (args.cpu1_mot, args.cpu1_elf):
+        if not path.is_file():
+            parser.error(f'CPU1 input file does not exist: {path}')
+    verify(args.run, args.cpu1_mot, args.cpu1_elf)
