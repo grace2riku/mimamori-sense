@@ -18,8 +18,8 @@
  * see ra_gen/hal_data.c):
  *   g_i2s_audio        SSIE0, master, PCM 16-bit, word length 16-bit,
  *                      internal AUDIO_CLK, bit clock divider /24
- *   g_transfer_i2s_tx  DTC on SSI0 TXI - opened by R_SSI_Open(), never
- *                      touched from the application
+ *   g_transfer_i2s_tx  DTC on SSI0 TXI - opened by R_SSI_Open(); application
+ *                      diagnostics only read its descriptor, never modify it
  *   g_timer_audio_mclk GPT2 -> PD06, period 20 -> MCLK 12.5 MHz, and the
  *                      same output is the SSIE internal AUDIO_CLK
  *   g_comms_i2c_codec  DA7212 control, slave 0x1A
@@ -257,7 +257,33 @@ audio_fill_cb_t audio_get_fill_cb(void);
  */
 void audio_task(INT stacd, void *exinf);
 
-/** NT-Shell "audio" command handler. */
+/** NT-Shell "audio" command handler.
+ * `status` snapshots session/time/counters together. DWT cycle maxima cover
+ * Native TX callback gaps, ISR fills/writes (native+fallback) and post-IDLE
+ * recovery only (not lost audio).
+ * Timing survives stop and resets on the next start attempt. Intervals must
+ * be shorter than one 32-bit DWT wrap; debug halts invalidate a trial.
+ * Raw SSI IRQ counters also reset on start; saturated=1 invalidates them.
+ * FIFO ranges count TX entries without a callback for the whole session.
+ * The first 16 no-callback TX / INT records are retained separately, copied
+ * one record at a time under DI with session validation. trace_valid=0
+ * invalidates every detail line in that status output; full/truncated alone
+ * do not invalidate session aggregates. INT post values are not sampled.
+ * TDC/DTCE/descriptor reads are sequential observations, not atomic snapshots
+ * or proof of DTC completion. Wrapper pre/post maxima exclude original ISR
+ * execution and timing bookkeeping. Sampling itself can shift IRQ timing.
+ * Missing native TX notification is supplemented only for an open, playing,
+ * non-stopping SSI0 with TX enabled, completed non-chained BLOCK/IRQ_END DTC,
+ * FIFO occupancy 1..16 and no pending underflow. Native callbacks retain
+ * their own counters; Fallback reports supplemental Write results. Refill
+ * counts successful native+fallback submissions, excluding start/IDLE prefill.
+ * Both native and fallback paths recheck DTC completion before Write or PCM
+ * regeneration; a residual native callback alone does not prove completion.
+ * Fallback UNDERFLOW is handed to IDLE recovery only after Stop success and
+ * readback proves TX/IRQ/DTC disabled and this DTC source inactive. Failed
+ * stop verification leaves ERROR; residual callbacks cannot regenerate PCM.
+ * Link both SSI ISR --wrap options from the project settings to enable the
+ * IRQ entry counters (the diagnostic build verifies the final vectors). */
 int usrcmd_audio(int argc, char **argv);
 
 #ifdef __cplusplus

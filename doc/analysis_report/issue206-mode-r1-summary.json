@@ -1,0 +1,62 @@
+[
+  {
+    "trial": 1,
+    "mode": "full",
+    "start_ms": [
+      42240,
+      42240
+    ],
+    "duration_ms": 73100,
+    "interval_ms": 64860,
+    "refill_delta": 6517,
+    "refill_per_second": 100.47795251310515,
+    "max_gap_ms": 10.233792,
+    "user_report": "no gravel-like noise",
+    "other_sound_symptoms": "not reported"
+  },
+  {
+    "trial": 2,
+    "mode": "nowindow",
+    "start_ms": [
+      42420,
+      42420
+    ],
+    "duration_ms": 70400,
+    "interval_ms": 64000,
+    "refill_delta": 6430,
+    "refill_per_second": 100.46875,
+    "max_gap_ms": 10.245887,
+    "user_report": "no gravel-like noise",
+    "other_sound_symptoms": "not reported"
+  },
+  {
+    "trial": 3,
+    "mode": "nowindow",
+    "start_ms": [
+      42240,
+      42240
+    ],
+    "duration_ms": 69500,
+    "interval_ms": 63860,
+    "refill_delta": 6416,
+    "refill_per_second": 100.4697776385844,
+    "max_gap_ms": 10.254047,
+    "user_report": "no gravel-like noise",
+    "other_sound_symptoms": "not reported"
+  },
+  {
+    "trial": 4,
+    "mode": "full",
+    "start_ms": [
+      41100,
+      41100
+    ],
+    "duration_ms": 70180,
+    "interval_ms": 62640,
+    "refill_delta": 6293,
+    "refill_per_second": 100.46296296296296,
+    "max_gap_ms": 10.271008,
+    "user_report": "no gravel-like noise",
+    "other_sound_symptoms": "not reported"
+  }
+]

@@ -1,0 +1,167 @@
+mimamori>alarm start emergency
+alarm start: 'emergency' (looping) requested.
+mimamori>audio status
+Audio output (SSIE0 I2S master -> DA7212 -> J33)
+  State        : PLAYING (last err=0x0)
+  Format       : 16276 Hz, 16 bit, 2 ch (I2S frame)
+  Clocks       : MCLK 12500000 Hz, BCLK 520833 Hz, WCLK 16276 Hz
+  Buffers      : 2 x 162 frames (10 ms, 648 bytes)
+  ISR counters : tx_empty=517 idle=0 err=0 restart=0
+  Snapshot     : session=1 time_ms=44780 clock=1000000000 producer=callback time_ok=1
+  DWT cycles   : gap_max=19906576 tx_fill_max=478437 idle_fill_max=0
+  Write max    : tx_ok=14790 tx_fail=0 idle_ok=0 idle_fail=0 cycles
+  Recovery     : ok=0 fail=0 ok_max=0 fail_max=0 cycles
+  Timing scope : gap=native callback; TX fill/write=native+fallback; intervals < one DWT wrap.
+  Timing scope : recovery excludes pre-IDLE delay.
+  IRQ entry    : tx=523 tx_no_cb=6 no_cb_run_max=2
+  IRQ entry    : int=0 int_no_idle=0 saturated=0 (session counters)
+  FIFO no_cb   : tdc0=0 tdc1_16=6 tdc17_32=0 other=0
+  Trace        : session=1 count=6 full=0 truncated=0
+  Wrapper max  : tx_pre=15726 tx_post=5220 int_pre=0 int_post=0 cycles
+  Trace scope  : first 16 events only; FIFO counts cover session; later details omitted when full.
+  Trace scope  : sequential reads; DTCE/descriptor_blocks do not prove DTC completion; cycles may wrap.
+  Trace scope  : TX post is before fallback refill; later INT/IDLE is not implied.
+  Wrapper scope: sampled pre/post sections only; excludes original ISR and timing bookkeeping.
+  Trace s=1 #60 TX-no-cb cycles=3847222567 cb=59->59
+  Trace s=1 #60 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #60 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 TX-no-cb cycles=3847403329 cb=59->59
+  Trace s=1 #61 pre: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #61 post: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #76 TX-no-cb cycles=3996606111 cb=73->73
+  Trace s=1 #76 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #76 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #77 TX-no-cb cycles=3996866621 cb=73->73
+  Trace s=1 #77 pre: tdc=3 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #77 post: tdc=3 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #491 TX-no-cb cycles=3822195591 cb=486->486
+  Trace s=1 #491 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #491 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #492 TX-no-cb cycles=3822376313 cb=486->486
+  Trace s=1 #492 pre: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #492 post: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 trace_valid=1 (0: discard all trace lines above)
+  INT trace s=1 count=0 capacity=8 omitted=0 tx_summary_max=1458 cycles
+  INT scope    : entry registers before FSP; sequential reads; DTCSTS vector valid only if ACT=1.
+  Last TX scope: nearest completed TX; exit before summary, not ISR return; DWT intervals < one wrap.
+  INT scope    : explicit stops also recorded; full stops extra INT reads and TX summary updates.
+  INT trace s=1 int_trace_valid=1 (0: discard all INT trace lines above)
+  Delay s=1 count=0 capacity=4 full=0 threshold_ms=30 threshold_cycles=30000000
+  Delay reason : 1=previous DWT, 2=previous OS, 4=successful TX DWT, 8=successful TX OS; bits combine.
+  Delay scope  : TX entry times, not Write completion or silence; sequential reads; clocks can both lag.
+  Delay scope  : time_ok=0 means ignore ms; clock_ok=0 disables DWT threshold; no wrap correction.
+  Delay scope  : success kind 1=native 2=fallback; excludes start/IDLE prefill; four episodes then no sampling.
+  Delay s=1 delay_valid=1 (0: discard all Delay lines above)
+  Fallback     : attempt=3 ok=3 underflow=0 fail=0 stop_fail=0
+  Refill       : ok=520 gap_max=10174592 fallback_max=241555 cycles
+  Refill scope : native+fallback Write successes; excludes start/IDLE prefill; gaps < one DWT wrap.
+  Fallback max : guard+refill elapsed cycles; excluded from wrapper pre/post maxima.
+  SSI regs     : SSICR=0x600940A2 (TEN=1 MUEN=0) SSISR=0x00000000
+  Delivery     : 517 native cb in 5180 ms = 99.80 cb/s (expect 100.46)
+  Refill rate  : 520 buf in 5180 ms = 100.38 buf/s (expect 100.46)
+  Test tone    : 1000 Hz, amplitude 16000 (square)
+  I2C bus0     : open
+  DA7212       : ready, PLL locked, volume 60% (LINE_AMP_GAIN=0x2A), unmuted
+mimamori>audio status
+Audio output (SSIE0 I2S master -> DA7212 -> J33)
+  State        : PLAYING (last err=0x0)
+  Format       : 16276 Hz, 16 bit, 2 ch (I2S frame)
+  Clocks       : MCLK 12500000 Hz, BCLK 520833 Hz, WCLK 16276 Hz
+  Buffers      : 2 x 162 frames (10 ms, 648 bytes)
+  ISR counters : tx_empty=6534 idle=0 err=0 restart=0
+  Snapshot     : session=1 time_ms=108960 clock=1000000000 producer=callback time_ok=1
+  DWT cycles   : gap_max=4026524664 tx_fill_max=479329 idle_fill_max=0
+  Write max    : tx_ok=223378 tx_fail=0 idle_ok=0 idle_fail=0 cycles
+  Recovery     : ok=0 fail=0 ok_max=0 fail_max=0 cycles
+  Timing scope : gap=native callback; TX fill/write=native+fallback; intervals < one DWT wrap.
+  Timing scope : recovery excludes pre-IDLE delay.
+  IRQ entry    : tx=6597 tx_no_cb=63 no_cb_run_max=2
+  IRQ entry    : int=0 int_no_idle=0 saturated=0 (session counters)
+  FIFO no_cb   : tdc0=0 tdc1_16=62 tdc17_32=1 other=0
+  Trace        : session=1 count=16 full=1 truncated=1
+  Wrapper max  : tx_pre=207816 tx_post=13020 int_pre=0 int_post=0 cycles
+  Trace scope  : first 16 events only; FIFO counts cover session; later details omitted when full.
+  Trace scope  : sequential reads; DTCE/descriptor_blocks do not prove DTC completion; cycles may wrap.
+  Trace scope  : TX post is before fallback refill; later INT/IDLE is not implied.
+  Wrapper scope: sampled pre/post sections only; excludes original ISR and timing bookkeeping.
+  Trace s=1 #60 TX-no-cb cycles=3847222567 cb=59->59
+  Trace s=1 #60 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #60 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 TX-no-cb cycles=3847403329 cb=59->59
+  Trace s=1 #61 pre: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #61 post: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #76 TX-no-cb cycles=3996606111 cb=73->73
+  Trace s=1 #76 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #76 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #77 TX-no-cb cycles=3996866621 cb=73->73
+  Trace s=1 #77 pre: tdc=3 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #77 post: tdc=3 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #491 TX-no-cb cycles=3822195591 cb=486->486
+  Trace s=1 #491 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #491 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #492 TX-no-cb cycles=3822376313 cb=486->486
+  Trace s=1 #492 pre: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #492 post: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #718 TX-no-cb cycles=1776668487 cb=711->711
+  Trace s=1 #718 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #718 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #719 TX-no-cb cycles=1776928233 cb=711->711
+  Trace s=1 #719 pre: tdc=7 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #719 post: tdc=7 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #885 TX-no-cb cycles=3428955291 cb=876->876
+  Trace s=1 #885 pre: tdc=14 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #885 post: tdc=14 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #886 TX-no-cb cycles=3429136065 cb=876->876
+  Trace s=1 #886 pre: tdc=8 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #886 post: tdc=8 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #936 TX-no-cb cycles=3926667973 cb=925->925
+  Trace s=1 #936 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #936 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #937 TX-no-cb cycles=3926929067 cb=925->925
+  Trace s=1 #937 pre: tdc=4 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #937 post: tdc=6 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #1461 TX-no-cb cycles=552252095 cb=1448->1448
+  Trace s=1 #1461 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #1461 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #1462 TX-no-cb cycles=552499783 cb=1448->1448
+  Trace s=1 #1462 pre: tdc=4 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #1462 post: tdc=5 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #1482 TX-no-cb cycles=751248207 cb=1467->1467
+  Trace s=1 #1482 pre: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #1482 post: tdc=15 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #1483 TX-no-cb cycles=751428971 cb=1467->1467
+  Trace s=1 #1483 pre: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 #1483 post: tdc=9 dtce=1 descriptor_blocks=162 sw_samples=0
+  Trace s=1 trace_valid=1 (0: discard all trace lines above)
+  INT trace s=1 count=0 capacity=8 omitted=0 tx_summary_max=15618 cycles
+  INT scope    : entry registers before FSP; sequential reads; DTCSTS vector valid only if ACT=1.
+  Last TX scope: nearest completed TX; exit before summary, not ISR return; DWT intervals < one wrap.
+  INT scope    : explicit stops also recorded; full stops extra INT reads and TX summary updates.
+  INT trace s=1 int_trace_valid=1 (0: discard all INT trace lines above)
+  Delay s=1 count=1 capacity=4 full=0 threshold_ms=30 threshold_cycles=30000000
+  Delay reason : 1=previous DWT, 2=previous OS, 4=successful TX DWT, 8=successful TX OS; bits combine.
+  Delay scope  : TX entry times, not Write completion or silence; sequential reads; clocks can both lag.
+  Delay scope  : time_ok=0 means ignore ms; clock_ok=0 disables DWT threshold; no wrap correction.
+  Delay scope  : success kind 1=native 2=fallback; excludes start/IDLE prefill; four episodes then no sampling.
+  Delay s=1 #2875 reason=15 state=3 stop=0 tx=2842 refill=2858
+  Delay s=1 #2875 now: cycles=1363181847 ms=72070 time_ok=1 err=00000000
+  Delay s=1 #2875 prev: cycles=1631617765 ms=68040 time_ok=1 err=00000000
+  Delay s=1 #2875 success: cycles=1631617765 ms=68040 time_ok=1 err=00000000
+  Delay s=1 #2875 success: TX#2874 kind=1 index=0 address=2200A798
+  Delay s=1 #2875 clock=1000000000 clock_ok=1 DWT_CTRL=80000001 DEMCR=01100000
+  Delay s=1 #2875 SSISR=00000000 SSICR=600940A2 SSIFCR=80000008 SSIFSR=12000000
+  Delay s=1 #2875 IELSR=000100B3 DTCSTS=00000014 blocks=0 source=2204A798
+  Delay s=1 #2875 sw_samples=0 play_index=0
+  Delay s=1 delay_valid=1 (0: discard all Delay lines above)
+  Fallback     : attempt=31 ok=31 underflow=0 fail=0 stop_fail=0
+  Refill       : ok=6565 gap_max=4026300272 fallback_max=246810 cycles
+  Refill scope : native+fallback Write successes; excludes start/IDLE prefill; gaps < one DWT wrap.
+  Fallback max : guard+refill elapsed cycles; excluded from wrapper pre/post maxima.
+  SSI regs     : SSICR=0x600940A2 (TEN=1 MUEN=0) SSISR=0x00000000
+  Delivery     : 6534 native cb in 69360 ms = 94.20 cb/s (expect 100.46)
+  Refill rate  : 6565 buf in 69360 ms = 94.65 buf/s (expect 100.46)
+  Test tone    : 1000 Hz, amplitude 16000 (square)
+  I2C bus0     : open
+  DA7212       : ready, PLL locked, volume 60% (LINE_AMP_GAIN=0x2A), unmuted
+mimamori>alarm stop
+alarm stop: silenced (err=0x0)

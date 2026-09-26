@@ -828,7 +828,8 @@ static void dave2d_cmd_test_alpha(void)
  *          The cycle counter runs at the CPU core clock frequency (1 GHz)
  *          and provides sub-microsecond timing resolution.
  *
- *          DWT_CTRL bit 0 (CYCCNTENA) must be set to enable the counter.
+ *          Enable trace and DWT_CTRL bit 0 (CYCCNTENA) without resetting
+ *          CYCCNT, which is shared with camera, AI and audio timing.
  *          The counter wraps around after ~4.295 seconds at 1 GHz.
  *
  * Reference: ARM Cortex-M85 Technical Reference Manual, DWT registers
@@ -837,12 +838,9 @@ static void dave2d_cmd_test_alpha(void)
 static void dave2d_dwt_init(void)
 {
     volatile uint32_t *dwt_ctrl   = (volatile uint32_t *)DWT_CTRL_ADDR;
-    volatile uint32_t *dwt_cyccnt = (volatile uint32_t *)DWT_CYCCNT_ADDR;
 
-    /* Reset the cycle counter */
-    *dwt_cyccnt = 0;
-
-    /* Enable the cycle counter */
+    /* Preserve concurrent measurements; benchmarks use end - start. */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     *dwt_ctrl |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
