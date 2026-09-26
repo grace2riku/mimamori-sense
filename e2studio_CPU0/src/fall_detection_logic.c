@@ -9,7 +9,7 @@
  *   2. Evaluate fall candidacy based on bounding box aspect ratio (width/height)
  *      and detection confidence score
  *   3. Track consecutive frames with fall candidates (temporal filter)
- *   4. Transition through NORMAL -> SUSPECTED -> CONFIRMED -> COOLDOWN states
+ *   4. Transition through NORMAL -> SUSPECTED -> CONFIRMED -> NORMAL states
  *   5. Issue event notification on fall confirmation (F-004 integration)
  *
  * The state machine runs in the ai_inference_thread context, called after
@@ -24,17 +24,13 @@
 #include "fall_detection_logic.h"
 
 #include <string.h>
+#include <math.h>
+#include <tk/tkernel.h>
+#include "audio_alarm.h"
 
 #include "ai_application/fall_detection/fall_detection_postprocess.h"
 #include "ai_application/ai_application_config.h"
 #include "common_util.h"
-
-/**********************************************************************************************************************
- Macro definitions
- *********************************************************************************************************************/
-
-/** Minimum floating-point value to avoid division by zero in aspect ratio */
-#define EPSILON     (1e-7f)
 
 /**********************************************************************************************************************
  Private global variables
@@ -52,8 +48,8 @@ static fall_detection_stats_t s_stats;
 /** Consecutive fall candidate counter (frames) */
 static uint32_t s_consecutive_count = 0;
 
-/** Cooldown frame counter (counts down to 0) */
-static uint32_t s_cooldown_counter = 0;
+/** Consecutive valid non-fall observations while confirmed. */
+static uint32_t s_recovery_count = 0;
 
 /** Total frame counter (monotonically increasing) */
 static uint32_t s_frame_count = 0;
@@ -70,7 +66,7 @@ static uint32_t s_log_count = 0;
  Private function prototypes
  *********************************************************************************************************************/
 
-static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, bool *out_position_hint);
+static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, bool *out_position_hint, bool *out_recovered);
 static void log_state_transition(fall_state_t from, fall_state_t to,
                                   float aspect_ratio, float score, uint32_t consecutive);
 
@@ -83,17 +79,18 @@ static void log_state_transition(fall_state_t from, fall_state_t to,
  */
 void fall_detection_init(void)
 {
+    tk_dis_dsp();
+    /* All writers/readers are tasks; no ISR accesses this module. */
     /* Set default parameters from macro constants */
     s_params.aspect_ratio_threshold = FALL_DETECT_ASPECT_RATIO_THRESHOLD;
     s_params.score_threshold        = FALL_DETECT_SCORE_THRESHOLD;
     s_params.consecutive_threshold  = FALL_DETECT_CONSECUTIVE_COUNT;
-    s_params.cooldown_frames        = FALL_DETECT_COOLDOWN_FRAMES;
     s_params.lower_position_ratio   = FALL_DETECT_LOWER_POSITION_RATIO;
 
     /* Reset state machine */
     s_state = FALL_STATE_NORMAL;
     s_consecutive_count = 0;
-    s_cooldown_counter = 0;
+    s_recovery_count = 0;
     s_frame_count = 0;
 
     /* Clear statistics */
@@ -107,6 +104,8 @@ void fall_detection_init(void)
 
     /* Clear callback */
     s_event_callback = NULL;
+    tk_ena_dsp();
+    alarm_sound_sync_fall_state();
 }
 
 /**
@@ -118,113 +117,81 @@ void fall_detection_init(void)
  */
 fall_state_t fall_detection_update(void)
 {
-    s_frame_count++;
-    s_stats.total_frames = s_frame_count;
-
-    /* Evaluate whether current frame contains a fall candidate */
     float aspect_ratio = 0.0f;
     float score = 0.0f;
     bool position_hint = false;
-    bool is_candidate = evaluate_fall_candidate(&aspect_ratio, &score, &position_hint);
+    bool recovered = false;
+    fall_detection_event_callback_t callback = NULL;
+    uint32_t confirmed_frame = 0;
 
-    /* Update diagnostic stats */
+    /* Bounded by AI_MAX_DETECTION_NUM. No blocking APIs or callbacks here.
+     * Keep parameter evaluation and state/statistics publication together so
+     * a shell reset cannot be overwritten by an older frame snapshot. */
+    tk_dis_dsp();
+    s_frame_count++;
+    s_stats.total_frames = s_frame_count;
+    bool is_candidate = evaluate_fall_candidate(&aspect_ratio, &score, &position_hint, &recovered);
     s_stats.last_aspect_ratio = aspect_ratio;
     s_stats.last_score = score;
     s_stats.last_position_hint = position_hint;
-
     if (is_candidate)
     {
         s_stats.candidate_frames++;
     }
 
-    /* State machine transition logic */
     fall_state_t prev_state = s_state;
-
-    switch (s_state)
+    if (s_state == FALL_STATE_CONFIRMED)
     {
-        case FALL_STATE_NORMAL:
-            if (is_candidate)
-            {
-                /* Fall candidate detected - start counting */
-                s_consecutive_count = 1;
-                s_state = FALL_STATE_SUSPECTED;
-                log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
-            }
-            break;
-
-        case FALL_STATE_SUSPECTED:
-            if (is_candidate)
-            {
-                s_consecutive_count++;
-
-                if (s_consecutive_count >= s_params.consecutive_threshold)
-                {
-                    /* Consecutive threshold reached - fall confirmed */
-                    s_state = FALL_STATE_CONFIRMED;
-                    s_stats.confirmed_count++;
-
-                    log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
-
-                    /* Issue notification event (F-004 integration) */
-                    if (s_event_callback != NULL)
-                    {
-                        s_event_callback(s_frame_count);
-                    }
-
-                    /* Immediately transition to cooldown */
-                    fall_state_t confirmed_state = s_state;
-                    s_state = FALL_STATE_COOLDOWN;
-                    s_cooldown_counter = s_params.cooldown_frames;
-
-                    log_state_transition(confirmed_state, s_state, aspect_ratio, score, s_consecutive_count);
-                }
-            }
-            else
-            {
-                /* Candidate lost - return to normal */
-                s_consecutive_count = 0;
-                s_state = FALL_STATE_NORMAL;
-                log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
-            }
-            break;
-
-        case FALL_STATE_CONFIRMED:
-            /* This state is transient; fall_detection_update() transitions
-             * to COOLDOWN immediately after confirmation (see SUSPECTED case above).
-             * If we somehow end up here, move to cooldown. */
-            s_state = FALL_STATE_COOLDOWN;
-            s_cooldown_counter = s_params.cooldown_frames;
-            log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
-            break;
-
-        case FALL_STATE_COOLDOWN:
-            if (s_cooldown_counter > 0)
-            {
-                s_cooldown_counter--;
-            }
-
-            if (s_cooldown_counter == 0)
-            {
-                /* Cooldown period elapsed - return to normal */
-                s_consecutive_count = 0;
-                s_state = FALL_STATE_NORMAL;
-                log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
-            }
-            break;
-
-        default:
-            /* Invalid state - reset to normal */
+        s_recovery_count = recovered ? s_recovery_count + 1U : 0U;
+        if (s_recovery_count >= FALL_DETECT_RECOVERY_COUNT)
+        {
             s_state = FALL_STATE_NORMAL;
             s_consecutive_count = 0;
-            break;
+            s_recovery_count = 0;
+        }
     }
-
-    /* Update stats with current state */
+    else if (is_candidate)
+    {
+        if (s_consecutive_count < UINT32_MAX)
+        {
+            s_consecutive_count++;
+        }
+        if (s_consecutive_count >= s_params.consecutive_threshold)
+        {
+            s_state = FALL_STATE_CONFIRMED;
+            s_stats.confirmed_count++;
+            callback = s_event_callback;
+            confirmed_frame = s_frame_count;
+        }
+        else
+        {
+            s_state = FALL_STATE_SUSPECTED;
+        }
+    }
+    else
+    {
+        s_state = FALL_STATE_NORMAL;
+        s_consecutive_count = 0;
+    }
+    if (prev_state != s_state)
+    {
+        log_state_transition(prev_state, s_state, aspect_ratio, score, s_consecutive_count);
+    }
     s_stats.current_state = s_state;
     s_stats.consecutive_count = s_consecutive_count;
-    s_stats.cooldown_remaining = s_cooldown_counter;
+    s_stats.recovery_count = s_recovery_count;
+    fall_state_t result = s_state;
+    tk_ena_dsp();
 
-    return s_state;
+    /* Synchronizer re-reads CURRENT state under its own dispatch protection;
+     * a reset between publication and this call must win over this snapshot. */
+    alarm_sound_sync_fall_state();
+    if (callback != NULL)
+    {
+        /* Historical notification only, never a current alarm request. */
+        callback(confirmed_frame);
+    }
+    return result;
 }
 
 /**
@@ -245,7 +212,6 @@ const char *fall_detection_get_state_name(void)
         case FALL_STATE_NORMAL:     return "NORMAL";
         case FALL_STATE_SUSPECTED:  return "SUSPECTED";
         case FALL_STATE_CONFIRMED:  return "CONFIRMED";
-        case FALL_STATE_COOLDOWN:   return "COOLDOWN";
         default:                    return "UNKNOWN";
     }
 }
@@ -257,16 +223,23 @@ void fall_detection_get_stats(fall_detection_stats_t *stats)
 {
     if (stats != NULL)
     {
+        tk_dis_dsp();
         *stats = s_stats;
+        tk_ena_dsp();
     }
 }
 
 /**
  * Get current tunable parameters.
  */
-const fall_detection_params_t *fall_detection_get_params(void)
+void fall_detection_get_params(fall_detection_params_t *params)
 {
-    return &s_params;
+    if (params != NULL)
+    {
+        tk_dis_dsp();
+        *params = s_params;
+        tk_ena_dsp();
+    }
 }
 
 /**
@@ -274,9 +247,11 @@ const fall_detection_params_t *fall_detection_get_params(void)
  */
 void fall_detection_set_aspect_ratio(float threshold)
 {
-    if (threshold > 0.0f)
+    if (isfinite(threshold) && threshold > 0.0f)
     {
+        tk_dis_dsp();
         s_params.aspect_ratio_threshold = threshold;
+        tk_ena_dsp();
     }
 }
 
@@ -287,7 +262,9 @@ void fall_detection_set_score_threshold(float threshold)
 {
     if (threshold >= 0.0f && threshold <= 1.0f)
     {
+        tk_dis_dsp();
         s_params.score_threshold = threshold;
+        tk_ena_dsp();
     }
 }
 
@@ -298,16 +275,10 @@ void fall_detection_set_consecutive_count(uint32_t count)
 {
     if (count >= 1)
     {
+        tk_dis_dsp();
         s_params.consecutive_threshold = count;
+        tk_ena_dsp();
     }
-}
-
-/**
- * Set the cooldown period.
- */
-void fall_detection_set_cooldown_frames(uint32_t frames)
-{
-    s_params.cooldown_frames = frames;
 }
 
 /**
@@ -315,14 +286,21 @@ void fall_detection_set_cooldown_frames(uint32_t frames)
  */
 void fall_detection_reset(void)
 {
+    tk_dis_dsp();
+    if (s_state != FALL_STATE_NORMAL)
+    {
+        log_state_transition(s_state, FALL_STATE_NORMAL, 0.0f, 0.0f, 0);
+    }
     s_state = FALL_STATE_NORMAL;
     s_consecutive_count = 0;
-    s_cooldown_counter = 0;
+    s_recovery_count = 0;
 
     /* Update stats but keep cumulative counters */
     s_stats.current_state = FALL_STATE_NORMAL;
     s_stats.consecutive_count = 0;
-    s_stats.cooldown_remaining = 0;
+    s_stats.recovery_count = 0;
+    tk_ena_dsp();
+    alarm_sound_sync_fall_state();
 }
 
 /**
@@ -330,7 +308,9 @@ void fall_detection_reset(void)
  */
 void fall_detection_set_event_callback(fall_detection_event_callback_t callback)
 {
+    tk_dis_dsp();
     s_event_callback = callback;
+    tk_ena_dsp();
 }
 
 /**
@@ -343,39 +323,17 @@ uint32_t fall_detection_get_log(fall_detection_log_entry_t *entries, uint32_t ma
         return 0;
     }
 
+    tk_dis_dsp();
     uint32_t available = (s_log_count < FALL_DETECT_LOG_SIZE) ? s_log_count : FALL_DETECT_LOG_SIZE;
     uint32_t to_return = (available < max_entries) ? available : max_entries;
 
     if (to_return == 0)
     {
+        tk_ena_dsp();
         return 0;
     }
 
-    /* Calculate start index for chronological order (oldest first) */
-    uint32_t start_idx;
-    if (s_log_count <= FALL_DETECT_LOG_SIZE)
-    {
-        /* Buffer hasn't wrapped yet */
-        start_idx = 0;
-        /* If we want the most recent entries and there are more than requested */
-        if (available > to_return)
-        {
-            start_idx = available - to_return;
-        }
-    }
-    else
-    {
-        /* Buffer has wrapped - oldest entry is at s_log_write_index */
-        /* Return the most recent to_return entries */
-        if (to_return >= FALL_DETECT_LOG_SIZE)
-        {
-            start_idx = s_log_write_index;
-        }
-        else
-        {
-            start_idx = (s_log_write_index + FALL_DETECT_LOG_SIZE - to_return) % FALL_DETECT_LOG_SIZE;
-        }
-    }
+    uint32_t start_idx = (s_log_write_index + FALL_DETECT_LOG_SIZE - to_return) % FALL_DETECT_LOG_SIZE;
 
     for (uint32_t i = 0; i < to_return; i++)
     {
@@ -383,6 +341,7 @@ uint32_t fall_detection_get_log(fall_detection_log_entry_t *entries, uint32_t ma
         entries[i] = s_log_buffer[idx];
     }
 
+    tk_ena_dsp();
     return to_return;
 }
 
@@ -404,12 +363,15 @@ uint32_t fall_detection_get_log(fall_detection_log_entry_t *entries, uint32_t ma
  * @param[out] out_aspect_ratio  Aspect ratio of best candidate (0 if none)
  * @param[out] out_score         Score of best candidate (0 if none)
  * @param[out] out_position_hint true if candidate is in lower frame portion
+ * @param[out] out_recovered     valid persons present, all non-fall, no invalid observations
  * @return true if at least one detection qualifies as fall candidate
  */
-static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, bool *out_position_hint)
+static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, bool *out_position_hint, bool *out_recovered)
 {
     uint32_t count = g_fall_detection_count;
     bool found = false;
+    bool valid_person = false;
+    bool invalid = count > AI_MAX_DETECTION_NUM;
     float best_aspect_ratio = 0.0f;
     float best_score = 0.0f;
     bool best_position_hint = false;
@@ -418,17 +380,21 @@ static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, b
     {
         const fall_detection_result_t *det = &g_fall_detection_results[i];
 
+        /* Invalid observations cannot establish recovery, even alongside a
+         * valid standing person. Width/height are unsigned in postprocess. */
+        if (!isfinite(det->score) || det->score < 0.0f || det->score > 1.0f ||
+            det->height == 0 || det->width == 0 || det->class_id != 0)
+        {
+            invalid = true;
+            continue;
+        }
         /* Skip detections below score threshold */
         if (det->score < s_params.score_threshold)
         {
             continue;
         }
 
-        /* Skip detections with zero-sized bounding box */
-        if (det->height == 0 || det->width == 0)
-        {
-            continue;
-        }
+        valid_person = true;
 
         /* Calculate aspect ratio (width / height)
          *
@@ -437,7 +403,7 @@ static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, b
          * wider than it is tall (aspect ratio > 1.0).
          * A standing person produces a taller-than-wide box (aspect ratio < 1.0).
          */
-        float aspect_ratio = (float)det->width / ((float)det->height + EPSILON);
+        float aspect_ratio = (float)det->width / (float)det->height;
 
         /* Check position hint: is detection in the lower portion of frame? */
         float center_y = (float)det->y + (float)det->height / 2.0f;
@@ -457,6 +423,7 @@ static bool evaluate_fall_candidate(float *out_aspect_ratio, float *out_score, b
         }
     }
 
+    *out_recovered = valid_person && !found && !invalid;
     *out_aspect_ratio = best_aspect_ratio;
     *out_score = best_score;
     *out_position_hint = best_position_hint;
@@ -486,5 +453,8 @@ static void log_state_transition(fall_state_t from, fall_state_t to,
     entry->consecutive  = consecutive;
 
     s_log_write_index = (s_log_write_index + 1) % FALL_DETECT_LOG_SIZE;
-    s_log_count++;
+    if (s_log_count < FALL_DETECT_LOG_SIZE)
+    {
+        s_log_count++;
+    }
 }

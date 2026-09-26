@@ -9,29 +9,19 @@
  * The logic uses a state machine with temporal filtering to reduce
  * false positives:
  *
- *   NORMAL --> SUSPECTED --> CONFIRMED --> COOLDOWN --> NORMAL
+ *   NORMAL --> SUSPECTED --> CONFIRMED --> NORMAL
  *
- * State transitions:
- *   NORMAL    -> SUSPECTED:  Fall candidate detected (aspect ratio or score)
- *   SUSPECTED -> CONFIRMED:  Consecutive detections >= threshold
- *   SUSPECTED -> NORMAL:     Candidate lost (no detection in current frame)
- *   CONFIRMED -> COOLDOWN:   Notification event issued to F-004
- *   COOLDOWN  -> NORMAL:     Cooldown period elapsed
+ * A configurable number of consecutive fall candidates confirms a fall.
+ * CONFIRMED is held until FALL_DETECT_RECOVERY_COUNT consecutive frames
+ * contain valid persons, all non-fallen, with no invalid observations.
+ * Missing persons and stopped inference do not establish recovery.
+ * fall_detection_reset() is an explicit manual override.
  *
- * Fall candidate detection criteria:
- *   - Approach A/C: Bounding box aspect ratio (width/height) > threshold
- *     indicates a horizontal (fallen) posture
- *   - Approach B: "Fall" class detection score > threshold
- *   - Position hint: Detection in the lower portion of the frame increases
- *     fall likelihood
- *
- * Thread safety:
- *   - The state machine is updated from ai_inference_thread context
- *   - Query functions (get_state, get_stats) may be called from
- *     ntshell_thread; reads of 32-bit aligned values are atomic on
- *     Cortex-M85
- *   - Runtime parameter changes via set functions are safe as they
- *     only modify single aligned values
+ * Thread safety: task context only (AI update/init, shell reset/setters,
+ * UI/alarm readers); no ISR callers. Multiword copies and writes use short
+ * dispatch-disabled sections. Callers must not already disable dispatch,
+ * except get_state(), which reads one enum value and does not lock.
+ * Callbacks and alarm synchronization are invoked outside these sections.
  *
  * Reference: Issue #26 (F-003-9) specification
  */
@@ -57,7 +47,7 @@ extern "C" {
  * @name Fall Detection Threshold Parameters
  * @brief Tunable parameters for fall detection algorithm.
  *
- * These defaults can be overridden at runtime via fall_detection_set_param()
+ * These defaults can be overridden at runtime via the setter APIs
  * or the "fall set" NT-Shell command for on-device tuning without rebuild.
  * @{
  */
@@ -65,7 +55,7 @@ extern "C" {
 /**
  * Bounding box aspect ratio threshold for fall candidate detection.
  * A person lying down produces a wider-than-tall bounding box.
- * Fall candidate if: width / height > this threshold.
+ * Fall candidate if: width / height >= this threshold.
  *
  * Typical range: 1.2 to 1.5
  */
@@ -86,11 +76,10 @@ extern "C" {
 #define FALL_DETECT_CONSECUTIVE_COUNT           (5)
 
 /**
- * Cooldown period after fall confirmation, in inference frames.
- * Prevents duplicate notifications for the same fall event.
- * At ~30ms per inference cycle, 1000 frames = ~30 seconds.
+ * Consecutive valid non-fall frames required to release confirmation.
+ * Independent of the configurable confirmation threshold.
  */
-#define FALL_DETECT_COOLDOWN_FRAMES             (1000)
+#define FALL_DETECT_RECOVERY_COUNT              (5U)
 
 /**
  * Position-based fall likelihood boost threshold.
@@ -122,8 +111,7 @@ typedef enum e_fall_state
 {
     FALL_STATE_NORMAL = 0,      /**< Normal monitoring, no fall detected */
     FALL_STATE_SUSPECTED,       /**< Fall candidate detected, counting frames */
-    FALL_STATE_CONFIRMED,       /**< Fall confirmed, notification pending */
-    FALL_STATE_COOLDOWN,        /**< Post-notification cooldown period */
+    FALL_STATE_CONFIRMED,       /**< Fall confirmed, held until recovery/reset */
 } fall_state_t;
 
 /**
@@ -136,7 +124,7 @@ typedef struct st_fall_detection_stats
     uint32_t    candidate_frames;       /**< Frames with fall candidate detected */
     uint32_t    confirmed_count;        /**< Total fall confirmations since boot */
     uint32_t    consecutive_count;      /**< Current consecutive detection count */
-    uint32_t    cooldown_remaining;     /**< Remaining cooldown frames */
+    uint32_t    recovery_count;         /**< Consecutive valid non-fall frames */
     fall_state_t current_state;         /**< Current state machine state */
     float       last_aspect_ratio;      /**< Last detected aspect ratio */
     float       last_score;             /**< Last detection score used */
@@ -151,7 +139,6 @@ typedef struct st_fall_detection_params
     float       aspect_ratio_threshold;     /**< Width/height ratio for fall candidate */
     float       score_threshold;            /**< Minimum detection score */
     uint32_t    consecutive_threshold;      /**< Consecutive frames to confirm */
-    uint32_t    cooldown_frames;            /**< Cooldown period in frames */
     float       lower_position_ratio;       /**< Y-position hint threshold */
 } fall_detection_params_t;
 
@@ -173,7 +160,7 @@ typedef struct st_fall_detection_log_entry
  * Fall confirmed event callback type.
  *
  * Called when the state machine transitions to CONFIRMED state.
- * This is the integration point for F-004 (alarm notification).
+ * Historical event only: current alarm control uses state synchronization.
  *
  * @param frame_number  Frame number when fall was confirmed
  */
@@ -201,25 +188,25 @@ void fall_detection_init(void);
  *
  * When a fall is confirmed (SUSPECTED -> CONFIRMED transition):
  *   1. The registered callback is invoked (if set)
- *   2. The state automatically transitions to COOLDOWN
+ *   2. CONFIRMED is retained until consecutive recovery observations or reset
  *
- * @return Current fall state after update
+ * @return State snapshot at publication (a concurrent reset may change it)
  */
 fall_state_t fall_detection_update(void);
 
 /**
  * Get the current fall detection state.
  *
- * Thread-safe: reads a single aligned 32-bit value.
+ * Reads a single enum value; does not copy a multiword snapshot.
  *
- * @return Current state (NORMAL, SUSPECTED, CONFIRMED, COOLDOWN)
+ * @return Current state (NORMAL, SUSPECTED, CONFIRMED)
  */
 fall_state_t fall_detection_get_state(void);
 
 /**
  * Get the state name as a human-readable string.
  *
- * @return Null-terminated string ("NORMAL", "SUSPECTED", "CONFIRMED", "COOLDOWN")
+ * @return Null-terminated string ("NORMAL", "SUSPECTED", "CONFIRMED")
  */
 const char *fall_detection_get_state_name(void);
 
@@ -233,9 +220,9 @@ void fall_detection_get_stats(fall_detection_stats_t *stats);
 /**
  * Get the current tunable parameters.
  *
- * @return Pointer to the current parameters (read-only)
+ * @param[out] params Receives an atomic snapshot of the parameters
  */
-const fall_detection_params_t *fall_detection_get_params(void);
+void fall_detection_get_params(fall_detection_params_t *params);
 
 /**
  * Set the aspect ratio threshold at runtime.
@@ -259,16 +246,9 @@ void fall_detection_set_score_threshold(float threshold);
 void fall_detection_set_consecutive_count(uint32_t count);
 
 /**
- * Set the cooldown period at runtime.
- *
- * @param frames New cooldown period in inference frames
- */
-void fall_detection_set_cooldown_frames(uint32_t frames);
-
-/**
  * Reset the state machine to NORMAL state.
  *
- * Clears the consecutive counter and cooldown timer.
+ * Clears confirmation/recovery counters and requests alarm release.
  * Does not reset cumulative statistics (total_frames, confirmed_count).
  * Useful for the "fall reset" NT-Shell command.
  */
@@ -279,7 +259,7 @@ void fall_detection_reset(void);
  *
  * The callback is invoked from the AI inference thread context when
  * a fall is confirmed (SUSPECTED -> CONFIRMED transition).
- * This is the integration point for F-004 (alarm notification).
+ * Historical event only: current alarm control uses state synchronization.
  *
  * Pass NULL to unregister the callback.
  *

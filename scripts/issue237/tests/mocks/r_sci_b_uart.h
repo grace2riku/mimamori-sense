@@ -1,0 +1,1 @@
+/* Console UART hardware is not used by these tests. */

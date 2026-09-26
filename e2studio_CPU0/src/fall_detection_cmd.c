@@ -126,7 +126,7 @@ static void fall_cmd_status(void)
 
     print_to_console("=== Fall Detection Status ===\r\n");
 
-    snprintf(buf, sizeof(buf), "  State:             %s\r\n", fall_detection_get_state_name());
+    snprintf(buf, sizeof(buf), "  State:             %s\r\n", state_to_string(stats.current_state));
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Total frames:      %lu\r\n", (unsigned long)stats.total_frames);
@@ -141,7 +141,7 @@ static void fall_cmd_status(void)
     snprintf(buf, sizeof(buf), "  Confirmed total:   %lu\r\n", (unsigned long)stats.confirmed_count);
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  Cooldown remain:   %lu frames\r\n", (unsigned long)stats.cooldown_remaining);
+    snprintf(buf, sizeof(buf), "  Recovery count:    %lu / %u frames\r\n", (unsigned long)stats.recovery_count, FALL_DETECT_RECOVERY_COUNT);
     print_to_console(buf);
 
     /* Use integer formatting to avoid %f on embedded target */
@@ -169,6 +169,9 @@ static void fall_cmd_count(void)
 
     fall_detection_get_stats(&stats);
 
+    fall_detection_params_t params;
+    fall_detection_get_params(&params);
+
     print_to_console("=== Fall Detection Counters ===\r\n");
 
     snprintf(buf, sizeof(buf), "  Total frames processed: %lu\r\n", (unsigned long)stats.total_frames);
@@ -179,7 +182,7 @@ static void fall_cmd_count(void)
 
     snprintf(buf, sizeof(buf), "  Consecutive (current):  %lu / %lu\r\n",
              (unsigned long)stats.consecutive_count,
-             (unsigned long)fall_detection_get_params()->consecutive_threshold);
+             (unsigned long)params.consecutive_threshold);
     print_to_console(buf);
 
     snprintf(buf, sizeof(buf), "  Falls confirmed (total):%lu\r\n", (unsigned long)stats.confirmed_count);
@@ -199,7 +202,9 @@ static void fall_cmd_count(void)
 static void fall_cmd_threshold(void)
 {
     char buf[FALL_CMD_BUF_SIZE];
-    const fall_detection_params_t *params = fall_detection_get_params();
+    fall_detection_params_t snapshot;
+    fall_detection_get_params(&snapshot);
+    const fall_detection_params_t *params = &snapshot;
 
     print_to_console("=== Fall Detection Thresholds ===\r\n");
 
@@ -217,8 +222,8 @@ static void fall_cmd_threshold(void)
              (unsigned long)params->consecutive_threshold);
     print_to_console(buf);
 
-    snprintf(buf, sizeof(buf), "  cooldown:      %lu    (frames after confirm)\r\n",
-             (unsigned long)params->cooldown_frames);
+    snprintf(buf, sizeof(buf), "  recovery:      %u    (valid non-fall frames, fixed)\r\n",
+             FALL_DETECT_RECOVERY_COUNT);
     print_to_console(buf);
 
     int pos_int = (int)(params->lower_position_ratio * 100.0f);
@@ -226,7 +231,7 @@ static void fall_cmd_threshold(void)
     print_to_console(buf);
 
     print_to_console("\r\nUse 'fall set <param> <value>' to change.\r\n");
-    print_to_console("  Params: aspect_ratio, score, consecutive, cooldown\r\n");
+    print_to_console("  Params: aspect_ratio, score, consecutive\r\n");
 }
 
 /**
@@ -238,7 +243,6 @@ static void fall_cmd_threshold(void)
  *   aspect_ratio <float>   - Aspect ratio threshold (e.g., 1.3)
  *   score <float>          - Score threshold (e.g., 0.5)
  *   consecutive <int>      - Consecutive frame count
- *   cooldown <int>         - Cooldown frames
  */
 static void fall_cmd_set(int argc, char **argv)
 {
@@ -247,7 +251,7 @@ static void fall_cmd_set(int argc, char **argv)
     if (argc < 4)
     {
         print_to_console("Usage: fall set <param> <value>\r\n");
-        print_to_console("  Params: aspect_ratio, score, consecutive, cooldown\r\n");
+        print_to_console("  Params: aspect_ratio, score, consecutive\r\n");
         return;
     }
 
@@ -363,25 +367,11 @@ static void fall_cmd_set(int argc, char **argv)
             print_to_console("  ERROR: consecutive must be >= 1\r\n");
         }
     }
-    else if (ntlibc_strcmp(param, "cooldown") == 0)
-    {
-        cmd_parse_result_t parsed = cmd_parse_uint32(value_str);
-        if (parsed.valid)
-        {
-            fall_detection_set_cooldown_frames(parsed.value);
-            snprintf(buf, sizeof(buf), "  cooldown set to %lu\r\n", (unsigned long)parsed.value);
-            print_to_console(buf);
-        }
-        else
-        {
-            print_to_console("  ERROR: invalid value\r\n");
-        }
-    }
     else
     {
         snprintf(buf, sizeof(buf), "  Unknown param: %s\r\n", param);
         print_to_console(buf);
-        print_to_console("  Valid: aspect_ratio, score, consecutive, cooldown\r\n");
+        print_to_console("  Valid: aspect_ratio, score, consecutive\r\n");
     }
 }
 
@@ -391,7 +381,7 @@ static void fall_cmd_set(int argc, char **argv)
 static void fall_cmd_reset(void)
 {
     fall_detection_reset();
-    print_to_console("Fall detection state reset to NORMAL.\r\n");
+    print_to_console("Manual release requested (NORMAL); a continuing fall can confirm again.\r\n");
 }
 
 /**
@@ -447,7 +437,7 @@ static void fall_cmd_usage(void)
     print_to_console("  count     - Show detection counters\r\n");
     print_to_console("  threshold - Show current threshold parameters\r\n");
     print_to_console("  set <param> <value> - Set threshold parameter\r\n");
-    print_to_console("  reset     - Reset state to NORMAL\r\n");
+    print_to_console("  reset     - Force release to NORMAL and stop alarm\r\n");
     print_to_console("  log       - Show state transition log\r\n");
     print_to_console("  display   - Show screen overlay status (F-003-10)\r\n");
 }
@@ -462,7 +452,6 @@ static const char *state_to_string(fall_state_t state)
         case FALL_STATE_NORMAL:     return "NORMAL";
         case FALL_STATE_SUSPECTED:  return "SUSPECTED";
         case FALL_STATE_CONFIRMED:  return "CONFIRMED";
-        case FALL_STATE_COOLDOWN:   return "COOLDOWN";
         default:                    return "UNKNOWN";
     }
 }
