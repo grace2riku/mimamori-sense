@@ -1,0 +1,71 @@
+{
+  "scope": "bounded abstract interleavings; not evidence of real bus ordering",
+  "irq_rmw": [
+    {
+      "order": [
+        "cpu_read",
+        "cpu_store",
+        "dtc_end"
+      ],
+      "terminal_reenabled": false
+    },
+    {
+      "order": [
+        "cpu_read",
+        "dtc_end",
+        "cpu_store"
+      ],
+      "terminal_reenabled": true
+    },
+    {
+      "order": [
+        "dtc_end",
+        "cpu_read",
+        "cpu_store"
+      ],
+      "terminal_reenabled": false
+    }
+  ],
+  "reset_publication": [
+    {
+      "request_boundary": 0,
+      "accepted": null
+    },
+    {
+      "request_boundary": 1,
+      "accepted": null
+    },
+    {
+      "request_boundary": 2,
+      "accepted": null
+    },
+    {
+      "request_boundary": 3,
+      "accepted": null
+    },
+    {
+      "request_boundary": 4,
+      "accepted": null
+    },
+    {
+      "request_boundary": 5,
+      "accepted": null
+    },
+    {
+      "request_boundary": 6,
+      "accepted": null
+    },
+    {
+      "request_boundary": 7,
+      "accepted": {
+        "source": "new_start",
+        "blocks": 162
+      }
+    }
+  ],
+  "observed_bytes": 262144,
+  "normal_then_extra_zero_count_bytes": 262792,
+  "zero_count_only_cycles_at_1GHz": 4026531840,
+  "recording_log_cycles": 4026531378,
+  "conclusion": "RMW has a conditional witness, but alone predicts the wrong address delta. Ordered/quiescent publication does not yield a zero-count activation. No conclusion about violation of the stated hardware assumptions."
+}

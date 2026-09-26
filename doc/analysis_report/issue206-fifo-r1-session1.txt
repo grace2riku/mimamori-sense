@@ -1,0 +1,152 @@
+mimamori>alarm start emergency
+alarm start: 'emergency' (looping) requested.
+mimamori>audio status
+Audio output (SSIE0 I2S master -> DA7212 -> J33)
+  State        : PLAYING (last err=0x0)
+  Format       : 16276 Hz, 16 bit, 2 ch (I2S frame)
+  Clocks       : MCLK 12500000 Hz, BCLK 520833 Hz, WCLK 16276 Hz
+  Buffers      : 2 x 162 frames (10 ms, 648 bytes)
+  ISR counters : tx_empty=308 idle=11 err=0 restart=11
+  Snapshot     : session=1 time_ms=2528860 clock=1000000000 producer=callback time_ok=1
+  DWT cycles   : gap_max=4036677188 tx_fill_max=525402 idle_fill_max=154713
+  Write max    : tx_ok=16783 tx_fail=0 idle_ok=16869 idle_fail=0 cycles
+  Recovery     : ok=11 fail=0 ok_max=299560 fail_max=0 cycles
+  Timing scope : callbacks only; intervals < one DWT wrap; recovery excludes pre-IDLE delay.
+  IRQ entry    : tx=330 tx_no_cb=22 no_cb_run_max=2
+  IRQ entry    : int=22 int_no_idle=11 saturated=0 (session counters)
+  FIFO no_cb   : tdc0=0 tdc1_16=22 tdc17_32=0 other=0
+  Trace        : session=1 count=16 full=1 truncated=1
+  Wrapper max  : tx_pre=11635 tx_post=12269 int_pre=113998 int_post=1094 cycles
+  Trace scope  : first 16 events only; FIFO counts cover session; later details omitted when full.
+  Trace scope  : sequential reads; DTCE/descriptor_blocks do not prove DTC completion; cycles may wrap.
+  Wrapper scope: sampled pre/post sections only; excludes original ISR and timing bookkeeping.
+  Trace s=1 #60 TX-no-cb cycles=2110938061 cb=59->59
+  Trace s=1 #60 pre: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #60 post: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 TX-no-cb cycles=2110942114 cb=59->59
+  Trace s=1 #61 pre: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 post: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #62 INT-no-IDLE cycles=2111438429 cb=0->0
+  Trace s=1 #62 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #62 post: n/a
+  Trace s=1 #63 INT-IDLE cycles=2111499853 cb=0->1
+  Trace s=1 #63 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #63 post: n/a
+  Trace s=1 #221 TX-no-cb cycles=3405427077 cb=216->216
+  Trace s=1 #221 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #221 post: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #222 TX-no-cb cycles=3405437630 cb=216->216
+  Trace s=1 #222 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #222 post: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #223 INT-no-IDLE cycles=3405858013 cb=1->1
+  Trace s=1 #223 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #223 post: n/a
+  Trace s=1 #224 INT-IDLE cycles=3405980877 cb=1->2
+  Trace s=1 #224 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #224 post: n/a
+  Trace s=1 #234 TX-no-cb cycles=3505423649 cb=225->225
+  Trace s=1 #234 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #234 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #235 TX-no-cb cycles=3505434198 cb=225->225
+  Trace s=1 #235 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #235 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #236 INT-no-IDLE cycles=3505826653 cb=2->2
+  Trace s=1 #236 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #236 post: n/a
+  Trace s=1 #237 INT-IDLE cycles=3505888077 cb=2->3
+  Trace s=1 #237 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #237 post: n/a
+  Trace s=1 #247 TX-no-cb cycles=3605425845 cb=234->234
+  Trace s=1 #247 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #247 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #248 TX-no-cb cycles=3605436394 cb=234->234
+  Trace s=1 #248 pre: tdc=11 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #248 post: tdc=11 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #249 INT-no-IDLE cycles=3605806813 cb=3->3
+  Trace s=1 #249 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #249 post: n/a
+  Trace s=1 #250 INT-IDLE cycles=3605868237 cb=3->4
+  Trace s=1 #250 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #250 post: n/a
+  Trace s=1 trace_valid=1 (0: discard all trace lines above)
+  SSI regs     : SSICR=0x600940A2 (TEN=1 MUEN=0) SSISR=0x00000000
+  Delivery     : 308 buf in 7200 ms = 42.77 buf/s (expect 100.46)
+  Test tone    : 1000 Hz, amplitude 16000 (square)
+  I2C bus0     : open
+  DA7212       : ready, PLL locked, volume 60% (LINE_AMP_GAIN=0x2A), unmuted
+mimamori>audio status
+Audio output (SSIE0 I2S master -> DA7212 -> J33)
+  State        : PLAYING (last err=0x0)
+  Format       : 16276 Hz, 16 bit, 2 ch (I2S frame)
+  Clocks       : MCLK 12500000 Hz, BCLK 520833 Hz, WCLK 16276 Hz
+  Buffers      : 2 x 162 frames (10 ms, 648 bytes)
+  ISR counters : tx_empty=5948 idle=69 err=0 restart=69
+  Snapshot     : session=1 time_ms=2593620 clock=1000000000 producer=callback time_ok=1
+  DWT cycles   : gap_max=4036953816 tx_fill_max=534846 idle_fill_max=166421
+  Write max    : tx_ok=223135 tx_fail=0 idle_ok=16869 idle_fail=0 cycles
+  Recovery     : ok=69 fail=0 ok_max=299560 fail_max=0 cycles
+  Timing scope : callbacks only; intervals < one DWT wrap; recovery excludes pre-IDLE delay.
+  IRQ entry    : tx=6085 tx_no_cb=137 no_cb_run_max=2
+  IRQ entry    : int=138 int_no_idle=69 saturated=0 (session counters)
+  FIFO no_cb   : tdc0=0 tdc1_16=137 tdc17_32=0 other=0
+  Trace        : session=1 count=16 full=1 truncated=1
+  Wrapper max  : tx_pre=212130 tx_post=12269 int_pre=136614 int_post=1094 cycles
+  Trace scope  : first 16 events only; FIFO counts cover session; later details omitted when full.
+  Trace scope  : sequential reads; DTCE/descriptor_blocks do not prove DTC completion; cycles may wrap.
+  Wrapper scope: sampled pre/post sections only; excludes original ISR and timing bookkeeping.
+  Trace s=1 #60 TX-no-cb cycles=2110938061 cb=59->59
+  Trace s=1 #60 pre: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #60 post: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 TX-no-cb cycles=2110942114 cb=59->59
+  Trace s=1 #61 pre: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #61 post: tdc=16 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #62 INT-no-IDLE cycles=2111438429 cb=0->0
+  Trace s=1 #62 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #62 post: n/a
+  Trace s=1 #63 INT-IDLE cycles=2111499853 cb=0->1
+  Trace s=1 #63 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #63 post: n/a
+  Trace s=1 #221 TX-no-cb cycles=3405427077 cb=216->216
+  Trace s=1 #221 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #221 post: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #222 TX-no-cb cycles=3405437630 cb=216->216
+  Trace s=1 #222 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #222 post: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #223 INT-no-IDLE cycles=3405858013 cb=1->1
+  Trace s=1 #223 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #223 post: n/a
+  Trace s=1 #224 INT-IDLE cycles=3405980877 cb=1->2
+  Trace s=1 #224 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #224 post: n/a
+  Trace s=1 #234 TX-no-cb cycles=3505423649 cb=225->225
+  Trace s=1 #234 pre: tdc=13 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #234 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #235 TX-no-cb cycles=3505434198 cb=225->225
+  Trace s=1 #235 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #235 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #236 INT-no-IDLE cycles=3505826653 cb=2->2
+  Trace s=1 #236 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #236 post: n/a
+  Trace s=1 #237 INT-IDLE cycles=3505888077 cb=2->3
+  Trace s=1 #237 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #237 post: n/a
+  Trace s=1 #247 TX-no-cb cycles=3605425845 cb=234->234
+  Trace s=1 #247 pre: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #247 post: tdc=12 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #248 TX-no-cb cycles=3605436394 cb=234->234
+  Trace s=1 #248 pre: tdc=11 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #248 post: tdc=11 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #249 INT-no-IDLE cycles=3605806813 cb=3->3
+  Trace s=1 #249 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #249 post: n/a
+  Trace s=1 #250 INT-IDLE cycles=3605868237 cb=3->4
+  Trace s=1 #250 pre: tdc=0 dtce=0 descriptor_blocks=0 sw_samples=0
+  Trace s=1 #250 post: n/a
+  Trace s=1 trace_valid=1 (0: discard all trace lines above)
+  SSI regs     : SSICR=0x600940A2 (TEN=1 MUEN=0) SSISR=0x00000000
+  Delivery     : 5948 buf in 71960 ms = 82.65 buf/s (expect 100.46)
+  Test tone    : 1000 Hz, amplitude 16000 (square)
+  I2C bus0     : open
+  DA7212       : ready, PLL locked, volume 60% (LINE_AMP_GAIN=0x2A), unmuted
+mimamori>audio stop
+audio stop: OK (err=0x0)

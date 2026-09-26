@@ -1,0 +1,34 @@
+[
+  {
+    "file": 13,
+    "start_s": 44.04,
+    "duration_s": 73.74,
+    "interval_s": 65.82,
+    "rate": 100.47098146460043,
+    "gap_ms": 10.269152
+  },
+  {
+    "file": 14,
+    "start_s": 42.44,
+    "duration_s": 72.18,
+    "interval_s": 65.1,
+    "rate": 100.46082949308756,
+    "gap_ms": 10.27656
+  },
+  {
+    "file": 15,
+    "start_s": 53.76,
+    "duration_s": 81.94,
+    "interval_s": 63.82,
+    "rate": 100.47007207771858,
+    "gap_ms": 10.21552
+  },
+  {
+    "file": 16,
+    "start_s": 42.02,
+    "duration_s": 74.6,
+    "interval_s": 62.74,
+    "rate": 100.47816385081288,
+    "gap_ms": 10.267952
+  }
+]

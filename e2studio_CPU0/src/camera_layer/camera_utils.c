@@ -216,7 +216,8 @@ static uint32_t dwt_get_cycles(void)
     if (0u == (DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk))
     {
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-        DWT->CYCCNT = 0u;
+        /* Another task may have enabled DWT since the check. Preserve its
+         * timing baseline; all users measure unsigned cycle differences. */
         DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     }
     return DWT->CYCCNT;
