@@ -38,11 +38,11 @@ CPU0ではμT-Kernel 3.0 BSP2を使用します。AIによる人物検出と、�
 ## ソースコードの取得
 
 ```sh
-git clone --recurse-submodules https://github.com/grace2riku/mimamori-sense.git
+git clone --branch tron-programming-contest-2026 --recurse-submodules https://github.com/grace2riku/mimamori-sense.git
 cd mimamori-sense
 ```
 
-GitHubの「Code → Download ZIP」だけではNT-Shellサブモジュールの内容が含まれないため、上記の取得方法を使用してください。既存のcloneでは `git submodule update --init --recursive` を実行します。
+GitHubの「Code → Download ZIP」だけではNT-Shellサブモジュールの内容が含まれないため、上記の取得方法を使用してください。既存のcloneでは、提出タグにチェックアウトしてから `git submodule update --init --recursive` を実行します。
 
 最終提出タグは `tron-programming-contest-2026`、コミットは `c9922cf20d52afd16b2b3a1357d0d0a81f321994` です。
 
@@ -58,7 +58,7 @@ doc/submission/      応募用マニュアル・写真
 
 ## 制限事項
 
-転倒判定は検出枠の形状を使うため、横になった姿勢などを転倒状態として扱う場合があります。撮影条件による未検出も含め、詳しくは[操作マニュアル](doc/submission/operation-manual.md)をご確認ください。
+転倒判定は検出枠の形状を使うため、横になった姿勢などを転倒状態として扱う場合があります。撮影条件による未検出も含め、詳しくは[動作評価手順書「9. 評価時の制約」](doc/submission/evaluation-guide.md#9-評価時の制約)をご確認ください。
 
 ## ライセンス
 
