@@ -62,11 +62,66 @@ doc/submission/      応募用マニュアル・写真
 
 ## ライセンス
 
-| 対象 | ライセンス | 適用範囲 |
+リポジトリに含まれるソースコードと同梱資料で確認できるライセンス表記を以下に示します。任意機能・サンプル・参照プロジェクトも含む一覧であり、すべてが応募ファームウェアに組み込まれるという意味ではありません。各ファイルの著作権表示・ライセンス本文を参照してください。
+
+### 主要コンポーネント・ソースファイル
+
+| 対象 | ライセンス表記 | 適用範囲・根拠 |
 |---|---|---|
-| mtk3_bsp2 | T-License2.2 | `e2studio_CPU0/mtk3_bsp2` ディレクトリ配下 |
-| NT-Shell | MIT | `e2studio_CPU0/src/ntshell` |
-| 応募作品独自部分 | MIT | 上記以外の応募作品独自部分 |
+| mtk3_bsp2 / μT-Kernel | T-License2.2 | `e2studio_CPU0/mtk3_bsp2`（[ライセンス案内](e2studio_CPU0/mtk3_bsp2/mtkernel/README.md)） |
+| NT-Shell | MIT | `e2studio_CPU0/src/ntshell`（[取得版のライセンス](https://github.com/chiabrian/ntshell/blob/6eb15fe3476224665439a60c5dff97c41c3b2747/LICENSE.md)）。派生した [usrcmd.c](e2studio_CPU0/src/usrcmd.c#L25)・[usrcmd.h](e2studio_CPU0/src/usrcmd.h#L20) にもMIT表記あり |
+| Renesas FSP・ボード関連コード・派生ソース | BSD-3-Clause | CPU0/CPU1の各ファイルで同表記のある部分。例: [bsp_api.h](e2studio_CPU0/ra/fsp/inc/api/bsp_api.h#L4)、[hal_warmstart.c](e2studio_CPU0/src/hal_warmstart.c#L4)、[blinky_thread_entry.c](e2studio_CPU1/src/blinky_thread_entry.c#L4) |
+| Arm CMSIS 6 | Apache-2.0 | [CPU0のLICENSE](e2studio_CPU0/ra/arm/CMSIS_6/LICENSE)、[CPU1のLICENSE](e2studio_CPU1/ra/arm/CMSIS_6/LICENSE) |
+| Arm CMSIS-DSP / CMSIS-NN / CMSIS-View | Apache-2.0 | 各ソースの表記: [arm_math.h](e2studio_CPU0/ra/arm/CMSIS-DSP/Include/arm_math.h)、[arm_nnfunctions.h](e2studio_CPU0/ra/arm/CMSIS-NN/Include/arm_nnfunctions.h)、[EventRecorder.h](e2studio_CPU0/ra/arm/CMSIS-View/EventRecorder/Include/EventRecorder.h) |
+| FreeRTOS | MIT | CPU1に同梱された [FreeRTOSのLICENSE](e2studio_CPU1/ra/aws/FreeRTOS/FreeRTOS/Source/LICENSE.md) |
+| LVGL | MIT | [LVGL本体のLICENCE.txt](e2studio_CPU0/ra/lvgl/lvgl/LICENCE.txt)。内部の第三者コード・フォントは後掲 |
+| Arm Ethos-U core driver / core software | Apache-2.0 | CPU0のNPU関連コード（[ethosu_device.h](e2studio_CPU0/ra/npu/ethos-u-core-driver/src/ethosu_device.h)、[crc.hpp](e2studio_CPU0/ra/npu/ethos-u-core-software/lib/crc/include/crc.hpp)） |
+| TensorFlow Lite Micro | Apache-2.0 | [array.h](e2studio_CPU0/ra/npu/tflite-micro/tensorflow/lite/array.h)などの各ファイルの表記 |
+| FlatBuffers / gemmlowp / ruy | Apache-2.0 | [allocator.h](e2studio_CPU0/ra/npu/flatbuffers/include/flatbuffers/allocator.h)、[detect_platform.h](e2studio_CPU0/ra/npu/gemmlowp/internal/detect_platform.h)、[instrumentation.h](e2studio_CPU0/ra/npu/ruy/ruy/profiler/instrumentation.h) |
+| puff | zlib形式のライセンス | `e2studio_CPU0/src/ui/puff`（[puff.hの条文](e2studio_CPU0/src/ui/puff/puff.h#L1)） |
+| 応募作品独自部分 | MIT | 第三者由来のコード・素材を除く応募作品独自部分。第三者部分には各々のライセンス表記が適用されます |
+
+### LVGL内の第三者コード・同梱ライセンス
+
+LVGLの[第三者コード一覧](e2studio_CPU0/ra/lvgl/lvgl/COPYRIGHTS.md)と各ファイルに基づきます。
+
+| 対象 | ライセンス表記 | 根拠 |
+|---|---|---|
+| Barcode / code128 | BSD-2-Clause | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/barcode/LICENSE.txt) |
+| Expat | MIT | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/expat/LICENSE.txt) |
+| FreeType連携 | FreeType Project License（FTL） | [同梱LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/freetype/LICENSE.txt)。LVGLにはインターフェースのみが含まれ、FreeType本体は含まれません |
+| GIF decoder / gifdec | Public Domain | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/gif/LICENSE.txt) |
+| LodePNG | zlib | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/lodepng/LICENSE.txt) |
+| LZ4 | BSD-2-Clause | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/lz4/LICENSE.txt) |
+| QR Code generator | MIT | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/qrcode/LICENSE.txt) |
+| ThorVG | MIT | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/thorvg/LICENSE.txt) |
+| RapidJSON（ThorVG内） | MIT | [rapidjson.h](e2studio_CPU0/ra/lvgl/lvgl/src/libs/thorvg/rapidjson/rapidjson.h#L1) |
+| TinyTTF / stb由来部分 | stb部分はMITまたはPublic Domain（Unlicense）、改変部分はMIT | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/tiny_ttf/LICENSE.txt) |
+| TJPGD | ChaN独自ライセンス（著作権表示の保持） | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/src/libs/tjpgd/LICENSE.txt) |
+| TLSF | BSD-3-Clause | [lv_tlsf.hの条文](e2studio_CPU0/ra/lvgl/lvgl/src/stdlib/builtin/lv_tlsf.h#L8) |
+| printf | MIT | [LICENSE_SPRINTF.txt](e2studio_CPU0/ra/lvgl/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt) |
+| lv_math.c内の借用コード | MIT | [lv_math.cの表記](e2studio_CPU0/ra/lvgl/lvgl/src/misc/lv_math.c#L85) |
+
+### LVGLのフォント関連資料
+
+| 対象 | ライセンス表記 | 根拠 |
+|---|---|---|
+| DejaVu Sans | Bitstream Vera・Arevのフォントライセンス、DejaVu変更分はPublic Domain | [LICENSE](e2studio_CPU0/ra/lvgl/lvgl/scripts/built_in_font/font_license/DejaVuSans/LICENSE) |
+| Font Awesome 5 | フォント: SIL OFL-1.1、アイコン: CC BY-4.0、コード: MIT | [形式ごとの適用範囲](e2studio_CPU0/ra/lvgl/lvgl/scripts/built_in_font/font_license/FontAwesome5/LICENSE.txt) |
+| Montserrat | SIL OFL-1.1 | [OFL.txt](e2studio_CPU0/ra/lvgl/lvgl/scripts/built_in_font/font_license/Montserrat/OFL.txt) |
+| Source Han Sans SC | SIL OFL-1.1 | [LICENSE.txt](e2studio_CPU0/ra/lvgl/lvgl/scripts/built_in_font/font_license/SourceHanSansSC/LICENSE.txt) |
+| Unscii | 通常のバリアントはPublic Domain、unscii-16-fullはGPL | [同梱説明](e2studio_CPU0/ra/lvgl/lvgl/scripts/built_in_font/font_license/unscii/unscii.html)。バリアントによって表記が異なります |
+| FreeTypeサンプルのフォント | SIL OFL-1.1 | [サンプルのOFL.txt](e2studio_CPU0/ra/lvgl/lvgl/examples/libs/freetype/OFL.txt) |
+
+### 個別条件のあるソース・参照プロジェクト
+
+| 対象 | 確認した表記 | 根拠・適用範囲 |
+|---|---|---|
+| MERA生成モデルのソース | Apache-2.0表記に加え、Renesas由来部分にRenesas製品用途の条件あり | [model_net1.cの冒頭](e2studio_CPU0/src/ai_application/fall_detection/mera/model_net1.c#L1)など。同ディレクトリの全ファイルを一律にApache-2.0とは扱わず、各ファイルの表記を参照してください |
+| D/AVE 2Dの個別表記ファイル | Renesasの著作権・免責事項と「Purpose: only for testing」の記載（OSSライセンス名の記載なし） | [dave_64bitoperation.c](e2studio_CPU0/ra/tes/dave2d/src/dave_64bitoperation.c#L1) |
+| RUHMI Framework参照プロジェクト | フレームワークはApache-2.0。生成コードは各ファイルの表示を参照 | [LICENSE.md](reference_projects/ruhmi-framework-mcu/LICENSE.md)。同梱サンプルのFSP・CMSIS・FreeRTOSにもそれぞれBSD-3-Clause・Apache-2.0・MITの表記があります |
+
+RUHMIのホスト環境へのインストール時に取得する外部コンポーネントは、同資料の[External Licenses](reference_projects/ruhmi-framework-mcu/LICENSE.md#external-licenses)に別途列挙されています。また、上記のソースコードのライセンス表記から、学習データやモデル重みの利用条件まで一律に判断するものではありません。
 
 ## 実装の参照先
 
