@@ -29,6 +29,7 @@ CPU0ではμT-Kernel 3.0 BSP2を使用します。AIによる人物検出と、�
 
 | やりたいこと | 資料 |
 |---|---|
+| 応募作品の概要を図と実機写真で見る | [紹介スライド（PDF）](doc/submission/presentation/MimamoriSense-TRON2026.pdf) / [PowerPoint](doc/submission/presentation/MimamoriSense-TRON2026.pptx) |
 | 機材を準備し、ソースからビルドして書き込む | [セットアップ手順書](doc/submission/setup-guide.md) |
 | 書き込み済みの端末を操作する | [操作マニュアル](doc/submission/operation-manual.md) |
 | 審査で主要機能を確認する | [動作評価手順書](doc/submission/evaluation-guide.md) |
